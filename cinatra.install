@@ -1,0 +1,52 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * @file
+ * Install / upgrade hooks for the Cinatra module.
+ */
+
+/**
+ * Implements hook_install().
+ *
+ * One-shot migration from the pre-rename module (machine name `cinatra_widget`,
+ * config object `cinatra_widget.settings`). When that legacy config still holds
+ * values and the new `cinatra.settings` has none yet, copy cinatra_url /
+ * api_key / instance_id across, then delete the orphaned legacy config object.
+ * On a clean install (no legacy config) this is a no-op.
+ */
+function cinatra_install(): void {
+  // Read the raw editable legacy config (not \Drupal::config(), which would
+  // fold in runtime overrides/secrets that should not be copied into active
+  // config).
+  $legacy = \Drupal::configFactory()->getEditable('cinatra_widget.settings');
+  $legacy_url = (string) $legacy->get('cinatra_url');
+  $legacy_key = (string) $legacy->get('api_key');
+  $legacy_instance = (string) $legacy->get('instance_id');
+
+  if ($legacy_url === '' && $legacy_key === '' && $legacy_instance === '') {
+    // Clean install — nothing to migrate.
+    return;
+  }
+
+  $new = \Drupal::configFactory()->getEditable('cinatra.settings');
+  $fields = [
+    'cinatra_url' => $legacy_url,
+    'api_key' => $legacy_key,
+    'instance_id' => $legacy_instance,
+  ];
+  $changed = FALSE;
+  foreach ($fields as $field => $value) {
+    if ($value !== '' && (string) $new->get($field) === '') {
+      $new->set($field, $value);
+      $changed = TRUE;
+    }
+  }
+  if ($changed) {
+    $new->save();
+  }
+
+  // Remove the orphaned legacy config so a future re-install does not re-copy.
+  $legacy->delete();
+}

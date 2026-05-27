@@ -1,0 +1,19 @@
+bundle:
+  version: 1.x
+  remote: https://cinatra.ai
+  license:
+    # The remote bundle is the Cinatra app frontend (Apache-2.0), loaded over
+    # HTTP — it is not bundled into or statically linked with this GPL module.
+    # Apache-2.0 is GPL-compatible (under GPLv3, which "GPL-2.0-or-later"
+    # reaches), so the module stays distributable on Drupal.org.
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+    gpl-compatible: true
+  js:
+    'https://placeholder.cinatra.invalid/api/drupal/bundle.js':
+      type: external
+      attributes:
+        defer: true
+        async: false
+  dependencies:
+    - core/drupalSettings

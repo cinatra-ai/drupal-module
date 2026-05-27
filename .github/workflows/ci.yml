@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  php-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+      - name: php -l (lint every PHP file)
+        run: |
+          set -e
+          find . -path ./vendor -prune -o \( -name '*.php' -o -name '*.module' -o -name '*.install' \) -print | while read -r f; do
+            php -l "$f"
+          done
+
+  yaml-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate every YAML file parses
+        run: |
+          set -e
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = 0
+          for f in glob.glob('**/*.yml', recursive=True) + glob.glob('**/*.yaml', recursive=True):
+              try:
+                  list(yaml.safe_load_all(open(f, encoding='utf-8')))
+                  print(f"ok: {f}")
+              except Exception as e:  # noqa: BLE001
+                  print(f"BAD: {f}: {e}")
+                  bad += 1
+          sys.exit(1 if bad else 0)
+          PY
+
+  phpcs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Informational until initial findings are triaged (WPD-EXTRACT-03:
+    # "Optional phpstan added once the module grows"). The gating jobs are
+    # php-lint + yaml-lint.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cinatra
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          tools: composer
+      - name: Install Drupal coder (Drupal + DrupalPractice standards)
+        run: |
+          set -e
+          composer global require drupal/coder dealerdirect/phpcodesniffer-composer-installer --no-interaction
+          echo "$(composer global config bin-dir --absolute -q)" >> "$GITHUB_PATH"
+      - name: PHPCS (Drupal, DrupalPractice)
+        run: |
+          set -e
+          phpcs --standard=Drupal,DrupalPractice \
+            --extensions=php,module,install,inc,yml \
+            cinatra

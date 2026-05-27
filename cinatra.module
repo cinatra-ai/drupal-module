@@ -1,0 +1,121 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * @file
+ * Cinatra — embeds the Cinatra AI editing widget on Drupal node pages.
+ */
+
+use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\node\NodeInterface;
+
+/**
+ * Plugin↔core wire-contract version. Cinatra rejects unknown versions with an
+ * admin-visible error. See the cinatra repo: contracts/wp-drupal-assistant/.
+ */
+const CINATRA_CONTRACT_VERSION = 'v1';
+
+/**
+ * Implements hook_page_attachments().
+ */
+function cinatra_page_attachments(array &$attachments): void {
+  // Skip anonymous users — the widget requires authentication on the Drupal side.
+  if (!\Drupal::currentUser()->isAuthenticated()) {
+    return;
+  }
+
+  /** @var RouteMatchInterface $route */
+  $route = \Drupal::routeMatch();
+  $route_name = $route->getRouteName();
+
+  // Allow: node canonical view, node edit form, and the site front page.
+  $is_node_route = in_array($route_name, ['entity.node.canonical', 'entity.node.edit_form'], TRUE);
+  $is_front = \Drupal::service('path.matcher')->isFrontPage();
+  if (!$is_node_route && !$is_front) {
+    return;
+  }
+
+  $config = \Drupal::config('cinatra.settings');
+  $cinatra_url = rtrim((string) $config->get('cinatra_url'), '/');
+  $api_key = (string) $config->get('api_key');
+  // Silent skip when not configured — widget is opt-in via /admin/config/services/cinatra.
+  if ($cinatra_url === '' || $api_key === '') {
+    return;
+  }
+
+  // Node-specific settings — only populated on node routes.
+  $node_id = '';
+  $node_bundle = '';
+  $node_status = '';
+  if ($is_node_route) {
+    /** @var NodeInterface|NULL $node */
+    $node = $route->getParameter('node');
+    if ($node instanceof NodeInterface) {
+      $node_id = (string) $node->id();
+      $node_bundle = $node->bundle();
+      $node_status = $node->isPublished() ? 'published' : 'draft';
+    }
+  }
+
+  $attachments['#attached']['library'][] = 'cinatra/bundle';
+  $attachments['#attached']['drupalSettings']['cinatra'] = [
+    'contractVersion' => CINATRA_CONTRACT_VERSION,
+    'cinatraUrl'      => $cinatra_url,
+    'apiKey'          => $api_key,
+    'nodeId'          => $node_id,
+    'nodeBundle'      => $node_bundle,
+    'nodeStatus'      => $node_status,
+    'instanceId'      => (string) $config->get('instance_id'),
+    'drupalAdminUrl'  => '',
+  ];
+  // Cache contexts — prevent leaking authenticated apiKey into anonymous render cache.
+  $attachments['#cache']['contexts'][] = 'user.roles:authenticated';
+  $attachments['#cache']['contexts'][] = 'route';
+  $attachments['#cache']['tags'][] = 'config:cinatra.settings';
+}
+
+/**
+ * Implements hook_page_bottom().
+ *
+ * Injects the widget mount point so the bundle.js IIFE can attach its Shadow DOM.
+ */
+function cinatra_page_bottom(array &$page_bottom): void {
+  if (!\Drupal::currentUser()->isAuthenticated()) {
+    return;
+  }
+  $config = \Drupal::config('cinatra.settings');
+  if ($config->get('cinatra_url') === '' || $config->get('api_key') === '') {
+    return;
+  }
+  $page_bottom['cinatra_root'] = [
+    '#markup' => '<div id="cinatra-root"></div>',
+    '#cache' => [
+      'contexts' => ['user.roles:authenticated'],
+      'tags' => ['config:cinatra.settings'],
+    ],
+  ];
+}
+
+/**
+ * Implements hook_library_info_alter().
+ *
+ * Rewrite the placeholder external URL in cinatra.libraries.yml so the
+ * bundle fetches from the configured Cinatra origin at runtime.
+ */
+function cinatra_library_info_alter(array &$libraries, string $extension): void {
+  if ($extension !== 'cinatra') {
+    return;
+  }
+  $cinatra_url = rtrim((string) \Drupal::config('cinatra.settings')->get('cinatra_url'), '/');
+  if ($cinatra_url === '') {
+    return;
+  }
+  $real = $cinatra_url . '/api/drupal/bundle.js';
+  $placeholder = 'https://placeholder.cinatra.invalid/api/drupal/bundle.js';
+  if (isset($libraries['bundle']['js'][$placeholder])) {
+    $opts = $libraries['bundle']['js'][$placeholder];
+    unset($libraries['bundle']['js'][$placeholder]);
+    $libraries['bundle']['js'][$real] = $opts;
+  }
+}

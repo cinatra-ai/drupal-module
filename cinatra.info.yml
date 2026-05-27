@@ -1,0 +1,9 @@
+name: 'Cinatra'
+type: module
+description: 'Embeds the Cinatra AI editing widget on node pages.'
+package: Cinatra
+core_version_requirement: ^10.3 || ^11
+configure: cinatra.settings_form
+dependencies:
+  - drupal:node
+  - drupal:user

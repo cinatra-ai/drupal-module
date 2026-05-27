@@ -1,0 +1,9 @@
+# Cinatra settings — intentionally empty.
+#
+# Configuration keys (cinatra_url, api_key, instance_id) are populated at
+# runtime via the Drupal admin form at /admin/config/services/cinatra.
+#
+# Keeping this file empty ensures that `drush config:import` preserves the
+# operator's runtime values on re-import. Adding empty-string defaults here
+# would overwrite the configured values with empty strings on every import,
+# breaking the module.

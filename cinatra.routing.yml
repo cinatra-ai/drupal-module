@@ -1,0 +1,7 @@
+cinatra.settings_form:
+  path: '/admin/config/services/cinatra'
+  defaults:
+    _form: '\Drupal\cinatra\Form\SettingsForm'
+    _title: 'Cinatra settings'
+  requirements:
+    _permission: 'administer site configuration'
