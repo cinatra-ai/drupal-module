@@ -69,11 +69,18 @@ final class ImportWebsiteCommands extends DrushCommands {
       'node-type' => 'landing_page',
     ],
   ): void {
+    // This is a SERVER-SIDE (container) call to the Cinatra bridge, so it
+    // prefers the container-reachable CINATRA_BASE_URL env (e.g.
+    // http://host.docker.internal:3000 in the dev docker stack) and only falls
+    // back to the stored cinatra_url. The stored cinatra_url is the
+    // BROWSER-reachable widget origin (e.g. http://localhost:3000) and is not
+    // necessarily resolvable from inside the Drupal container.
     $config = $this->configFactory->get('cinatra.settings');
-    $cinatraUrl = rtrim((string) $config->get('cinatra_url'), '/');
+    $envBase = rtrim((string) getenv('CINATRA_BASE_URL'), '/');
+    $cinatraUrl = $envBase !== '' ? $envBase : rtrim((string) $config->get('cinatra_url'), '/');
 
     if ($cinatraUrl === '') {
-      $this->logger()->error('cinatra_url is not configured. Set it at /admin/config/services/cinatra.');
+      $this->logger()->error('Cinatra base URL is not configured. Set CINATRA_BASE_URL (server-side) or cinatra_url at /admin/config/services/cinatra.');
       return;
     }
 
