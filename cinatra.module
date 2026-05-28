@@ -7,6 +7,7 @@ declare(strict_types=1);
  * Cinatra — embeds the Cinatra AI editing widget on Drupal node pages.
  */
 
+use Drupal\Core\Render\Markup;
 use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\node\NodeInterface;
 
@@ -17,30 +18,57 @@ use Drupal\node\NodeInterface;
 const CINATRA_CONTRACT_VERSION = 'v1';
 
 /**
- * Implements hook_page_attachments().
+ * Whether the Cinatra widget surface applies to the current request.
+ *
+ * Authenticated users only (the widget requires Drupal-side auth), on a node
+ * canonical/edit route or the front page. Shared by hook_page_attachments() and
+ * hook_page_bottom() so the real bundle and the fallback chrome render on the
+ * exact same surface.
  */
-function cinatra_page_attachments(array &$attachments): void {
-  // Skip anonymous users — the widget requires authentication on the Drupal side.
+function _cinatra_widget_applies(): bool {
   if (!\Drupal::currentUser()->isAuthenticated()) {
-    return;
+    return FALSE;
   }
-
   /** @var RouteMatchInterface $route */
   $route = \Drupal::routeMatch();
   $route_name = $route->getRouteName();
-
-  // Allow: node canonical view, node edit form, and the site front page.
   $is_node_route = in_array($route_name, ['entity.node.canonical', 'entity.node.edit_form'], TRUE);
   $is_front = \Drupal::service('path.matcher')->isFrontPage();
-  if (!$is_node_route && !$is_front) {
+  return $is_node_route || $is_front;
+}
+
+/**
+ * Implements hook_page_attachments().
+ */
+function cinatra_page_attachments(array &$attachments): void {
+  if (!_cinatra_widget_applies()) {
     return;
   }
 
   $config = \Drupal::config('cinatra.settings');
   $cinatra_url = rtrim((string) $config->get('cinatra_url'), '/');
   $api_key = (string) $config->get('api_key');
-  // Silent skip when not configured — widget is opt-in via /admin/config/services/cinatra.
-  if ($cinatra_url === '' || $api_key === '') {
+
+  // Widget is opt-in: skip entirely only when the Cinatra URL is unset.
+  if ($cinatra_url === '') {
+    return;
+  }
+
+  // Cache contexts — prevent leaking authenticated config into anonymous cache.
+  $attachments['#cache']['contexts'][] = 'user.roles:authenticated';
+  $attachments['#cache']['contexts'][] = 'route';
+  $attachments['#cache']['tags'][] = 'config:cinatra.settings';
+
+  // ALWAYS attach the fallback chrome (button + graceful "cannot connect"
+  // error card) when the URL is set, so the widget surface is never silently
+  // missing — mirrors the WordPress plugin. It hides itself once the real
+  // bundle mounts. The fallback only needs the Cinatra URL.
+  $attachments['#attached']['library'][] = 'cinatra/fallback';
+  $attachments['#attached']['drupalSettings']['cinatra']['cinatraUrl'] = $cinatra_url;
+
+  // The real bundle attaches only when the API key is also set; otherwise the
+  // fallback explains the misconfiguration when the button is clicked.
+  if ($api_key === '') {
     return;
   }
 
@@ -48,7 +76,9 @@ function cinatra_page_attachments(array &$attachments): void {
   $node_id = '';
   $node_bundle = '';
   $node_status = '';
-  if ($is_node_route) {
+  /** @var RouteMatchInterface $route */
+  $route = \Drupal::routeMatch();
+  if (in_array($route->getRouteName(), ['entity.node.canonical', 'entity.node.edit_form'], TRUE)) {
     /** @var NodeInterface|NULL $node */
     $node = $route->getParameter('node');
     if ($node instanceof NodeInterface) {
@@ -69,29 +99,45 @@ function cinatra_page_attachments(array &$attachments): void {
     'instanceId'      => (string) $config->get('instance_id'),
     'drupalAdminUrl'  => '',
   ];
-  // Cache contexts — prevent leaking authenticated apiKey into anonymous render cache.
-  $attachments['#cache']['contexts'][] = 'user.roles:authenticated';
-  $attachments['#cache']['contexts'][] = 'route';
-  $attachments['#cache']['tags'][] = 'config:cinatra.settings';
 }
 
 /**
  * Implements hook_page_bottom().
  *
- * Injects the widget mount point so the bundle.js IIFE can attach its Shadow DOM.
+ * Injects the widget mount point (#cinatra-root) so the bundle.js IIFE can
+ * attach its Shadow DOM, plus the fallback button + error card. Rendered
+ * whenever the Cinatra URL is set (even without an API key) so a misconfigured
+ * or unreachable Cinatra surfaces a graceful error instead of a missing widget.
  */
 function cinatra_page_bottom(array &$page_bottom): void {
-  if (!\Drupal::currentUser()->isAuthenticated()) {
+  if (!_cinatra_widget_applies()) {
     return;
   }
-  $config = \Drupal::config('cinatra.settings');
-  if ($config->get('cinatra_url') === '' || $config->get('api_key') === '') {
+  $cinatra_url = rtrim((string) \Drupal::config('cinatra.settings')->get('cinatra_url'), '/');
+  if ($cinatra_url === '') {
     return;
   }
+
+  // Brand logo color (#7a2e3a) matches the WordPress fallback + canonical mark.
+  $html = '<div id="cinatra-root"></div>'
+    . '<button id="cw-fallback-btn" title="Cinatra AI Assistant" aria-label="Cinatra AI Assistant">'
+    . '<svg width="22" height="14" viewBox="0 0 512 320" fill="none" xmlns="http://www.w3.org/2000/svg">'
+    . '<path d="M72 214 C 72 200 96 190 130 188 C 168 186 196 200 256 210 C 316 220 358 214 400 200 C 426 192 440 196 440 208 C 440 222 420 234 388 242 C 340 254 288 256 256 256 C 202 256 132 248 100 238 C 80 232 72 224 72 214 Z" fill="#7a2e3a"/>'
+    . '<path d="M146 188 C 150 130 176 86 212 72 C 226 66 240 64 252 64 C 262 64 270 70 268 80 L 264 100 C 272 88 288 82 300 82 C 332 82 356 118 362 188 Z" fill="#7a2e3a"/>'
+    . '</svg>'
+    . '</button>'
+    . '<div id="cw-fallback-error">'
+    . '<div class="cw-fe-header">'
+    . '<p class="cw-fe-title">Cinatra is unavailable</p>'
+    . '<button class="cw-fe-close" id="cw-fe-close" aria-label="Close">&times;</button>'
+    . '</div>'
+    . '<p class="cw-fe-msg" id="cw-fe-msg">Could not connect to your Cinatra instance.</p>'
+    . '</div>';
+
   $page_bottom['cinatra_root'] = [
-    '#markup' => '<div id="cinatra-root"></div>',
+    '#markup' => Markup::create($html),
     '#cache' => [
-      'contexts' => ['user.roles:authenticated'],
+      'contexts' => ['user.roles:authenticated', 'route'],
       'tags' => ['config:cinatra.settings'],
     ],
   ];

@@ -17,3 +17,17 @@ bundle:
         async: false
   dependencies:
     - core/drupalSettings
+
+# Always-present fallback chrome (floating button + graceful "cannot connect"
+# error card). Attached whenever the Cinatra URL is set so the widget surface
+# is never silently missing; hides itself once the real bundle mounts.
+fallback:
+  version: 1.x
+  css:
+    component:
+      css/cinatra-fallback.css: {}
+  js:
+    js/cinatra-fallback.js: {}
+  dependencies:
+    - core/drupal
+    - core/drupalSettings
