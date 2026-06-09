@@ -1,0 +1,10 @@
+# Composer dependencies (local dev tooling, e.g. phpcs)
+vendor/
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
