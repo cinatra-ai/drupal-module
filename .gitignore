@@ -8,3 +8,6 @@ vendor/
 .DS_Store
 .idea/
 .vscode/
+
+# Internal planning notes (owner policy: local-only, untracked)
+.planning/
