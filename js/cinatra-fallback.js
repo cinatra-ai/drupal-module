@@ -68,15 +68,26 @@
           box.style.display = "block";
           return;
         }
-        fetch(cu + "/api/drupal/bundle.js", {
-          method: "HEAD",
+        // The widget bundle now ships locally, so a missing widget means the
+        // instance itself is unreachable/misconfigured. Probe the auth-free
+        // capabilities endpoint (the new reachability signal) rather than the
+        // removed remote bundle.js path.
+        fetch(cu + "/api/agents/drupal-content-editor/capabilities", {
+          method: "GET",
           cache: "no-store",
           signal: AbortSignal.timeout(4000),
         })
           .then(function (r) {
-            msg.textContent = r.ok
-              ? "Cinatra is reachable but the widget has not loaded yet. Try refreshing the page."
-              : "Cinatra returned HTTP " + r.status + ". Check your instance at: " + cu;
+            if (r.ok) {
+              msg.textContent =
+                "Cinatra is reachable but the assistant has not loaded yet. Try refreshing the page.";
+            } else if (r.status === 404) {
+              msg.textContent =
+                "This Cinatra instance does not support the local assistant. Update Cinatra at: " + cu;
+            } else {
+              msg.textContent =
+                "Cinatra returned HTTP " + r.status + ". Check your instance at: " + cu;
+            }
             box.style.display = "block";
           })
           .catch(function () {

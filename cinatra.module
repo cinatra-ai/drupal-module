@@ -9,24 +9,30 @@ declare(strict_types=1);
 
 use Drupal\Core\Render\Markup;
 use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\Core\Url;
 use Drupal\node\NodeInterface;
 
 /**
  * Plugin↔core wire-contract version. Cinatra rejects unknown versions with an
  * admin-visible error. See the cinatra repo: contracts/wp-drupal-assistant/.
+ *
+ * v2 drops the browser apiKey: the widget exchanges a short-lived token via the
+ * same-origin cinatra.token broker route instead. The bundled widget JS also
+ * negotiates capabilities at boot and falls back to v1 against older instances.
  */
-const CINATRA_CONTRACT_VERSION = 'v1';
+const CINATRA_CONTRACT_VERSION = 'v2';
 
 /**
  * Whether the Cinatra widget surface applies to the current request.
  *
- * Authenticated users only (the widget requires Drupal-side auth), on a node
- * canonical/edit route or the front page. Shared by hook_page_attachments() and
- * hook_page_bottom() so the real bundle and the fallback chrome render on the
- * exact same surface.
+ * Gated on the explicit "use cinatra assistant" permission (NOT merely any
+ * authenticated user — the widget reads page context and can propose content
+ * edits), on a node canonical/edit route or the front page. Shared by
+ * hook_page_attachments() and hook_page_bottom() so the real bundle and the
+ * fallback chrome render on the exact same surface.
  */
 function _cinatra_widget_applies(): bool {
-  if (!\Drupal::currentUser()->isAuthenticated()) {
+  if (!\Drupal::currentUser()->hasPermission('use cinatra assistant')) {
     return FALSE;
   }
   /** @var RouteMatchInterface $route */
@@ -41,6 +47,15 @@ function _cinatra_widget_applies(): bool {
  * Implements hook_page_attachments().
  */
 function cinatra_page_attachments(array &$attachments): void {
+  // Whether the widget renders depends on the "use cinatra assistant"
+  // permission AND on cinatra.settings, so the page response MUST vary on both
+  // EVEN WHEN the widget is not shown — otherwise a user who later gains the
+  // permission (or a site that is later configured) could keep getting a
+  // cached no-widget page. Declare this cache metadata before any early return.
+  $attachments['#cache']['contexts'][] = 'user.permissions';
+  $attachments['#cache']['contexts'][] = 'route';
+  $attachments['#cache']['tags'][] = 'config:cinatra.settings';
+
   if (!_cinatra_widget_applies()) {
     return;
   }
@@ -54,11 +69,6 @@ function cinatra_page_attachments(array &$attachments): void {
     return;
   }
 
-  // Cache contexts — prevent leaking authenticated config into anonymous cache.
-  $attachments['#cache']['contexts'][] = 'user.roles:authenticated';
-  $attachments['#cache']['contexts'][] = 'route';
-  $attachments['#cache']['tags'][] = 'config:cinatra.settings';
-
   // ALWAYS attach the fallback chrome (button + graceful "cannot connect"
   // error card) when the URL is set, so the widget surface is never silently
   // missing — mirrors the WordPress plugin. It hides itself once the real
@@ -66,8 +76,10 @@ function cinatra_page_attachments(array &$attachments): void {
   $attachments['#attached']['library'][] = 'cinatra/fallback';
   $attachments['#attached']['drupalSettings']['cinatra']['cinatraUrl'] = $cinatra_url;
 
-  // The real bundle attaches only when the API key is also set; otherwise the
-  // fallback explains the misconfiguration when the button is clicked.
+  // The real bundle attaches only when the API key is also set server-side;
+  // otherwise the fallback explains the misconfiguration when the button is
+  // clicked. The long-lived api_key is read here only to decide whether the
+  // integration is configured — it is NEVER placed into drupalSettings.
   if ($api_key === '') {
     return;
   }
@@ -88,17 +100,29 @@ function cinatra_page_attachments(array &$attachments): void {
     }
   }
 
+  // Same-origin broker route the browser POSTs to for a short-lived token, plus
+  // the CSRF token that route requires. The long-lived key stays server-side.
+  $token_endpoint = Url::fromRoute('cinatra.token')->toString();
+  $csrf_token = \Drupal::csrfToken()->get('cinatra/token');
+
   $attachments['#attached']['library'][] = 'cinatra/bundle';
+  // NOTE: no 'apiKey'. The browser receives only short-lived tokens minted by
+  // the cinatra.token broker route from the server-side credential.
   $attachments['#attached']['drupalSettings']['cinatra'] = [
     'contractVersion' => CINATRA_CONTRACT_VERSION,
     'cinatraUrl'      => $cinatra_url,
-    'apiKey'          => $api_key,
+    'tokenEndpoint'   => $token_endpoint,
+    'csrfToken'       => $csrf_token,
     'nodeId'          => $node_id,
     'nodeBundle'      => $node_bundle,
     'nodeStatus'      => $node_status,
     'instanceId'      => (string) $config->get('instance_id'),
-    'drupalAdminUrl'  => '',
+    // The widget's "Widget administration" link points at THIS site's local
+    // settings form, not a path on the Cinatra origin.
+    'drupalAdminUrl'  => Url::fromRoute('cinatra.settings_form')->toString(),
   ];
+  // The CSRF token is per-session; keep it out of shared render caches.
+  $attachments['#cache']['contexts'][] = 'session';
 }
 
 /**
@@ -137,31 +161,8 @@ function cinatra_page_bottom(array &$page_bottom): void {
   $page_bottom['cinatra_root'] = [
     '#markup' => Markup::create($html),
     '#cache' => [
-      'contexts' => ['user.roles:authenticated', 'route'],
+      'contexts' => ['user.permissions', 'route'],
       'tags' => ['config:cinatra.settings'],
     ],
   ];
-}
-
-/**
- * Implements hook_library_info_alter().
- *
- * Rewrite the placeholder external URL in cinatra.libraries.yml so the
- * bundle fetches from the configured Cinatra origin at runtime.
- */
-function cinatra_library_info_alter(array &$libraries, string $extension): void {
-  if ($extension !== 'cinatra') {
-    return;
-  }
-  $cinatra_url = rtrim((string) \Drupal::config('cinatra.settings')->get('cinatra_url'), '/');
-  if ($cinatra_url === '') {
-    return;
-  }
-  $real = $cinatra_url . '/api/drupal/bundle.js';
-  $placeholder = 'https://placeholder.cinatra.invalid/api/drupal/bundle.js';
-  if (isset($libraries['bundle']['js'][$placeholder])) {
-    $opts = $libraries['bundle']['js'][$placeholder];
-    unset($libraries['bundle']['js'][$placeholder]);
-    $libraries['bundle']['js'][$real] = $opts;
-  }
 }

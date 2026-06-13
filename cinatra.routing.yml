@@ -5,3 +5,16 @@ cinatra.settings_form:
     _title: 'Cinatra settings'
   requirements:
     _permission: 'administer site configuration'
+
+# Server-to-server token broker. The browser POSTs here (same-origin, CSRF
+# protected); the controller holds the long-lived integration key from config,
+# calls the Cinatra instance token-exchange endpoint, and returns ONLY the
+# short-lived token to the browser. The long-lived key never reaches JS.
+cinatra.token:
+  path: '/cinatra/token'
+  defaults:
+    _controller: '\Drupal\cinatra\Controller\TokenController::mint'
+  methods: [POST]
+  requirements:
+    _permission: 'use cinatra assistant'
+    _csrf_token: 'TRUE'
