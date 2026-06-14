@@ -1,5 +1,7 @@
 # Composer dependencies (local dev tooling, e.g. phpcs)
 vendor/
+# A contrib module is a library, not an application — do not pin a lock file.
+composer.lock
 
 # Logs
 *.log

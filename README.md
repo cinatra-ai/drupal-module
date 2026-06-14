@@ -20,19 +20,28 @@ Your Cinatra instance is treated purely as a versioned data API.
 - Negotiates capabilities and contract version with the instance at boot
   (`GET {cinatra-url}/api/agents/drupal-content-editor/capabilities`), falling
   back gracefully against older instances.
+- Provides **one-click "Connect with Cinatra"** provisioning: the admin enters
+  only the instance URL, approves a consent screen on Cinatra, and the
+  integration credential is fetched server-side automatically — no key is ever
+  copied or pasted (a connection-string fallback covers no-redirect
+  environments). See [cinatra-ai/cinatra#221](https://github.com/cinatra-ai/cinatra/issues/221).
 - Exposes an admin settings form at **Configuration → Web services → Cinatra**
-  (`/admin/config/services/cinatra`) for the Cinatra URL, API key (held
-  server-side only), and instance ID.
+  (`/admin/config/services/cinatra`) with the Connect button, the connection
+  fallback, and manual fields (Cinatra URL, API key held server-side only,
+  instance ID) for advanced setups.
 
 ## Install (end users)
 
 1. Install the module (`composer require drupal/cinatra` once published, or place
    it under `modules/custom/cinatra/`).
 2. Enable it: `drush en cinatra`.
-3. In Cinatra, open `/settings/connectors/drupal-widget` and generate an API key.
-4. In Drupal, open **Configuration → Web services → Cinatra** and paste the
-   Cinatra URL, API key, and instance ID. Save.
-5. Grant the **“Use the Cinatra AI assistant”** permission to the roles that
+3. In Drupal, open **Configuration → Web services → Cinatra**, enter your Cinatra
+   instance URL, and click **Connect with Cinatra**. Approve the connection on
+   the Cinatra consent screen; the integration credential is provisioned and
+   stored on this server automatically. (No browser redirect? Expand the
+   connection-string fallback and paste the one-line code from Cinatra. Or use
+   **Manual configuration** to paste the URL, API key, and instance ID by hand.)
+4. Grant the **“Use the Cinatra AI assistant”** permission to the roles that
    should see the assistant (People → Permissions). The widget no longer loads
    for every authenticated user.
 
@@ -45,6 +54,26 @@ a one-shot copy of `cinatra_widget.settings` → `cinatra.settings`.
   *restricted*): loads the assistant on node pages and authorizes short-lived
   streaming-token exchange. The widget can read the current page context and
   propose content edits, so grant it only to trusted content editors.
+
+## Connecting (provisioning)
+
+The recommended way to provision the credential is **one-click Connect**
+(cinatra#221), an OAuth-style handshake:
+
+1. You enter only the instance URL and click **Connect with Cinatra**.
+2. Your browser is redirected to a Cinatra consent screen, where an org admin
+   approves the connection (PKCE S256 + a single-use `state` protect the
+   round-trip).
+3. Drupal exchanges the returned short-lived code **server-side** at
+   `{cinatra-url}/api/connect/token` for the long-lived per-site credential and
+   stores it in `cinatra.settings`. The credential never reaches the browser.
+
+For environments where the browser redirect is not viable, Cinatra can emit a
+one-line **connection string** (URL + a one-time install code); paste it under
+*No browser redirect?* and Drupal performs the same server-side exchange.
+
+The **Manual configuration** section remains for advanced/air-gapped setups
+where you set the URL, API key, and instance ID by hand.
 
 ## Credential model
 
