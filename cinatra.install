@@ -50,3 +50,21 @@ function cinatra_install(): void {
   // Remove the orphaned legacy config so a future re-install does not re-copy.
   $legacy->delete();
 }
+
+/**
+ * Implements hook_uninstall().
+ *
+ * Removes the module's configuration so an uninstall leaves no orphaned config
+ * objects behind. Drupal removes the config/install default object on uninstall
+ * automatically, but the runtime-populated `cinatra.settings` (saved by the
+ * admin form / Connect handshake) and any leftover pre-rename
+ * `cinatra_widget.settings` object are deleted explicitly here. The stored
+ * long-lived API key lives in `cinatra.settings`, so dropping it on uninstall
+ * also ensures the credential does not linger in active config.
+ */
+function cinatra_uninstall(): void {
+  $config_factory = \Drupal::configFactory();
+  foreach (['cinatra.settings', 'cinatra_widget.settings'] as $name) {
+    $config_factory->getEditable($name)->delete();
+  }
+}
