@@ -23,7 +23,6 @@ Your Cinatra instance is treated purely as a versioned data API.
 - Exposes an admin settings form at **Configuration → Web services → Cinatra**
   (`/admin/config/services/cinatra`) for the Cinatra URL, API key (held
   server-side only), and instance ID.
-- Ships a `drush cinatra:import-website` command for bulk content import.
 
 ## Install (end users)
 
