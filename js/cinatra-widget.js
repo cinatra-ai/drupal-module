@@ -40,71 +40,128 @@
   var rootEl = document.getElementById('cinatra-root');
   if (!rootEl) { console.warn('[cinatra] #cinatra-root not found'); return; }
   if (rootEl.dataset.cinatraMounted === 'true') return;
-  rootEl.dataset.cinatraMounted = 'true';
+  // NOTE: data-cinatra-mounted is set ONLY after capability negotiation succeeds
+  // (see boot() at the bottom). Setting it earlier would hide the fallback chrome
+  // even when the instance is unavailable/incompatible.
 
   // ---------------------------------------------------------------------------
   // Capability + version negotiation, and short-lived token exchange.
   //
   // capabilities: fetched once at boot from {cinatraUrl}/api/agents/
   // drupal-content-editor/capabilities (auth-free, static contract metadata).
-  // - 404 (older instance): assume v1 + no token exchange. With no apiKey in the
-  //   browser the legacy direct-stream path is impossible, so we surface a
-  //   configuration error instead of silently failing.
-  // - supportsTokenExchange === false: same — instance not upgraded for the
-  //   local/broker flow.
-  // - supportsChangesFrame === false: hide the apply-changes affordance.
+  // It is a HARD PREREQUISITE: any failure — HTTP not-ok (incl. 404 / 5xx),
+  // network error, timeout, non-JSON body, missing `capabilities` object,
+  // missing/empty supportedContractVersions, no mutually-supported contract
+  // version, missing required capability fields (streamPath / tokenPath), or
+  // supportsTokenExchange !== true — ABORTS the mount. The widget then never
+  // attaches its Shadow DOM and never sets data-cinatra-mounted, so the
+  // always-visible fallback button remains as the "instance unavailable /
+  // incompatible" chrome. There are NO optimistic defaults and NO legacy
+  // long-lived path — the browser holds no apiKey and the same-origin broker
+  // token is the only stream auth model.
+  //
+  // - supportsChangesFrame: the apply-changes affordance is enabled ONLY when
+  //   the instance explicitly advertises it (absent flag => disabled).
   //
   // Client knows v1 and v2; it negotiates the highest mutually-supported
   // contract version and pins it on token-exchange + stream-init.
   // ---------------------------------------------------------------------------
   var CLIENT_CONTRACT_VERSIONS = ['v1', 'v2'];
-  var caps = null;            // resolved capabilities object (or fallback)
-  var negotiatedVersion = 'v1';
-  var supportsChanges = true; // until capabilities say otherwise
-  var capsReady = null;       // Promise resolved once negotiation completes
-  var tokenCache = null;      // { token, expiresAtMs }
+  var negotiatedVersion = null;   // set ONLY by a successful negotiate()
+  var supportsChanges = false;    // enabled ONLY when explicitly advertised
+  var supportsMarkdown = false;   // enabled ONLY when explicitly advertised
+  var streamPath = null;          // set ONLY by a successful negotiate()
+  var tokenCache = null;          // { token, expiresAtMs }
 
   var STREAM_BASE = String(config.cinatraUrl).replace(/\/+$/, '');
   var TOKEN_ENDPOINT = String(config.tokenEndpoint);
 
+  // Bounded-timeout fetch. AbortSignal.timeout() is not universal, so drive an
+  // AbortController ourselves; the timer is always cleared.
+  function fetchWithTimeout(url, opts, timeoutMs) {
+    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = null;
+    var options = opts || {};
+    if (controller) {
+      options = Object.assign({}, options, { signal: controller.signal });
+      timer = setTimeout(function () { try { controller.abort(); } catch (_) {} }, timeoutMs);
+    }
+    var p;
+    try {
+      p = fetch(url, options);
+    } catch (err) {
+      // fetch threw synchronously (very rare) — clear the timer and propagate.
+      if (timer) clearTimeout(timer);
+      return Promise.reject(err);
+    }
+    return p.then(
+      function (resp) { if (timer) clearTimeout(timer); return resp; },
+      function (err) { if (timer) clearTimeout(timer); throw err; }
+    );
+  }
+
+  // CLIENT_CONTRACT_VERSIONS is ordered OLDEST -> NEWEST, so "last match wins"
+  // yields the highest mutually-supported version. Returns null when there is
+  // no mutual version (the caller then aborts the mount). Do not reverse the
+  // array without flipping this loop's selection rule.
   function pickVersion(serverVersions) {
-    var supported = Array.isArray(serverVersions) && serverVersions.length
-      ? serverVersions
-      : ['v1'];
-    var best = 'v1';
+    if (!Array.isArray(serverVersions)) { return null; }
+    var best = null;
     for (var i = 0; i < CLIENT_CONTRACT_VERSIONS.length; i++) {
-      if (supported.indexOf(CLIENT_CONTRACT_VERSIONS[i]) !== -1) {
+      if (serverVersions.indexOf(CLIENT_CONTRACT_VERSIONS[i]) !== -1) {
         best = CLIENT_CONTRACT_VERSIONS[i];
       }
     }
     return best;
   }
 
+  // Returns a Promise<boolean>: true only if /capabilities succeeded AND
+  // validated. No optimistic defaults; the caller aborts the mount on false.
   function negotiate() {
-    if (capsReady) { return capsReady; }
-    capsReady = fetch(STREAM_BASE + '/api/agents/drupal-content-editor/capabilities', {
+    return fetchWithTimeout(STREAM_BASE + '/api/agents/drupal-content-editor/capabilities', {
       method: 'GET',
       cache: 'no-store',
-    }).then(function (r) {
-      if (r.status === 404) { return null; }
-      if (!r.ok) { return null; }
-      return r.json().catch(function () { return null; });
+    }, 5000).then(function (r) {
+      if (!r || !r.ok) { return false; }
+      return r.json().then(function (data) {
+        if (!data || typeof data !== 'object') { return false; }
+        var caps = data.capabilities;
+        if (!caps || typeof caps !== 'object') { return false; }
+        var version = pickVersion(data.supportedContractVersions);
+        if (!version) { return false; }
+        // The same-origin broker token is the only stream auth model — an
+        // instance that cannot mint short-lived tokens is incompatible.
+        if (caps.supportsTokenExchange !== true) { return false; }
+        if (typeof caps.tokenPath !== 'string' || !caps.tokenPath) { return false; }
+        if (typeof caps.streamPath !== 'string' || !caps.streamPath) { return false; }
+        // SAME-ORIGIN STREAM PATH (token-exfiltration guard). The stream fetch
+        // carries the short-lived Bearer token; it must hit the configured
+        // instance origin and nowhere else. A malicious/compromised
+        // /capabilities response could otherwise smuggle an authority via the
+        // streamPath ("@host", "//host", "https://host", backslash tricks),
+        // and STREAM_BASE + streamPath would ship the token off-origin.
+        // Require a plain root-absolute path, then resolve+assert same-origin
+        // and store only the validated pathname+search (never raw concat).
+        if (caps.streamPath.indexOf('\\') !== -1) { return false; }     // no backslash authority tricks
+        if (caps.streamPath.charAt(0) !== '/') { return false; }        // must be a root-absolute path
+        if (caps.streamPath.charAt(1) === '/') { return false; }        // protocol-relative => off-origin authority
+        var resolvedStreamPath;
+        try {
+          var base = new URL(config.cinatraUrl);
+          var u = new URL(caps.streamPath, base.origin + '/');
+          if (u.origin !== base.origin) { return false; }
+          if (u.pathname.charAt(0) !== '/' || u.pathname.charAt(1) === '/') { return false; }
+          resolvedStreamPath = u.pathname + u.search;
+        } catch (_) { return false; }
+        negotiatedVersion = version;
+        streamPath = resolvedStreamPath;
+        supportsChanges = caps.supportsChangesFrame === true;
+        supportsMarkdown = caps.supportsMarkdown === true;
+        return true;
+      }).catch(function () { return false; });
     }).catch(function () {
-      return null;
-    }).then(function (data) {
-      if (data && data.capabilities) {
-        caps = data;
-        negotiatedVersion = pickVersion(data.supportedContractVersions);
-        supportsChanges = data.capabilities.supportsChangesFrame !== false;
-      } else {
-        // Older instance with no capabilities endpoint, or unreadable response.
-        caps = { capabilities: { supportsTokenExchange: false, supportsChangesFrame: true } };
-        negotiatedVersion = 'v1';
-        supportsChanges = true;
-      }
-      return caps;
+      return false;
     });
-    return capsReady;
   }
 
   // Exchange (or reuse a cached) short-lived token via the same-origin Drupal
@@ -151,13 +208,24 @@
     });
   }
 
-  // Kick off negotiation immediately so the UI can reflect capabilities.
-  negotiate();
+  // ---------------------------------------------------------------------------
+  // mountWidget() — builds the Shadow DOM + wires the assistant. Called ONLY
+  // after negotiate() resolves true (see boot() at the bottom).
+  // ---------------------------------------------------------------------------
+  function mountWidget() {
+  // Re-check after the async negotiation gap: a second copy of this IIFE could
+  // have mounted while we awaited /capabilities. Bail if a Shadow DOM already
+  // exists or the marker is already set (defense against duplicate includes).
+  if (rootEl.dataset.cinatraMounted === 'true' || rootEl.shadowRoot) { return; }
 
   // ---------------------------------------------------------------------------
   // Shadow DOM
   // ---------------------------------------------------------------------------
   var shadow = rootEl.attachShadow({ mode: 'open' });
+  // The data-cinatra-mounted marker (which hides the fallback chrome) is set at
+  // the very END of synchronous mount construction — see the bottom of this
+  // function. A throw at any point during mount therefore leaves the fallback
+  // visible rather than hiding it over a half-built / dead widget.
 
   // ---------------------------------------------------------------------------
   // CSS
@@ -665,13 +733,21 @@
     return html;
   }
 
+  // Render assistant content. Markdown is used ONLY when the instance advertised
+  // supportsMarkdown; otherwise the text is rendered as plain text (absent
+  // forward flag => the behavior is disabled).
+  function renderAssistantInto(el, content) {
+    if (supportsMarkdown) { el.innerHTML = renderMd(content); }
+    else { el.textContent = content || ''; }
+  }
+
   // ---------------------------------------------------------------------------
   // Render message bubble
   // ---------------------------------------------------------------------------
-  function renderMessage(role, content, asMarkdown) {
+  function renderMessage(role, content, asAssistant) {
     var el = document.createElement('div');
     el.className = 'cw-msg cw-msg-' + role;
-    if (asMarkdown) el.innerHTML = renderMd(content);
+    if (asAssistant) renderAssistantInto(el, content);
     else el.textContent = content;
     messagesEl.appendChild(el);
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -860,14 +936,9 @@
     submitBtn.disabled = true;
 
     try {
-      // Ensure capability negotiation finished, then exchange a short-lived
-      // token via the same-origin broker. The long-lived key never touches JS.
-      await negotiate();
-      if (caps && caps.capabilities && caps.capabilities.supportsTokenExchange === false) {
-        assistantEl.classList.remove('cw-thinking');
-        assistantEl.textContent = 'This Cinatra instance does not support the local widget (token exchange). Update Cinatra to use the assistant here.';
-        return;
-      }
+      // Capabilities are already negotiated (mount is gated on success), so the
+      // broker token-exchange path is guaranteed available. Exchange a
+      // short-lived token; the long-lived key never touches JS.
       var streamToken;
       try {
         streamToken = await getStreamToken();
@@ -876,7 +947,12 @@
         assistantEl.textContent = 'Could not authorize the assistant: ' + (tokErr && tokErr.message ? tokErr.message : 'token exchange failed');
         return;
       }
-      var response = await fetch(STREAM_BASE + '/api/agents/drupal-content-editor/stream', {
+      // streamPath was validated same-origin during negotiate() (root-absolute
+      // pathname+search on the configured origin), so STREAM_BASE + streamPath
+      // reconstructs the SAME instance origin. Never concatenate a raw,
+      // unvalidated capability path here — that would risk shipping the Bearer
+      // token off-origin.
+      var response = await fetch(STREAM_BASE + streamPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + streamToken },
         body: JSON.stringify({ contractVersion: negotiatedVersion, messages: history.map(function(m) { return { role: m.role, content: m.content }; }), context: buildDrupalContext() }),
@@ -920,7 +996,7 @@
           if (eventName === 'text' && data && typeof data.content === 'string') {
             if (!streamingStarted) { streamingStarted = true; assistantEl.classList.remove('cw-thinking'); }
             assistantText += data.content;
-            assistantEl.innerHTML = renderMd(assistantText);
+            renderAssistantInto(assistantEl, assistantText);
             messagesEl.scrollTop = messagesEl.scrollHeight;
           } else if (eventName === 'changes' && data && Array.isArray(data.fields)) {
             // Hide the apply-changes affordance when the instance reports it
@@ -939,7 +1015,7 @@
             assistantEl.classList.remove('cw-thinking');
             assistantEl.textContent = 'Error: ' + data.message;
           } else if (eventName === 'done') {
-            if (assistantText) assistantEl.innerHTML = renderMd(assistantText);
+            if (assistantText) renderAssistantInto(assistantEl, assistantText);
             if (data && data.fallback) { assistantText = ''; }
             if (hadChanges && !(data && data.fallback)) {
               if (diffCardEl) {
@@ -967,6 +1043,10 @@
     }
   }
 
+  // Synchronous mount construction is complete: mark mounted (this hides the
+  // fallback chrome). Set LAST so any throw above leaves the fallback visible.
+  rootEl.dataset.cinatraMounted = 'true';
+
   // Reopen widget after an auto-reload triggered by a content edit.
   try {
     if (window.sessionStorage.getItem('cinatra-reopen') === '1') {
@@ -974,5 +1054,22 @@
       openWidget();
     }
   } catch (_) {}
+
+  } // end mountWidget()
+
+  // ---------------------------------------------------------------------------
+  // Boot: capabilities is a HARD PREREQUISITE. Negotiate FIRST; mount ONLY on
+  // success. On any failure we never attachShadow and never set
+  // data-cinatra-mounted, so the always-visible fallback button remains as the
+  // "instance unavailable / incompatible" chrome.
+  // ---------------------------------------------------------------------------
+  negotiate().then(function (ok) {
+    if (ok) { mountWidget(); }
+    else {
+      console.warn('[cinatra] capability negotiation failed — instance unavailable or incompatible; widget not mounted');
+    }
+  }).catch(function () {
+    console.warn('[cinatra] capability negotiation error — instance unavailable; widget not mounted');
+  });
 
 })();

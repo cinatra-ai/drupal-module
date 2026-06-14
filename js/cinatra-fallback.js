@@ -72,12 +72,28 @@
         // instance itself is unreachable/misconfigured. Probe the auth-free
         // capabilities endpoint (the new reachability signal) rather than the
         // removed remote bundle.js path.
+        // Bounded-timeout probe via a guarded AbortController (AbortSignal.timeout
+        // is not universal and can throw synchronously on older browsers).
+        var controller =
+          typeof AbortController !== "undefined" ? new AbortController() : null;
+        var timer = controller
+          ? setTimeout(function () {
+              try {
+                controller.abort();
+              } catch (e) {
+                // Ignore: aborting an already-settled controller is a no-op.
+              }
+            }, 4000)
+          : null;
         fetch(cu + "/api/agents/drupal-content-editor/capabilities", {
           method: "GET",
           cache: "no-store",
-          signal: AbortSignal.timeout(4000),
+          signal: controller ? controller.signal : undefined,
         })
           .then(function (r) {
+            if (timer) {
+              clearTimeout(timer);
+            }
             if (r.ok) {
               msg.textContent = Drupal.t(
                 "Cinatra is reachable but the assistant has not loaded yet. Try refreshing the page."
@@ -99,6 +115,9 @@
             box.style.display = "block";
           })
           .catch(function () {
+            if (timer) {
+              clearTimeout(timer);
+            }
             msg.textContent = Drupal.t(
               "Cannot reach !url. Check that your Cinatra instance is running.",
               { "!url": cu }
