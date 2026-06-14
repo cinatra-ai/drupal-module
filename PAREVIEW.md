@@ -83,9 +83,7 @@ version-less.
 remains `v0.1.0`. No new tag is created here — tags/releases are owner-approved
 only.
 
-**For the owner, at drupal.org submission time:** drupal.org SemVer convention
-for a first *stable* contrib release is **`1.0.0`** (branch `1.0.x`). The
-recommendation is to publish the drupalcode.org release as **`1.0.0`** when the
-project goes live — it signals API stability to Drupal site builders and is what
-reviewers expect. This is an owner call, tracked with the rest of the
-owner-managed external submission steps — it is **not** actioned by this note.
+**Owner decision (eng#188, 2026-06-14): the first drupal.org release publishes on the `0.1.x` line**
+(branch `0.1.x`), matching the rest of the v0.1.x project line rather than the `1.0.0` Drupal
+convention. No new tag is created here; the actual drupalcode.org release/tag remains an
+owner-managed external submission step, parked until v0.1.x ships.
