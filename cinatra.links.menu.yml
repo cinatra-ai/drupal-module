@@ -1,0 +1,6 @@
+cinatra.settings_form:
+  title: 'Cinatra'
+  description: 'Configure the Cinatra AI assistant: instance URL, credential, and connection.'
+  parent: system.admin_config_services
+  route_name: cinatra.settings_form
+  weight: 10

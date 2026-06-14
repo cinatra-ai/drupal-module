@@ -23,6 +23,48 @@ use Drupal\node\NodeInterface;
 const CINATRA_CONTRACT_VERSION = 'v2';
 
 /**
+ * Implements hook_help().
+ */
+function cinatra_help(string $route_name, RouteMatchInterface $route_match): array|string {
+  switch ($route_name) {
+    case 'help.page.cinatra':
+      // A render array so each translated string is escaped independently (no
+      // manual concatenation of translated markup). The settings link is a
+      // generated :url placeholder, so the URL is the only interpolated value
+      // and t() handles the escaping.
+      $settings_url = Url::fromRoute('cinatra.settings_form')->toString();
+      return [
+        'about_heading' => [
+          '#type' => 'html_tag',
+          '#tag' => 'h3',
+          '#value' => t('About'),
+        ],
+        'about' => [
+          '#type' => 'html_tag',
+          '#tag' => 'p',
+          '#value' => t('The Cinatra module embeds the Cinatra AI assistant on node pages so editors can draft and revise content in context. The assistant widget is shipped locally with the module; your Cinatra instance is used as a versioned data API. The long-lived integration credential is held server-side and exchanged for short-lived streaming tokens, so it never reaches the browser.'),
+        ],
+        'uses_heading' => [
+          '#type' => 'html_tag',
+          '#tag' => 'h3',
+          '#value' => t('Uses'),
+        ],
+        'configure' => [
+          '#type' => 'html_tag',
+          '#tag' => 'p',
+          '#value' => t('Configure the Cinatra instance URL, credential, and connection at <a href=":url">Configuration → Web services → Cinatra</a>.', [':url' => $settings_url]),
+        ],
+        'permission' => [
+          '#type' => 'html_tag',
+          '#tag' => 'p',
+          '#value' => t('Grant the "Use the Cinatra AI assistant" permission to the roles that should see the assistant. The widget can read page context and propose content edits, so grant it only to trusted editors.'),
+        ],
+      ];
+  }
+  return [];
+}
+
+/**
  * Whether the Cinatra widget surface applies to the current request.
  *
  * Gated on the explicit "use cinatra assistant" permission (NOT merely any
