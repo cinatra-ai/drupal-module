@@ -1,0 +1,25 @@
+# Packaging hygiene: keep development, CI, and test scaffolding out of the
+# release tarball that drupal.org's packager builds from a git archive.
+# `export-ignore` excludes the path from `git archive` output.
+
+# Version control / project meta.
+/.gitattributes      export-ignore
+/.gitignore          export-ignore
+/.editorconfig       export-ignore
+
+# CI configuration (GitHub Actions + GitLab CI).
+/.github             export-ignore
+/.gitlab-ci.yml      export-ignore
+
+# Dev tooling configuration. NOTE: composer.json is intentionally NOT
+# export-ignored — it defines the drupal/cinatra Composer package and must ship
+# in the release tarball so `composer require drupal/cinatra` works.
+/phpcs.xml.dist      export-ignore
+/phpstan.neon.dist   export-ignore
+/renovate.json       export-ignore
+
+# Automated tests are not shipped in the release tarball.
+/tests               export-ignore
+
+# Normalize line endings for text files.
+* text=auto eol=lf

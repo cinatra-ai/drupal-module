@@ -1,9 +1,13 @@
-# Cinatra settings — intentionally empty.
+# Cinatra settings — installed as an empty mapping.
 #
 # Configuration keys (cinatra_url, api_key, instance_id) are populated at
-# runtime via the Drupal admin form at /admin/config/services/cinatra.
+# runtime via the admin form at /admin/config/services/cinatra (or the Connect
+# handshake), so no default values are shipped here.
 #
-# Keeping this file empty ensures that `drush config:import` preserves the
-# operator's runtime values on re-import. Adding empty-string defaults here
-# would overwrite the configured values with empty strings on every import,
-# breaking the module.
+# This file is an explicit EMPTY MAPPING ("{}"), not a comments-only file. A
+# comments-only YAML document parses as NULL, which is not a valid
+# `cinatra.settings` config object (config/schema declares a config_object
+# mapping) and trips config validation / config-inspector tooling on install.
+# An empty mapping is a valid, schema-conformant empty config object: the keys
+# simply default to empty until the admin saves the form.
+{}

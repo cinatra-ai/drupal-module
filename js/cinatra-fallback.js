@@ -62,26 +62,47 @@
           return;
         }
         if (!cu) {
-          msg.textContent =
-            "Cinatra is not configured. Set the Cinatra URL + API key at " +
-            "/admin/config/services/cinatra.";
+          msg.textContent = Drupal.t(
+            "Cinatra is not configured. Set the Cinatra URL and API key at /admin/config/services/cinatra."
+          );
           box.style.display = "block";
           return;
         }
-        fetch(cu + "/api/drupal/bundle.js", {
-          method: "HEAD",
+        // The widget bundle now ships locally, so a missing widget means the
+        // instance itself is unreachable/misconfigured. Probe the auth-free
+        // capabilities endpoint (the new reachability signal) rather than the
+        // removed remote bundle.js path.
+        fetch(cu + "/api/agents/drupal-content-editor/capabilities", {
+          method: "GET",
           cache: "no-store",
           signal: AbortSignal.timeout(4000),
         })
           .then(function (r) {
-            msg.textContent = r.ok
-              ? "Cinatra is reachable but the widget has not loaded yet. Try refreshing the page."
-              : "Cinatra returned HTTP " + r.status + ". Check your instance at: " + cu;
+            if (r.ok) {
+              msg.textContent = Drupal.t(
+                "Cinatra is reachable but the assistant has not loaded yet. Try refreshing the page."
+              );
+            } else if (r.status === 404) {
+              // Assigned via textContent (no HTML sink), so use the raw "!"
+              // placeholder for the URL to avoid HTML-entity over-escaping
+              // (e.g. "&" rendering as "&amp;").
+              msg.textContent = Drupal.t(
+                "This Cinatra instance does not support the local assistant. Update Cinatra at: !url",
+                { "!url": cu }
+              );
+            } else {
+              msg.textContent = Drupal.t(
+                "Cinatra returned HTTP @status. Check your instance at: !url",
+                { "@status": r.status, "!url": cu }
+              );
+            }
             box.style.display = "block";
           })
           .catch(function () {
-            msg.textContent =
-              "Cannot reach " + cu + ". Check that your Cinatra instance is running.";
+            msg.textContent = Drupal.t(
+              "Cannot reach !url. Check that your Cinatra instance is running.",
+              { "!url": cu }
+            );
             box.style.display = "block";
           });
       });

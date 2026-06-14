@@ -1,0 +1,20 @@
+# PHPStan configuration for the Cinatra Drupal module.
+#
+# phpstan-drupal and the deprecation rules are wired automatically by
+# phpstan/extension-installer (required + allow-listed in composer.json), so
+# Drupal's magic (\Drupal::service(), hooks, render arrays) and deprecation
+# detection are loaded without an explicit includes: block. Level 1 is the
+# drupal.org GitLab-CI baseline for contrib; raise it as the module grows.
+parameters:
+  level: 1
+  paths:
+    - src
+    - cinatra.module
+    - cinatra.install
+  excludePaths:
+    # Marked optional with (?) so PHPStan does not error when the path is absent
+    # (e.g. a checkout with no node_modules, or vendor placed elsewhere).
+    - vendor (?)
+    - node_modules (?)
+  # The vendored widget bundle is JavaScript, not PHP — nothing to analyse.
+  ignoreErrors: []

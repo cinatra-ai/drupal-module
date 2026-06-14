@@ -1,0 +1,19 @@
+# Schema for the Cinatra module configuration.
+cinatra.settings:
+  type: config_object
+  label: 'Cinatra settings'
+  mapping:
+    cinatra_url:
+      type: uri
+      label: 'Cinatra URL'
+    instance_id:
+      type: string
+      label: 'Cinatra instance ID'
+    api_key:
+      # Long-lived integration key (credential). Drupal has no native "secret"
+      # scalar type, so this is documented as a credential here and rendered as
+      # a password-style field in SettingsForm. It is held server-side only and
+      # is never exposed to the browser — the browser receives only short-lived
+      # tokens minted by the cinatra.token broker route.
+      type: string
+      label: 'Cinatra API key (credential — held server-side, never sent to the browser)'
