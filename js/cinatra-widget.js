@@ -134,8 +134,27 @@
         if (caps.supportsTokenExchange !== true) { return false; }
         if (typeof caps.tokenPath !== 'string' || !caps.tokenPath) { return false; }
         if (typeof caps.streamPath !== 'string' || !caps.streamPath) { return false; }
+        // SAME-ORIGIN STREAM PATH (token-exfiltration guard). The stream fetch
+        // carries the short-lived Bearer token; it must hit the configured
+        // instance origin and nowhere else. A malicious/compromised
+        // /capabilities response could otherwise smuggle an authority via the
+        // streamPath ("@host", "//host", "https://host", backslash tricks),
+        // and STREAM_BASE + streamPath would ship the token off-origin.
+        // Require a plain root-absolute path, then resolve+assert same-origin
+        // and store only the validated pathname+search (never raw concat).
+        if (caps.streamPath.indexOf('\\') !== -1) { return false; }     // no backslash authority tricks
+        if (caps.streamPath.charAt(0) !== '/') { return false; }        // must be a root-absolute path
+        if (caps.streamPath.charAt(1) === '/') { return false; }        // protocol-relative => off-origin authority
+        var resolvedStreamPath;
+        try {
+          var base = new URL(config.cinatraUrl);
+          var u = new URL(caps.streamPath, base.origin + '/');
+          if (u.origin !== base.origin) { return false; }
+          if (u.pathname.charAt(0) !== '/' || u.pathname.charAt(1) === '/') { return false; }
+          resolvedStreamPath = u.pathname + u.search;
+        } catch (_) { return false; }
         negotiatedVersion = version;
-        streamPath = caps.streamPath;
+        streamPath = resolvedStreamPath;
         supportsChanges = caps.supportsChangesFrame === true;
         supportsMarkdown = caps.supportsMarkdown === true;
         return true;
@@ -928,6 +947,11 @@
         assistantEl.textContent = 'Could not authorize the assistant: ' + (tokErr && tokErr.message ? tokErr.message : 'token exchange failed');
         return;
       }
+      // streamPath was validated same-origin during negotiate() (root-absolute
+      // pathname+search on the configured origin), so STREAM_BASE + streamPath
+      // reconstructs the SAME instance origin. Never concatenate a raw,
+      // unvalidated capability path here — that would risk shipping the Bearer
+      // token off-origin.
       var response = await fetch(STREAM_BASE + streamPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + streamToken },

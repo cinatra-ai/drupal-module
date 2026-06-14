@@ -117,6 +117,11 @@ function makeEnv(fetchImpl, sharedRoot) {
     Date,
     Math,
     String,
+    // The widget resolves caps.streamPath against the configured origin with
+    // the WHATWG URL constructor (same-origin guard). Real browsers always
+    // expose URL; the vm sandbox must too, or the guard would throw and mask
+    // the behavior under test.
+    URL,
     TextDecoder: class { decode() { return ""; } },
   };
   sandbox.window.document = documentStub;
@@ -197,6 +202,42 @@ async function main() {
     body.capabilities.supportsTokenExchange = false;
     const r = await boot(() => jsonResponse(200, body));
     check("supportsTokenExchange:false -> INCOMPATIBLE (no mount)", !r.mounted && !r.attachShadow);
+  }
+
+  // REGRESSION (token-exfiltration guard): an otherwise-healthy /capabilities
+  // whose streamPath resolves OFF the configured cinatraUrl origin MUST NOT
+  // mount. Otherwise STREAM_BASE + streamPath would ship the short-lived Bearer
+  // stream token to a foreign origin. cinatraUrl is "https://instance.example".
+  // Each vector below either smuggles an authority (// , https:// , @host,
+  // backslash tricks) or is otherwise not a plain root-absolute same-origin
+  // path; all must => negotiate() false => NO mount => fallback chrome.
+  {
+    const OFF_ORIGIN_STREAM_PATHS = [
+      "@evil.example/stream",         // raw concat => https://instance.example@evil.example/... => evil origin
+      "//evil.example/stream",        // protocol-relative authority
+      "https://evil.example/stream",  // absolute foreign URL
+      "\\\\evil.example/stream",      // backslash authority (\\host) — resolves off-origin
+      "/\\evil.example/stream",       // /\host backslash-authority trick
+      "/\\/evil.example/stream",      // /\/host backslash-authority trick
+    ];
+    for (const sp of OFF_ORIGIN_STREAM_PATHS) {
+      const body = JSON.parse(JSON.stringify(HEALTHY));
+      body.capabilities.streamPath = sp;
+      const r = await boot(() => jsonResponse(200, body));
+      check(
+        `off-origin streamPath ${JSON.stringify(sp)} -> NO mount (no attachShadow)`,
+        !r.mounted && !r.attachShadow,
+      );
+    }
+  }
+
+  // Control for the same-origin guard: a healthy root-absolute same-origin
+  // streamPath (with a query) still mounts — the guard must not over-reject.
+  {
+    const body = JSON.parse(JSON.stringify(HEALTHY));
+    body.capabilities.streamPath = "/api/agents/drupal-content-editor/stream?v=2";
+    const r = await boot(() => jsonResponse(200, body));
+    check("same-origin streamPath with query -> MOUNTS (guard control)", r.mounted && r.attachShadow);
   }
 
   {
