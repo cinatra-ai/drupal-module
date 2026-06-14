@@ -62,9 +62,9 @@
           return;
         }
         if (!cu) {
-          msg.textContent =
-            "Cinatra is not configured. Set the Cinatra URL + API key at " +
-            "/admin/config/services/cinatra.";
+          msg.textContent = Drupal.t(
+            "Cinatra is not configured. Set the Cinatra URL and API key at /admin/config/services/cinatra."
+          );
           box.style.display = "block";
           return;
         }
@@ -79,20 +79,30 @@
         })
           .then(function (r) {
             if (r.ok) {
-              msg.textContent =
-                "Cinatra is reachable but the assistant has not loaded yet. Try refreshing the page.";
+              msg.textContent = Drupal.t(
+                "Cinatra is reachable but the assistant has not loaded yet. Try refreshing the page."
+              );
             } else if (r.status === 404) {
-              msg.textContent =
-                "This Cinatra instance does not support the local assistant. Update Cinatra at: " + cu;
+              // Assigned via textContent (no HTML sink), so use the raw "!"
+              // placeholder for the URL to avoid HTML-entity over-escaping
+              // (e.g. "&" rendering as "&amp;").
+              msg.textContent = Drupal.t(
+                "This Cinatra instance does not support the local assistant. Update Cinatra at: !url",
+                { "!url": cu }
+              );
             } else {
-              msg.textContent =
-                "Cinatra returned HTTP " + r.status + ". Check your instance at: " + cu;
+              msg.textContent = Drupal.t(
+                "Cinatra returned HTTP @status. Check your instance at: !url",
+                { "@status": r.status, "!url": cu }
+              );
             }
             box.style.display = "block";
           })
           .catch(function () {
-            msg.textContent =
-              "Cannot reach " + cu + ". Check that your Cinatra instance is running.";
+            msg.textContent = Drupal.t(
+              "Cannot reach !url. Check that your Cinatra instance is running.",
+              { "!url": cu }
+            );
             box.style.display = "block";
           });
       });
