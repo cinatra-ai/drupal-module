@@ -1,0 +1,4 @@
+use cinatra assistant:
+  title: 'Use the Cinatra AI assistant'
+  description: 'Load the Cinatra assistant widget on node pages and exchange short-lived streaming tokens. The widget can read the current page context and propose content edits, so grant this only to trusted content editors.'
+  restrict access: true
