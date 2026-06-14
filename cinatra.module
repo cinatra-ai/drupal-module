@@ -1,27 +1,18 @@
 <?php
 
-declare(strict_types=1);
-
 /**
  * @file
  * Cinatra — embeds the Cinatra AI editing widget on Drupal node pages.
  */
 
+declare(strict_types=1);
+
+use Drupal\cinatra\Cinatra;
 use Drupal\Component\Utility\Html;
 use Drupal\Core\Render\Markup;
 use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\Url;
 use Drupal\node\NodeInterface;
-
-/**
- * Plugin↔core wire-contract version. Cinatra rejects unknown versions with an
- * admin-visible error. See the cinatra repo: contracts/wp-drupal-assistant/.
- *
- * v2 drops the browser apiKey: the widget exchanges a short-lived token via the
- * same-origin cinatra.token broker route instead. The bundled widget JS also
- * negotiates capabilities at boot and falls back to v1 against older instances.
- */
-const CINATRA_CONTRACT_VERSION = 'v2';
 
 /**
  * Implements hook_help().
@@ -152,7 +143,7 @@ function cinatra_page_attachments(array &$attachments): void {
   // NOTE: no 'apiKey'. The browser receives only short-lived tokens minted by
   // the cinatra.token broker route from the server-side credential.
   $attachments['#attached']['drupalSettings']['cinatra'] = [
-    'contractVersion' => CINATRA_CONTRACT_VERSION,
+    'contractVersion' => Cinatra::CONTRACT_VERSION,
     'cinatraUrl'      => $cinatra_url,
     'tokenEndpoint'   => $token_endpoint,
     'csrfToken'       => $csrf_token,

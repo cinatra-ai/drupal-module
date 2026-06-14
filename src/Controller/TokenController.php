@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\cinatra\Controller;
 
+use Drupal\cinatra\Cinatra;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Controller\ControllerBase;
 use Drupal\Core\Session\AccountInterface;
@@ -34,14 +35,16 @@ final class TokenController extends ControllerBase {
   private const AGENT_SLUG = 'drupal-content-editor';
 
   /**
-   * Wire-contract version sent to the instance token endpoint.
+   * Constructs the token broker controller.
+   *
+   * Properties that exist on ControllerBase (config factory, current user) are
+   * given distinct names here so the promoted readonly constructor parameters
+   * do not collide with the parent's read-write protected properties.
    */
-  private const CONTRACT_VERSION = 'v2';
-
   public function __construct(
-    private readonly ConfigFactoryInterface $configFactory,
+    private readonly ConfigFactoryInterface $cinatraConfigFactory,
     private readonly ClientInterface $httpClient,
-    private readonly AccountInterface $currentUser,
+    private readonly AccountInterface $account,
     private readonly RequestStack $requestStack,
     private readonly LoggerInterface $logger,
   ) {}
@@ -63,7 +66,7 @@ final class TokenController extends ControllerBase {
    * Mints a short-lived stream token via the Cinatra token-exchange endpoint.
    */
   public function mint(): JsonResponse {
-    $config = $this->configFactory->get('cinatra.settings');
+    $config = $this->cinatraConfigFactory->get('cinatra.settings');
     $cinatraUrl = rtrim((string) $config->get('cinatra_url'), '/');
     $apiKey = (string) $config->get('api_key');
 
@@ -89,17 +92,17 @@ final class TokenController extends ControllerBase {
           'Content-Type' => 'application/json',
         ],
         'json' => [
-          'contractVersion' => self::CONTRACT_VERSION,
+          'contractVersion' => Cinatra::CONTRACT_VERSION,
           'origin' => $origin,
           // Opaque editor identity for audit. uid 0 cannot reach this route
           // (permission gate), so this is always an authenticated editor.
-          'sub' => 'drupal-uid-' . (string) $this->currentUser->id(),
+          'sub' => 'drupal-uid-' . (string) $this->account->id(),
         ],
       ]);
     }
     catch (GuzzleException $e) {
-      // Never reflect the raw exception (it can echo the request — including the
-      // Authorization header — depending on the Guzzle exception). Log the
+      // Never reflect the raw exception (it can echo the request, including
+      // the Authorization header, depending on the Guzzle exception). Log the
       // detail server-side, scrubbed of the key, and return a generic message.
       $this->logger->error('Cinatra token exchange failed (transport): @msg', [
         '@msg' => $this->scrub($e->getMessage(), $apiKey),
@@ -140,7 +143,7 @@ final class TokenController extends ControllerBase {
       'token' => $body['token'],
       'tokenType' => $body['tokenType'] ?? 'Bearer',
       'expiresIn' => $body['expiresIn'] ?? 300,
-      'contractVersion' => $body['contractVersion'] ?? self::CONTRACT_VERSION,
+      'contractVersion' => $body['contractVersion'] ?? Cinatra::CONTRACT_VERSION,
       'scope' => $body['scope'] ?? (self::AGENT_SLUG . '.stream'),
     ];
     if (isset($body['expiresAt'])) {
