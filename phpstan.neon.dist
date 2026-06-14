@@ -12,7 +12,9 @@ parameters:
     - cinatra.module
     - cinatra.install
   excludePaths:
-    - vendor
-    - node_modules
+    # Marked optional with (?) so PHPStan does not error when the path is absent
+    # (e.g. a checkout with no node_modules, or vendor placed elsewhere).
+    - vendor (?)
+    - node_modules (?)
   # The vendored widget bundle is JavaScript, not PHP — nothing to analyse.
   ignoreErrors: []

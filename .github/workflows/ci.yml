@@ -48,28 +48,37 @@ jobs:
 
   phpcs:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # Informational until initial findings are triaged (WPD-EXTRACT-03:
-    # "Optional phpstan added once the module grows"). The gating jobs are
-    # php-lint + yaml-lint.
-    continue-on-error: true
+    timeout-minutes: 15
+    # Gating. The dev tooling (composer.json + phpcs.xml.dist) is in place and
+    # the tree is phpcs-clean, so a regression must fail the build.
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          path: cinatra
       - name: Set up PHP
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: "8.3"
           tools: composer
-      - name: Install Drupal coder (Drupal + DrupalPractice standards)
-        run: |
-          set -e
-          composer global require drupal/coder dealerdirect/phpcodesniffer-composer-installer --no-interaction
-          echo "$(composer global config bin-dir --absolute -q)" >> "$GITHUB_PATH"
+      - name: Install dev dependencies
+        # Install from the project composer.json, whose config.allow-plugins
+        # authorizes dealerdirect/phpcodesniffer-composer-installer (the missing
+        # allow-plugins entry is what broke the previous global-require install).
+        run: composer install --no-interaction --no-progress --prefer-dist
       - name: PHPCS (Drupal, DrupalPractice)
-        run: |
-          set -e
-          phpcs --standard=Drupal,DrupalPractice \
-            --extensions=php,module,install,inc,yml \
-            cinatra
+        run: vendor/bin/phpcs -q
+
+  phpstan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Gating. phpstan-drupal at the level pinned in phpstan.neon.dist; the tree
+    # currently passes, so a regression must fail the build.
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: "8.3"
+          tools: composer
+      - name: Install dev dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+      - name: PHPStan
+        run: vendor/bin/phpstan analyse --no-progress

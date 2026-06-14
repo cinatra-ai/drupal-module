@@ -23,7 +23,8 @@
     "config": {
         "allow-plugins": {
             "dealerdirect/phpcodesniffer-composer-installer": true,
-            "phpstan/extension-installer": true
+            "phpstan/extension-installer": true,
+            "drupal/core-composer-scaffold": false
         }
     },
     "scripts": {
