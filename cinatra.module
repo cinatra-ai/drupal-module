@@ -44,7 +44,7 @@ function cinatra_help(string $route_name, RouteMatchInterface $route_match): arr
         'configure' => [
           '#type' => 'html_tag',
           '#tag' => 'p',
-          '#value' => t('Configure the Cinatra instance URL, credential, and connection at <a href=":url">Configuration → Web services → Cinatra</a>.', [':url' => $settings_url]),
+          '#value' => t('Connect to your Cinatra instance at <a href=":url">Configuration → Web services → Cinatra</a>: enter the instance URL and click "Connect with Cinatra" to provision the integration credential automatically (no key to copy). A connection-string fallback and manual fields are also available there.', [':url' => $settings_url]),
         ],
         'permission' => [
           '#type' => 'html_tag',

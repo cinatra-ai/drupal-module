@@ -6,6 +6,26 @@ cinatra.settings_form:
   requirements:
     _permission: 'administer site configuration'
 
+# "Connect with Cinatra" OAuth-style callback (cinatra#221). cinatra-core 302s
+# the admin's browser back here with ?code&state (or ?error). The path is PINNED
+# by the cinatra-core redirect_uri contract (validateRedirectUri) and MUST match
+# exactly — do not add a slug/param. CSRF for this off-site round-trip is the
+# single-use, uid-bound, server-stored `state` (a Drupal form/route token cannot
+# survive the external redirect), so no _csrf_token here; the handshake is still
+# gated on 'administer site configuration'. The handshake is STARTED from the
+# settings form's Connect button (a Form API submit that carries the form CSRF
+# token); only this return leg is a standalone route.
+cinatra.connect_callback:
+  path: '/admin/config/services/cinatra/connect/callback'
+  defaults:
+    _controller: '\Drupal\cinatra\Controller\ConnectController::callback'
+    _title: 'Connecting to Cinatra'
+  methods: [GET]
+  requirements:
+    _permission: 'administer site configuration'
+  options:
+    no_cache: 'TRUE'
+
 # Server-to-server token broker. The browser POSTs here (same-origin, CSRF
 # protected); the controller holds the long-lived integration key from config,
 # calls the Cinatra instance token-exchange endpoint, and returns ONLY the
