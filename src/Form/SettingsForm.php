@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\cinatra\Form;
 
+use Drupal\cinatra\CinatraUrl;
 use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
 
@@ -69,10 +70,30 @@ class SettingsForm extends ConfigFormBase {
   /**
    * {@inheritdoc}
    */
+  public function validateForm(array &$form, FormStateInterface $form_state): void {
+    parent::validateForm($form, $form_state);
+    // The Cinatra URL is the origin this module talks to server-to-server (the
+    // long-lived API key is sent there as a Bearer header) and that the browser
+    // loads the widget runtime from. Constrain it to a safe HTTPS origin (HTTP
+    // only for loopback hosts in local dev) so it cannot be pointed at an
+    // arbitrary scheme/host — an SSRF / credential-exfiltration control, not
+    // mere cleanup. The '#type' => 'url' element only checks general URL syntax.
+    $url = (string) $form_state->getValue('cinatra_url');
+    if ($url !== '' && !CinatraUrl::isValid($url)) {
+      $form_state->setErrorByName('cinatra_url', $this->t('The Cinatra URL must be an HTTPS origin (for example https://app.example.com). Plain HTTP is accepted only for local hosts such as http://localhost:3000. Remove any path, query, credentials, or fragment.'));
+    }
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   public function submitForm(array &$form, FormStateInterface $form_state): void {
     $config = $this->config('cinatra.settings');
+    // Persist the normalized origin (scheme://host[:port], no trailing slash)
+    // so downstream callers do not each have to re-normalize.
+    $normalized_url = CinatraUrl::normalize((string) $form_state->getValue('cinatra_url'));
     $config
-      ->set('cinatra_url', $form_state->getValue('cinatra_url'))
+      ->set('cinatra_url', $normalized_url ?? '')
       ->set('instance_id', $form_state->getValue('instance_id'));
     // The API key is a password field that is never pre-filled with the stored
     // secret; an empty submission means "keep the current key" rather than
