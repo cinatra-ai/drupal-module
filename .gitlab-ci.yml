@@ -1,0 +1,31 @@
+# GitLab CI for the Cinatra module on drupal.org.
+#
+# Includes the Drupal Association's canonical contrib GitLab-CI template, which
+# provides the composer / phpcs / phpstan / phpunit / eslint / stylelint jobs
+# that drupal.org runs for contributed projects. See:
+# https://project.pages.drupalcode.org/gitlab_templates/
+#
+# Project-specific overrides live in the `variables` block and the per-job
+# overrides below; everything else is inherited from the template.
+include:
+  - project: $_GITLAB_TEMPLATES_REPO
+    ref: $_GITLAB_TEMPLATES_REF
+    file: '/includes/include.drupalci.main.yml'
+
+variables:
+  # Run the static-analysis and lint jobs that drupal.org expects for a
+  # submission. Treat phpcs (Drupal + DrupalPractice) and phpstan failures as
+  # errors — the GitHub mirror gates on the same tools, so the two CIs agree.
+  _PHPUNIT_CONCURRENT: '1'
+  SKIP_ESLINT: '0'
+  SKIP_STYLELINT: '0'
+
+# phpcs uses the project's phpcs.xml.dist (Drupal + DrupalPractice), matching the
+# GitHub Actions gate.
+phpcs:
+  allow_failure: false
+
+# phpstan uses the project's phpstan.neon.dist (phpstan-drupal), matching the
+# GitHub Actions gate.
+phpstan:
+  allow_failure: false
