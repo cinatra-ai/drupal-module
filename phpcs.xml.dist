@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ruleset name="cinatra">
+  <description>PHPCS configuration for the Cinatra Drupal module.</description>
+
+  <!-- Scan the module's own files. -->
+  <file>.</file>
+
+  <!-- Drupal coding standards (Drupal + DrupalPractice). -->
+  <rule ref="Drupal"/>
+  <rule ref="DrupalPractice"/>
+
+  <!-- File types coder checks. -->
+  <arg name="extensions" value="php,module,install,inc,profile,theme,yml"/>
+
+  <!-- Show sniff codes and progress; colored output. -->
+  <arg name="colors"/>
+  <arg value="sp"/>
+
+  <!-- Do not scan dependencies or build artifacts. -->
+  <exclude-pattern>*/vendor/*</exclude-pattern>
+  <exclude-pattern>*/node_modules/*</exclude-pattern>
+  <!-- The widget bundle is vendored Apache-2.0 frontend code, not authored
+       against the Drupal JS standard; exclude it from sniffing. -->
+  <exclude-pattern>js/cinatra-widget.js</exclude-pattern>
+</ruleset>

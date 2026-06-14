@@ -77,7 +77,7 @@ class SettingsForm extends ConfigFormBase {
     // loads the widget runtime from. Constrain it to a safe HTTPS origin (HTTP
     // only for loopback hosts in local dev) so it cannot be pointed at an
     // arbitrary scheme/host — an SSRF / credential-exfiltration control, not
-    // mere cleanup. The '#type' => 'url' element only checks general URL syntax.
+    // mere cleanup. The '#type' => 'url' element only checks URL syntax.
     $url = (string) $form_state->getValue('cinatra_url');
     if ($url !== '' && !CinatraUrl::isValid($url)) {
       $form_state->setErrorByName('cinatra_url', $this->t('The Cinatra URL must be an HTTPS origin (for example https://app.example.com). Plain HTTP is accepted only for local hosts such as http://localhost:3000. Remove any path, query, credentials, or fragment.'));
