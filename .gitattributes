@@ -21,5 +21,11 @@
 # Automated tests are not shipped in the release tarball.
 /tests               export-ignore
 
+# Drupal.org project-page source material (logo, screenshots plan, page copy,
+# generation script). Staged here while the drupal.org project is parked; the
+# logo is promoted to the repo root at project-creation time. None of it ships
+# in the release tarball.
+/.drupalorg          export-ignore
+
 # Normalize line endings for text files.
 * text=auto eol=lf
