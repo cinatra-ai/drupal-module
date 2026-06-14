@@ -18,6 +18,9 @@
 /phpstan.neon.dist   export-ignore
 /renovate.json       export-ignore
 
+# Dev-only publication-readiness record (not a user-facing doc).
+/PAREVIEW.md         export-ignore
+
 # Automated tests are not shipped in the release tarball.
 /tests               export-ignore
 
