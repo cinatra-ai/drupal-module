@@ -81,7 +81,18 @@ final class TokenController extends ControllerBase {
       return $this->jsonError('Could not determine the site origin for token binding.', 500);
     }
 
-    $endpoint = $cinatraUrl . '/api/agents/' . self::AGENT_SLUG . '/token';
+    // Resolve the base the BROKER reaches the instance at server-to-server.
+    // This is NOT necessarily the same origin the browser uses: in a
+    // containerized topology (e.g. the dev docker stack) the Drupal container
+    // cannot reach the host's cinatra via the browser-facing `cinatra_url`
+    // (that host is the container's own loopback), so the container-reachable
+    // base is provided out-of-band as the CINATRA_BASE_URL environment
+    // variable. When that env is set we use it for this PHP->cinatra call ONLY;
+    // the browser-facing `cinatra_url` (in cinatra.module's drupalSettings) is
+    // left untouched. In production the env is unset, so this is exactly the
+    // configured `cinatra_url` and behavior is unchanged.
+    $serverBase = $this->serverBaseUrl($cinatraUrl);
+    $endpoint = $serverBase . '/api/agents/' . self::AGENT_SLUG . '/token';
 
     try {
       $response = $this->httpClient->post($endpoint, [
@@ -151,6 +162,31 @@ final class TokenController extends ControllerBase {
     }
 
     return $this->noStore(new JsonResponse($payload));
+  }
+
+  /**
+   * Resolves the base URL this broker reaches the instance at (server-side).
+   *
+   * Precedence: the CINATRA_BASE_URL environment variable when it is set to a
+   * non-empty value, otherwise the configured (browser-facing) Cinatra URL.
+   * The env override exists so a containerized Drupal (which cannot reach the
+   * host's Cinatra via the browser-facing origin) can be pointed at the
+   * container-reachable base WITHOUT changing what the browser is told. It is
+   * applied ONLY to this server-to-server token-exchange call; never to the
+   * site-origin binding nor to any URL handed to client JavaScript.
+   *
+   * @param string $configUrl
+   *   The configured Cinatra URL (already trailing-slash-trimmed).
+   *
+   * @return string
+   *   The server-to-server base origin, trailing slash trimmed.
+   */
+  private function serverBaseUrl(string $configUrl): string {
+    $env = getenv('CINATRA_BASE_URL');
+    if (is_string($env) && trim($env) !== '') {
+      return rtrim(trim($env), '/');
+    }
+    return rtrim($configUrl, '/');
   }
 
   /**

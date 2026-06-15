@@ -133,6 +133,87 @@ final class TokenControllerTest extends KernelTestBase {
   }
 
   /**
+   * The CINATRA_BASE_URL env, when set, overrides the server-to-server base.
+   *
+   * In a containerized topology the configured (browser-facing) `cinatra_url`
+   * is not reachable from the Drupal container; the env carries the
+   * container-reachable base for THIS PHP->instance call only. The bound site
+   * `origin` and the returned token envelope are unaffected.
+   *
+   * @covers ::mint
+   */
+  public function testServerBaseUrlEnvOverridesTokenEndpoint(): void {
+    putenv('CINATRA_BASE_URL=http://host.docker.internal:3000');
+    try {
+      $controller = $this->buildController([
+        new GuzzleResponse(200, [], json_encode(['token' => 'cit_env', 'expiresIn' => 300])),
+      ], host: 'editor.example', scheme: 'https');
+
+      $response = $controller->mint();
+      $this->assertSame(200, $response->getStatusCode());
+
+      // The outbound call went to the env base, NOT the configured cinatra_url.
+      $this->assertCount(1, $this->captured);
+      $out = $this->captured[0];
+      $this->assertSame('http://host.docker.internal:3000/api/agents/drupal-content-editor/token', (string) $out->getUri());
+      // Still authorized with the long-lived key and bound to the site origin.
+      $this->assertSame('Bearer long-lived-secret-key', $out->getHeaderLine('Authorization'));
+      $sent = json_decode((string) $out->getBody(), TRUE);
+      $this->assertSame('https://editor.example', $sent['origin']);
+    }
+    finally {
+      putenv('CINATRA_BASE_URL');
+    }
+  }
+
+  /**
+   * An empty or whitespace-only env falls back to the configured cinatra_url.
+   *
+   * @covers ::mint
+   */
+  public function testServerBaseUrlEnvBlankFallsBackToConfig(): void {
+    foreach (['', '   '] as $blank) {
+      putenv('CINATRA_BASE_URL=' . $blank);
+      try {
+        $controller = $this->buildController([
+          new GuzzleResponse(200, [], json_encode(['token' => 'cit_blank', 'expiresIn' => 300])),
+        ]);
+        $controller->mint();
+        $this->assertCount(1, $this->captured);
+        $this->assertSame(
+          'https://cinatra.example/api/agents/drupal-content-editor/token',
+          (string) $this->captured[0]->getUri(),
+          'A blank CINATRA_BASE_URL must fall back to the configured cinatra_url.',
+        );
+      }
+      finally {
+        putenv('CINATRA_BASE_URL');
+      }
+    }
+  }
+
+  /**
+   * With the env unset the endpoint is exactly the configured cinatra_url.
+   *
+   * Production parity: nothing changes when CINATRA_BASE_URL is not present.
+   *
+   * @covers ::mint
+   */
+  public function testServerBaseUrlUnsetUsesConfig(): void {
+    // Ensure the env is not present (no leakage from another test).
+    putenv('CINATRA_BASE_URL');
+    $controller = $this->buildController([
+      new GuzzleResponse(200, [], json_encode(['token' => 'cit_cfg', 'expiresIn' => 300])),
+    ]);
+    $controller->mint();
+    $this->assertCount(1, $this->captured);
+    $this->assertSame(
+      'https://cinatra.example/api/agents/drupal-content-editor/token',
+      (string) $this->captured[0]->getUri(),
+    );
+  }
+
+  /**
    * Tests that an unconfigured key short-circuits with no outbound call.
    *
    * It must not echo a credential.
