@@ -323,6 +323,32 @@ final class TokenControllerTest extends KernelTestBase {
   }
 
   /**
+   * A dotted-IPv4 override (every octet 0–255) is accepted and canonicalized.
+   *
+   * Locks the IPv4 host form in the anchored grammar: a valid dotted quad with
+   * a port survives as a bare origin, and no rejection is logged.
+   *
+   * @covers ::mint
+   */
+  public function testServerBaseUrlAcceptsIpv4Host(): void {
+    putenv('CINATRA_BASE_URL=http://127.0.0.1:3000/');
+    try {
+      $controller = $this->buildController([
+        new GuzzleResponse(200, [], json_encode(['token' => 'cit_ok', 'expiresIn' => 300])),
+      ]);
+      $controller->mint();
+      $this->assertSame(
+        'http://127.0.0.1:3000/api/agents/drupal-content-editor/token',
+        (string) $this->captured[0]->getUri(),
+      );
+      $this->assertSame([], $this->spyLogger->records);
+    }
+    finally {
+      putenv('CINATRA_BASE_URL');
+    }
+  }
+
+  /**
    * A hostile/malformed override is REJECTED and falls back to the config URL.
    *
    * This is the credential-exfiltration guard: the key-bearing POST must never
@@ -390,7 +416,22 @@ final class TokenControllerTest extends KernelTestBase {
       'embedded space' => ['http://evil .example'],
       'no host' => ['https://'],
       'port zero (out of range)' => ['http://evil.example:0'],
-      'port too high (parse_url rejects)' => ['http://evil.example:65536'],
+      'port too high (65536, out of range)' => ['http://evil.example:65536'],
+      // parse_url is too permissive on these: it accepts/partially
+      // canonicalizes malformed ports to a real port instead of rejecting.
+      // The anchored grammar must reject each so no malformed port reaches
+      // the key-bearing request.
+      'port with trailing letters (80x)' => ['http://safe.example:80x/'],
+      'port with leading plus (+80)' => ['http://safe.example:+80/'],
+      'port with decimal (1.2)' => ['http://safe.example:1.2/'],
+      // Host grammar parse_url does not validate: backslash hosts, an
+      // unbracketed IPv6 literal, and extra-colon forms must all be rejected
+      // by the anchored host grammar rather than slipping to a downstream
+      // parser/error path.
+      'backslash host with userinfo' => ['http://safe.example\\@evil/'],
+      'backslash authority (http:\\\\)' => ['http:\\\\safe.example/'],
+      'unbracketed IPv6 literal' => ['http://::1:3000/'],
+      'extra-colon authority (host::3000)' => ['http://host::3000/'],
     ];
   }
 
