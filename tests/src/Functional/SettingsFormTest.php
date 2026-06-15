@@ -96,6 +96,34 @@ final class SettingsFormTest extends BrowserTestBase {
   }
 
   /**
+   * The manual config fields render inside an OPEN details group.
+   *
+   * The Cinatra URL + API key fields are the canonical configuration surface;
+   * a collapsed <details> hides them from a real browser (even when the site
+   * is already connected), so the group must render with the `open` attribute
+   * and expose the `edit-cinatra-url` / `edit-api-key` elements. Guards the
+   * regression where the connected state collapsed the group.
+   */
+  public function testManualConfigFieldsRenderOpen(): void {
+    // Put the site into the "connected" state — the case that previously
+    // collapsed the manual group.
+    $this->config('cinatra.settings')
+      ->set('cinatra_url', 'https://app.example.com')
+      ->set('api_key', 'long-lived-secret')
+      ->save();
+
+    $this->drupalGet(self::SETTINGS_PATH);
+    $assert = $this->assertSession();
+    // The fields exist and carry the documented ids the UAT asserts against.
+    $assert->fieldExists('cinatra_url');
+    $assert->fieldExists('api_key');
+    // The wrapping <details> is open (not collapsed) so the fields are visible.
+    $details = $this->getSession()->getPage()->find('css', 'details#edit-manual');
+    $this->assertNotNull($details, 'The manual configuration details element is present.');
+    $this->assertTrue($details->hasAttribute('open'), 'The manual configuration details element renders open.');
+  }
+
+  /**
    * A loopback HTTP URL is accepted for local development.
    */
   public function testLoopbackHttpAccepted(): void {

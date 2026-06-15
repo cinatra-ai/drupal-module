@@ -120,10 +120,17 @@ final class SettingsForm extends ConfigFormBase {
     ];
 
     // --- Manual configuration (advanced) ----------------------------------
+    // Open by default so the canonical connection fields (Cinatra URL + API
+    // key) are always rendered and visible — they are the documented, stable
+    // configuration surface (and what automated config UATs assert against). A
+    // collapsed <details> hides its children from a real browser even when the
+    // site is already connected, which would make the URL/key fields appear
+    // "missing"; keeping it open avoids that while the primary one-click
+    // Connect path remains the first, prominent section above.
     $form['manual'] = [
       '#type' => 'details',
       '#title' => $this->t('Manual configuration (advanced)'),
-      '#open' => !$is_connected,
+      '#open' => TRUE,
       '#description' => $this->t('Most sites should use Connect above. These fields let you set or override the connection manually.'),
     ];
     $form['manual']['cinatra_url'] = [
