@@ -168,12 +168,27 @@ final class TokenController extends ControllerBase {
    * Resolves the base URL this broker reaches the instance at (server-side).
    *
    * Precedence: the CINATRA_BASE_URL environment variable when it is set to a
-   * non-empty value, otherwise the configured (browser-facing) Cinatra URL.
-   * The env override exists so a containerized Drupal (which cannot reach the
-   * host's Cinatra via the browser-facing origin) can be pointed at the
-   * container-reachable base WITHOUT changing what the browser is told. It is
-   * applied ONLY to this server-to-server token-exchange call; never to the
-   * site-origin binding nor to any URL handed to client JavaScript.
+   * non-empty value AND passes validation, otherwise the configured
+   * (browser-facing) Cinatra URL. The env override exists so a containerized
+   * Drupal (which cannot reach the host's Cinatra via the browser-facing
+   * origin) can be pointed at the container-reachable base WITHOUT changing
+   * what the browser is told. It is applied ONLY to this server-to-server
+   * token-exchange call; never to the site-origin binding nor to any URL
+   * handed to client JavaScript.
+   *
+   * SECURITY: this base is concatenated with the token-exchange path and used
+   * as the destination of the POST that carries the long-lived API key in its
+   * Authorization header. An unvalidated env value would let an operator-set
+   * or environment-injected CINATRA_BASE_URL redirect that key-bearing request
+   * to an arbitrary host/scheme/path (credential exfiltration). So the env
+   * value is validated and canonicalized to a bare scheme://host[:port] origin
+   * before it is trusted; anything that fails validation is rejected (no use,
+   * no leak of its value) and the configured `cinatra_url` is used instead.
+   *
+   * Production parity: when the env is unset/blank the configured URL is
+   * returned exactly as the caller passed it (already trailing-slash-trimmed),
+   * with no additional normalization — so a configured trailing-slash URL
+   * yields the identical pre-existing endpoint.
    *
    * @param string $configUrl
    *   The configured Cinatra URL (already trailing-slash-trimmed).
@@ -183,10 +198,94 @@ final class TokenController extends ControllerBase {
    */
   private function serverBaseUrl(string $configUrl): string {
     $env = getenv('CINATRA_BASE_URL');
-    if (is_string($env) && trim($env) !== '') {
-      return rtrim(trim($env), '/');
+    if (!is_string($env) || trim($env) === '') {
+      // Unset or blank: production path — use the configured URL verbatim.
+      return $configUrl;
     }
-    return rtrim($configUrl, '/');
+
+    $canonical = $this->canonicalizeServerBase($env);
+    if ($canonical === NULL) {
+      // The override failed validation. Never use it and never echo its value
+      // (it may be hostile and is adjacent to a key-bearing request); log only
+      // that the override was rejected, then fall back to the configured URL.
+      $this->logger->warning('Ignoring invalid CINATRA_BASE_URL override; using the configured Cinatra URL for the server-to-server token call.');
+      return $configUrl;
+    }
+
+    return $canonical;
+  }
+
+  /**
+   * Validates and canonicalizes a CINATRA_BASE_URL override to a base origin.
+   *
+   * A valid override is a bare base URL: scheme is http or https, a non-empty
+   * host, and NO userinfo (user:pass@), NO query string, NO fragment, NO
+   * control characters or whitespace, and no meaningful path. The result is
+   * canonicalized to scheme://host[:port] (any "/" path is dropped, since a
+   * base URL has no path and the token path is appended by the caller). Returns
+   * NULL when the value is not a safe base origin so the caller can reject it.
+   *
+   * @param string $value
+   *   The raw environment value.
+   *
+   * @return string|null
+   *   The canonical scheme://host[:port] origin, or NULL when invalid.
+   */
+  private function canonicalizeServerBase(string $value): ?string {
+    // Reject any control characters or whitespace anywhere in the value (a URL
+    // must not contain them; their presence signals injection/corruption).
+    if (preg_match('/[\x00-\x20\x7F]/', $value) === 1) {
+      return NULL;
+    }
+
+    $parts = parse_url($value);
+    if ($parts === FALSE) {
+      return NULL;
+    }
+
+    // Scheme must be explicitly http or https.
+    $scheme = isset($parts['scheme']) ? strtolower($parts['scheme']) : '';
+    if ($scheme !== 'http' && $scheme !== 'https') {
+      return NULL;
+    }
+
+    // A non-empty host is required.
+    $host = $parts['host'] ?? '';
+    if ($host === '') {
+      return NULL;
+    }
+
+    // Reject userinfo (user[:pass]@host) — a key-bearing request must not be
+    // sent to a URL that smuggles credentials or obscures the real host.
+    if (isset($parts['user']) || isset($parts['pass'])) {
+      return NULL;
+    }
+
+    // Reject a query string or fragment: a base URL carries neither.
+    if (isset($parts['query']) || isset($parts['fragment'])) {
+      return NULL;
+    }
+
+    // Path policy: a base URL has no meaningful path. Allow only an absent path
+    // or a bare "/"; anything else (e.g. "/evil") is rejected rather than
+    // silently stripped, so a misconfigured path can never be ignored quietly.
+    $path = $parts['path'] ?? '';
+    if ($path !== '' && $path !== '/') {
+      return NULL;
+    }
+
+    // Validate the port when present (parse_url already rejects most garbage,
+    // but guard the documented range explicitly).
+    $origin = $scheme . '://' . $host;
+    if (isset($parts['port'])) {
+      $port = $parts['port'];
+      if ($port < 1 || $port > 65535) {
+        return NULL;
+      }
+      $origin .= ':' . $port;
+    }
+
+    return $origin;
   }
 
   /**

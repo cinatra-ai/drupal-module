@@ -105,7 +105,11 @@ configured Cinatra instance:
   short-lived token. (When the optional `CINATRA_BASE_URL` environment variable
   is set — used for containerized topologies where the configured browser-facing
   URL is not reachable from the server — this one server-side token call uses
-  that base instead; nothing the browser receives changes.)
+  that base instead; nothing the browser receives changes. The value is
+  validated as a bare `http(s)://host[:port]` origin: a malformed override —
+  wrong scheme, embedded credentials, or a path/query/fragment — is rejected and
+  the configured URL is used, so a key-bearing request can never be redirected
+  to an unvalidated host.)
 - **At boot (no auth):** the widget reads static capability metadata from
   `{cinatra-url}/api/agents/drupal-content-editor/capabilities`.
 
