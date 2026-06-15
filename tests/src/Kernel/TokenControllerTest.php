@@ -280,16 +280,59 @@ final class TokenControllerTest extends KernelTestBase {
    * @covers ::mint
    */
   public function testServerBaseUrlAcceptsTrailingSlashOverride(): void {
-    putenv('CINATRA_BASE_URL=https://cinatra.internal:8443/');
+    // The host "localhost" is an allowlisted container host; the trailing
+    // slash must be canonicalized away so one "/" precedes the token path.
+    putenv('CINATRA_BASE_URL=https://localhost:8443/');
     try {
       $controller = $this->buildController([
         new GuzzleResponse(200, [], json_encode(['token' => 'cit_ok', 'expiresIn' => 300])),
       ]);
       $controller->mint();
       $this->assertSame(
-        'https://cinatra.internal:8443/api/agents/drupal-content-editor/token',
+        'https://localhost:8443/api/agents/drupal-content-editor/token',
         (string) $this->captured[0]->getUri(),
       );
+    }
+    finally {
+      putenv('CINATRA_BASE_URL');
+    }
+  }
+
+  /**
+   * A CLEAN but non-allowlisted host is rejected and falls back to the config.
+   *
+   * The anchored grammar accepts "http://evil.example:3000/" as a well-formed
+   * bare origin, but it is NOT a container host, so the container-host
+   * allowlist must still discard the override: the key-bearing POST may only
+   * ever reach a container host, never an arbitrary clean host. This is the
+   * must-fix that distinguishes "well-formed" from "permitted destination".
+   *
+   * @covers ::mint
+   */
+  public function testServerBaseUrlRejectsCleanNonAllowlistedHost(): void {
+    putenv('CINATRA_BASE_URL=http://evil.example:3000/');
+    try {
+      $controller = $this->buildController([
+        new GuzzleResponse(200, [], json_encode(['token' => 'cit_cfg', 'expiresIn' => 300])),
+      ]);
+      $response = $controller->mint();
+
+      // The exchange happened, but ONLY against the configured cinatra_url —
+      // never the clean-but-arbitrary env host that carries the API key.
+      $this->assertSame(200, $response->getStatusCode());
+      $this->assertCount(1, $this->captured);
+      $this->assertSame(
+        'https://cinatra.example/api/agents/drupal-content-editor/token',
+        (string) $this->captured[0]->getUri(),
+        'A clean but non-allowlisted CINATRA_BASE_URL host must not become the API-key destination.',
+      );
+      $this->assertSame('Bearer long-lived-secret-key', $this->captured[0]->getHeaderLine('Authorization'));
+
+      // Exactly one rejection warning, with no secret and no raw env value.
+      $this->assertCount(1, $this->spyLogger->records);
+      $logged = $this->spyLogger->renderedLine(0);
+      $this->assertStringNotContainsString('long-lived-secret-key', $logged);
+      $this->assertStringNotContainsString('evil.example', $logged);
     }
     finally {
       putenv('CINATRA_BASE_URL');
@@ -432,6 +475,16 @@ final class TokenControllerTest extends KernelTestBase {
       'backslash authority (http:\\\\)' => ['http:\\\\safe.example/'],
       'unbracketed IPv6 literal' => ['http://::1:3000/'],
       'extra-colon authority (host::3000)' => ['http://host::3000/'],
+      // Clean, grammar-passing origins whose HOST is not a container host: the
+      // override is only ever a container-topology pointer, so the host
+      // allowlist must reject these even though they are well-formed. A clean
+      // arbitrary host that slipped past would become the API-key destination.
+      'clean public host (not allowlisted)' => ['http://evil.example:3000'],
+      'clean https public host (not allowlisted)' => ['https://attacker.example'],
+      'clean private IPv4 (not allowlisted)' => ['http://10.0.0.5:3000'],
+      'clean public IPv4 (not allowlisted)' => ['http://203.0.113.7'],
+      'allowlist-adjacent typo host' => ['http://host.docker.internal.evil.example:3000'],
+      'non-loopback bracketed IPv6 (not allowlisted)' => ['http://[2001:db8::1]:3000'],
     ];
   }
 

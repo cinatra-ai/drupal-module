@@ -35,6 +35,30 @@ final class TokenController extends ControllerBase {
   private const AGENT_SLUG = 'drupal-content-editor';
 
   /**
+   * Host allowlist for the OPTIONAL CINATRA_BASE_URL server-to-server override.
+   *
+   * CINATRA_BASE_URL is a dev/container-topology override: it exists ONLY so a
+   * containerized Drupal can reach the host's Cinatra via the container-only
+   * loopback or the Docker host-gateway alias. It must therefore never be able
+   * to redirect the API-key-bearing POST to an arbitrary host. After the
+   * anchored grammar validates + canonicalizes the origin, the host is required
+   * to be EXACTLY one of these (compared case-insensitively; for a bracketed
+   * IPv6 host the unbracketed address is compared). Anything else is discarded
+   * and the configured `cinatra_url` is used instead.
+   *
+   * This matches the companion WordPress plugin's container-host restriction
+   * (localhost / 127.0.0.1 / host.docker.internal); the IPv6 loopback "::1" is
+   * additionally accepted here because this module's grammar fully handles the
+   * bracketed-host form (http://[::1]:port) and the kernel accept-tests pin it.
+   */
+  private const SERVER_BASE_ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    'host.docker.internal',
+    '::1',
+  ];
+
+  /**
    * Constructs the token broker controller.
    *
    * Properties that exist on ControllerBase (config factory, current user) are
@@ -227,7 +251,14 @@ final class TokenController extends ControllerBase {
    * the destination of the POST that carries the long-lived API key, the value
    * must be proven safe by construction before it is trusted.
    *
-   * Accepted grammar (anchored ^...$, scheme case-insensitive; no whitespace,
+   * After the grammar validates + canonicalizes the origin, the host is ALSO
+   * required to be one of self::SERVER_BASE_ALLOWED_HOSTS (the container-host
+   * allowlist). A clean but non-allowlisted host (e.g. "http://evil.example")
+   * is therefore rejected here too, so the override can never redirect the
+   * key-bearing POST to an arbitrary host. For a bracketed IPv6 literal the
+   * unbracketed address is compared against the allowlist.
+   *
+   * Accepted grammar (anchored ^...\z, scheme case-insensitive; no whitespace,
    * control chars, userinfo, query, or fragment anywhere):
    * - scheme: exactly "http://" or "https://";
    * - host: ONE of —
@@ -294,8 +325,12 @@ final class TokenController extends ControllerBase {
       . ')'
       // Optional port: a single colon then 1–5 digits (range checked below).
       . '(?::([0-9]{1,5}))?'
-      // Optional path: nothing or exactly one slash.
-      . '/?$#i';
+      // Optional path: nothing or exactly one slash. End anchored with \z
+      // (not $): \z matches ONLY the absolute end of the string, so a trailing
+      // newline cannot be tolerated the way "$" can (which matches before a
+      // final \n). The control/whitespace pre-gate above already blocks \n;
+      // \z makes the anchoring self-contained as defense-in-depth.
+      . '/?\z#i';
 
     if (preg_match($pattern, $value, $m) !== 1) {
       return NULL;
@@ -303,6 +338,22 @@ final class TokenController extends ControllerBase {
 
     $scheme = strtolower($m[1]);
     $host = $m[2];
+
+    // Container-host allowlist. The grammar above proves the value is a clean
+    // bare origin, but a clean origin can still name an ARBITRARY host (e.g.
+    // "http://evil.example:3000"). CINATRA_BASE_URL is only ever a container
+    // override, so the host must be one of the fixed container hosts; anything
+    // else is discarded (NULL) and the caller falls back to the configured
+    // cinatra_url — the key-bearing POST can never reach an off-allowlist host.
+    // Compare case-insensitively; for a bracketed IPv6 literal compare the
+    // unbracketed address (so "[::1]" is matched against "::1").
+    $hostForAllowlist = strtolower($host);
+    if (str_starts_with($hostForAllowlist, '[') && str_ends_with($hostForAllowlist, ']')) {
+      $hostForAllowlist = substr($hostForAllowlist, 1, -1);
+    }
+    if (!in_array($hostForAllowlist, self::SERVER_BASE_ALLOWED_HOSTS, TRUE)) {
+      return NULL;
+    }
 
     // IPv4 octet range: if the host is the dotted-quad shape, every octet must
     // be 0–255 (the grammar only bounds it to 1–3 digits). A bracketed IPv6 or
