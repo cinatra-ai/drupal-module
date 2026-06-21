@@ -74,14 +74,13 @@ composer validate --strict
 
 ## Versioning decision (deliberate)
 
-Today the only tag is the published pre-release **`v0.1.1`**. The module's
-`info.yml` deliberately carries **no** `version` key — drupal.org's packager
-stamps the version from the release tag, so the source tree must stay
-version-less.
+Today the only tag is the pre-release **`v0.1.0`**; the next intended version is
+**`0.1.1`** (not yet tagged). The module's `info.yml` deliberately carries **no**
+`version` key — drupal.org's packager stamps the version from the release tag, so
+the source tree must stay version-less.
 
-**Pinned choice for now:** stay on the current pre-`1.0` line; the latest tag
-remains `v0.1.1`. No new tag is created here — tags/releases are owner-approved
-only.
+**Pinned choice for now:** stay on the current pre-`1.0` line; the next version is
+`0.1.1`. No new tag is created here — tags/releases are owner-approved only.
 
 **Owner decision: the first drupal.org release publishes on the `0.1.x` line**
 (branch `0.1.x`), matching the rest of the project's `0.1.x` line rather than the `1.x` Drupal
