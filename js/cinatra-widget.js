@@ -1,13 +1,18 @@
 /**
  * @file
- * Cinatra assistant widget — vendored, LOCAL copy of the Cinatra app frontend
- * embed bundle. Built from the cinatra repo's
- * src/app/api/drupal/bundle.js/route.ts (the canonical IIFE), then adapted to
- * the apiKey-free, short-lived token-exchange flow (wp#4 / cinatra#220): the
- * long-lived integration key never reaches the browser. The browser exchanges a
- * short-lived, origin/audience/scope-bound token via the same-origin Drupal
- * broker route (drupalSettings.cinatra.tokenEndpoint) and streams to the
- * instance with it.
+ * Cinatra assistant widget — CANONICAL, locally-shipped widget (cinatra#411).
+ * This is the Drupal mirror of the canonical source-of-truth widget; it is
+ * hand-mirrored from cinatra-ai/wordpress-plugin/assets/cinatra-widget.js (the
+ * copy authored first). It is NOT a re-vendor of any Cinatra host route — the
+ * cinatra repo's src/app/api/drupal/bundle.js/route.ts is the DEPRECATED,
+ * pre-Option-A artifact (nothing executes it; scheduled for removal). See the
+ * contract: cinatra docs/widget-source-of-truth.md.
+ *
+ * Implements the apiKey-free, short-lived token-exchange flow (wp#4 /
+ * cinatra#220): the long-lived integration key never reaches the browser. The
+ * browser exchanges a short-lived, origin/audience/scope-bound token via the
+ * same-origin Drupal broker route (drupalSettings.cinatra.tokenEndpoint) and
+ * streams to the instance with it.
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -22,8 +27,9 @@
  *   Licensed under the Apache License, Version 2.0:
  *   https://www.apache.org/licenses/LICENSE-2.0
  *
- * Do not hand-edit beyond the documented token-exchange/capability adaptations:
- * re-vendor from the canonical route when the upstream bundle changes.
+ * Sync model: author a widget change in the WordPress copy first, then mirror
+ * it here (the two differ only in the CMS-config accessor + library plumbing).
+ * tools/widget-parity-check.mjs gates the security-critical invariants.
  */
 (function () {
   // ---------------------------------------------------------------------------

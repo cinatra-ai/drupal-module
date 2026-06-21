@@ -136,7 +136,7 @@ final class SettingsForm extends ConfigFormBase {
     $form['manual']['cinatra_url'] = [
       '#type' => 'url',
       '#title' => $this->t('Cinatra URL'),
-      '#description' => $this->t('Base URL of your Cinatra instance (e.g. http://localhost:3000). The widget bundle is fetched from {URL}/api/drupal/bundle.js.'),
+      '#description' => $this->t('Base URL of your Cinatra instance (e.g. http://localhost:3000). The widget JavaScript is shipped locally inside this module (js/cinatra-widget.js) and is never remote-loaded from the Cinatra instance; this URL is used for the same-origin token broker and the versioned data API only.'),
       '#default_value' => $current_url,
     ];
     // The API key is a long-lived credential held server-side only — it is
