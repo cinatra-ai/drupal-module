@@ -8,8 +8,8 @@
   export-ignored from the release tarball, so none of it ships to end users.
 
   Brand source: cinatra-ai/design (tokens/brand.json, assets/logo/variants.json).
-  Voice/marking rules: design/TRADEMARK.md — the word mark is PENDING, use TM
-  (the ™ glyph) never (R); write "open source" unhyphenated.
+  Voice/marking rules: write plain "Cinatra" (no trademark glyphs — this is an
+  open source project); write "open source" unhyphenated.
 -->
 
 # Cinatra — Drupal.org project page
@@ -50,22 +50,41 @@ Under active development
 
 ## Full project-page description (body)
 
-<!-- Paste as the project node body. The ™ on first use of "Cinatra" reflects the
-     pending word-mark status (design/TRADEMARK.md). drupal.org project bodies are
-     filtered HTML, NOT Markdown: at paste time, convert the headings/bold/`code`
-     below to <h3>/<strong>/<code> (or the body field's WYSIWYG equivalents).
-     Keep links absolute. -->
+<!-- Paste as the project node body. drupal.org project bodies are filtered
+     HTML, NOT Markdown: at paste time, convert the headings/bold/`code`/images
+     below to <h3>/<strong>/<code>/<img> (or the body field's WYSIWYG
+     equivalents). Keep links absolute. -->
 
 ### Cinatra for Drupal
 
-Cinatra™ is the open source AI workspace. This module puts the Cinatra AI
-assistant right on your Drupal pages, so content editors can draft, expand, and
-revise content in a chat panel next to what they are editing — without leaving
-the page they are working on.
+This module puts the Cinatra AI assistant right on your Drupal pages, so content
+editors can draft, expand, and revise content in a chat panel next to what they
+are editing — without leaving the page they are working on.
 
 The assistant talks to **your** Cinatra instance — the one whose address you
 enter in the settings. You choose and control which instance your content goes
 to; it is not tied to a fixed outside service.
+
+### What does the assistant help me do?
+
+It's an AI assistant built right into the editor. It helps you draft, rewrite,
+shorten, retitle, and improve content and answer questions while you work.
+Because it runs through your own Cinatra instance, it isn't a generic writing
+tool — it works through a Cinatra agent on your instance, so it can draw on the
+tools, data, and knowledge you've connected there and bring that capability
+straight into your CMS.
+
+It always knows the page you are on, so its suggestions fit the content you are
+actually editing. You review what it suggests and decide what to keep; when your
+instance supports it, an accepted change is dropped straight back into the page.
+
+### Do I need a Cinatra account?
+
+You need access to a running Cinatra instance. Cinatra is an open source AI
+platform that you or your organisation host and connect the assistant to — learn
+more and get the source at <https://www.cinatra.ai>. Once your instance is
+running, open the Cinatra settings, enter the instance's web address, and
+connect.
 
 ### What it does for editors
 
@@ -109,7 +128,43 @@ content changes, so give this permission to people you trust to edit content.
 
 When an editor chats with the assistant, the messages they type and the page
 they are on are sent to the Cinatra instance you set up — and nowhere else. That
-instance's own privacy terms cover this data; see <https://cinatra.ai>.
+instance's own privacy terms cover this data; see <https://www.cinatra.ai>.
+
+### Screenshots
+
+**Connect to your Cinatra instance.** The **Configuration → Web services →
+Cinatra** settings page: enter your instance's web address and click **Connect
+with Cinatra** — the integration credential is provisioned automatically, so you
+never copy or paste a key.
+
+![Cinatra settings page in Drupal showing the instance URL field and the Connect with Cinatra button.](images/screenshot-connect.png)
+
+**The assistant in action.** The Cinatra assistant panel open on a node page,
+rewriting the article's title on request and applying the change back to the
+content.
+
+![Cinatra AI assistant panel open beside a Drupal article, rewriting the title and updating the content.](images/screenshot-in-action.png)
+
+### What's new since 0.1.0
+
+- **One-click "Connect with Cinatra".** Connecting is now a single button: enter
+  your instance address, approve the connection, and the integration credential
+  is provisioned and stored on your server automatically — you never copy or
+  paste a key. (A connection-string and manual-configuration path is still there
+  for setups without a browser redirect.)
+- **Suggested edits drop straight into the page.** When your instance supports
+  it, a change the assistant proposes can be applied back to the content you are
+  editing, not just shown as text to copy by hand.
+- **A clear compatibility notice on older instances.** If the connected instance
+  is too old to run the assistant, the panel now shows a short, plain message
+  instead of failing silently — so you always know what to do next.
+- **More reliable manual setup.** The connection fields stay visible so you can
+  always see and adjust them, and the behind-the-scenes connection to your
+  instance was made more dependable.
+- **Translatable interface and built-in help.** The module's Drupal-side
+  messages — settings, fallback, permission, and help text — are now
+  translatable, with a dedicated **Cinatra** entry in the admin menu plus
+  in-page help.
 
 ### License
 
@@ -118,14 +173,11 @@ Apache-2.0, which is compatible with the GPL.
 
 ## Resources / links (project-page "Resources" links)
 
-- Cinatra website: <https://cinatra.ai>
+- Cinatra website: <https://www.cinatra.ai>
 - Source repository (canonical): <https://github.com/cinatra-ai/drupal-module>
 - Issue queue: use the drupal.org project issue queue once the project is created
   (mirror/triage policy with the GitHub repo to be set at creation time).
 - License (GPL-2.0-or-later): see `LICENSE` in the repository.
-- Trademark policy: the "Cinatra" name and fedora logo are trademarks of the
-  project owners; see the brand repo `TRADEMARK.md`. The word mark is pending
-  registration — use ™, not ®.
 
 ## Logo
 
@@ -161,47 +213,26 @@ the repo-root `logo.png`, and a duplicate in the Images field is deprecated.
 > corner radius nor a chip. Brand source: `design/assets/logo/variants.json`
 > (`colorways.mustard`) and `design/tokens/brand.json`.
 
-## Screenshots — plan + alt text
+## Screenshots — files + alt text
 
-Drupal.org project pages still support a screenshots/Images field for editorial
-screenshots (separate from the deprecated logo-in-Images use). These are not yet
-captured because they require a running Drupal + Cinatra instance; capture them
-against the live-verify stack at project-creation time and attach to the project
-page. Recommended set, in order, with alt text:
+The screenshots embedded in the body above are real captures against a running
+Drupal + Cinatra stack, stored under `.drupalorg/images/`. At project-creation
+time, attach them to the project page's Images field (or keep them inline in the
+body as above). Like the logo, they are export-ignored and never ship in the
+release tarball.
 
-1. **`01-connect-settings.png` — the settings form.**
-   The **Configuration → Web services → Cinatra** admin form, showing the
-   instance-address field and the **Connect with Cinatra** button.
-   - *Alt text:* "Cinatra admin settings form in Drupal showing the instance
-     address field and a Connect with Cinatra button."
-   - *Capture:* `/admin/config/services/cinatra` as an administrator, before
-     connecting. Browser viewport 1280×800; crop to the form region.
+1. **`screenshot-connect.png` — connect to your Cinatra instance.**
+   The **Configuration → Web services → Cinatra** admin settings page, showing
+   the instance-address field and the **Connect with Cinatra** button.
+   - *Alt text:* "Cinatra settings page in Drupal showing the instance URL field
+     and the Connect with Cinatra button."
 
-2. **`02-connect-approve.png` — approving the connection.**
-   The screen shown after clicking Connect, where you approve the connection
-   between your Drupal site and your Cinatra instance.
-   - *Alt text:* "Cinatra screen approving a connection from a Drupal site."
-   - *Capture:* the approval page reached during the Connect flow.
+2. **`screenshot-in-action.png` — the assistant in action.**
+   The Cinatra assistant panel open on a node page, rewriting the article's
+   title on request and applying the change back to the content.
+   - *Alt text:* "Cinatra AI assistant panel open beside a Drupal article,
+     rewriting the title and updating the content."
 
-3. **`03-assistant-on-edit.png` — the assistant on a node edit form.**
-   A node edit form with the Cinatra assistant panel open alongside the body
-   field, mid-conversation, the assistant suggesting a content change.
-   - *Alt text:* "Drupal node edit form with the Cinatra AI assistant panel open
-     beside the body field, showing a suggested content change the editor can
-     keep."
-   - *Capture:* edit any node as a user who has the "Use the Cinatra AI
-     assistant" permission; open the assistant and run one prompt. Hide any real
-     instance address.
-
-4. **`04-permission.png` — the permission row.**
-   The People → Permissions screen with the **Use the Cinatra AI assistant**
-   permission row highlighted, showing the roles it is granted to.
-   - *Alt text:* "Drupal permissions page highlighting the Use the Cinatra AI
-     assistant permission and the roles it is granted to."
-   - *Capture:* `/admin/people/permissions`, filter to the Cinatra permission.
-
-**Screenshot conventions:** PNG; light Drupal admin theme (Claro) for the Drupal
-captures; hide real addresses; keep each image's longest edge ≤ 1280px so the
-page stays light. Store final screenshots under `.drupalorg/images/` named as
-above, and attach them to the project page's Images field at creation time. Like
-the logo, they are export-ignored and never ship in the release tarball.
+**Screenshot conventions:** PNG; hide real instance addresses; keep each image's
+longest edge reasonable so the page stays light. Store final screenshots under
+`.drupalorg/images/`.

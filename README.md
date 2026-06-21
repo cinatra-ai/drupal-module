@@ -8,6 +8,24 @@ The assistant talks to **your** Cinatra instance — the one whose address you
 enter in the settings. You choose and control which instance your content goes
 to; it is not tied to a fixed outside service.
 
+## What does the assistant help me do?
+
+It's an AI assistant built right into the editor. It helps you draft, rewrite,
+shorten, retitle, and improve content and answer questions while you work.
+Because it runs through your own Cinatra instance, it isn't a generic writing
+tool — it works through a Cinatra agent on your instance, so it can draw on the
+tools, data, and knowledge you've connected there and bring that capability
+straight into your CMS. It always knows the page you are on, so its suggestions
+fit the content you are actually editing.
+
+## Do I need a Cinatra account?
+
+You need access to a running Cinatra instance. Cinatra is an open source AI
+platform that you or your organisation host and connect the assistant to — learn
+more and get the source at <https://www.cinatra.ai>. Once your instance is
+running, open the Cinatra settings, enter the instance's web address, and
+connect.
+
 ## What it does for editors
 
 - Adds an AI assistant panel on node pages, node edit forms, and the front page,
