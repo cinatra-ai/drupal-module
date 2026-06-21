@@ -134,12 +134,29 @@ contract schemas live in the cinatra repo under `contracts/wp-drupal-assistant/`
 ## Development
 
 This repo is the source of truth for the module. Cinatra developers consume it
-as a local clone for the dev docker stack. The bundled `js/cinatra-widget.js` is
-vendored from the cinatra repo’s `src/app/api/drupal/bundle.js/route.ts` (the
-canonical IIFE) and adapted to the token-exchange flow; re-vendor it from that
-route when the upstream bundle changes. See the cinatra repo:
-`docs/developer/wp-drupal-plugin-development.md` for the multi-repo workflow,
-the contract-version bump checklist, and dirty-tree recovery.
+as a local clone for the dev docker stack.
+
+**Widget source of truth (cinatra#411).** The bundled `js/cinatra-widget.js` is a
+**canonical, locally-shipped** widget — NOT a re-vendor of any Cinatra host
+route. The host `bundle.js` routes in the cinatra repo
+(`src/app/api/{wordpress,drupal}/bundle.js/route.ts`) are the **deprecated,
+pre-Option-A** artifact: nothing executes them and they are scheduled for
+removal. Do **not** re-vendor from them.
+
+The canonical widget sources are the two vendored copies, kept in lockstep by
+review (there is no generator):
+
+- `cinatra-ai/wordpress-plugin/assets/cinatra-widget.js` — **authored first**;
+- `cinatra-ai/drupal-module/js/cinatra-widget.js` (this repo) — **hand-mirrored**
+  from the WordPress copy (the two differ only in the CMS-config accessor
+  `drupalSettings.cinatra` vs `CinatraConfig`, plus library/asset plumbing).
+
+A widget change is authored in the WordPress copy, then mirrored here.
+`tools/widget-parity-check.mjs` (run in CI) asserts the security-critical
+invariants on this repo's copy and the shared contract-version marker. Changes
+reach an installed site only via a **Drupal.org module release** + the site admin
+taking the update — there is no live push from a Cinatra instance. See the full
+contract in the cinatra repo: `docs/widget-source-of-truth.md`.
 
 ## License
 
