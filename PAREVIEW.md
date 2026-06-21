@@ -84,6 +84,6 @@ remains `v0.1.0`. No new tag is created here — tags/releases are owner-approve
 only.
 
 **Owner decision: the first drupal.org release publishes on the `0.1.x` line**
-(branch `0.1.x`), matching the rest of the v0.1.x project line rather than the `1.0.0` Drupal
+(branch `0.1.x`), matching the rest of the project's `0.1.x` line rather than the `1.x` Drupal
 convention. No new tag is created here; the actual drupalcode.org release/tag remains an
 owner-managed external submission step, parked until v0.1.x ships.
