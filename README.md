@@ -15,7 +15,7 @@ shorten, retitle, and improve content and answer questions while you work.
 Because it runs through your own Cinatra instance, it isn't a generic writing
 tool — it works through a Cinatra agent on your instance, so it can draw on the
 tools, data, and knowledge you've connected there and bring that capability
-straight into your CMS. It always knows the page you are on, so its suggestions
+straight into your CMS. It knows the page you are on, so its suggestions
 fit the content you are actually editing.
 
 ## Do I need a Cinatra account?

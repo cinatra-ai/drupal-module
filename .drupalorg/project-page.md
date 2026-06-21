@@ -74,7 +74,7 @@ tool — it works through a Cinatra agent on your instance, so it can draw on th
 tools, data, and knowledge you've connected there and bring that capability
 straight into your CMS.
 
-It always knows the page you are on, so its suggestions fit the content you are
+It knows the page you are on, so its suggestions fit the content you are
 actually editing. You review what it suggests and decide what to keep; when your
 instance supports it, an accepted change is dropped straight back into the page.
 
