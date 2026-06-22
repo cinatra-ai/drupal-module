@@ -139,18 +139,33 @@ function cinatra_page_attachments(array &$attachments): void {
   $token_endpoint = Url::fromRoute('cinatra.token')->toString();
   $csrf_token = \Drupal::csrfToken()->get('cinatra/token');
 
+  // Required-login (cinatra#410): the per-user PKCE handshake relays. Drupal's
+  // _csrf_token route validates the ?token= query against a seed derived from
+  // THAT route's own path (exactly like cinatra.token above, which is seeded to
+  // 'cinatra/token'), so each relay needs its OWN token seeded to its own path.
+  // The bundle sends each endpoint its matching token. The browser still never
+  // holds the long-lived key; these relays present it server-to-server.
+  $auth_init_endpoint = Url::fromRoute('cinatra.widget_auth_init')->toString();
+  $auth_token_endpoint = Url::fromRoute('cinatra.widget_auth_token')->toString();
+  $auth_init_csrf = \Drupal::csrfToken()->get('cinatra/widget-auth/init');
+  $auth_token_csrf = \Drupal::csrfToken()->get('cinatra/widget-auth/token');
+
   $attachments['#attached']['library'][] = 'cinatra/bundle';
   // NOTE: no 'apiKey'. The browser receives only short-lived tokens minted by
   // the cinatra.token broker route from the server-side credential.
   $attachments['#attached']['drupalSettings']['cinatra'] = [
-    'contractVersion' => Cinatra::CONTRACT_VERSION,
-    'cinatraUrl'      => $cinatra_url,
-    'tokenEndpoint'   => $token_endpoint,
-    'csrfToken'       => $csrf_token,
-    'nodeId'          => $node_id,
-    'nodeBundle'      => $node_bundle,
-    'nodeStatus'      => $node_status,
-    'instanceId'      => (string) $config->get('instance_id'),
+    'contractVersion'    => Cinatra::CONTRACT_VERSION,
+    'cinatraUrl'         => $cinatra_url,
+    'tokenEndpoint'      => $token_endpoint,
+    'csrfToken'          => $csrf_token,
+    'authInitEndpoint'   => $auth_init_endpoint,
+    'authTokenEndpoint'  => $auth_token_endpoint,
+    'authInitCsrfToken'  => $auth_init_csrf,
+    'authTokenCsrfToken' => $auth_token_csrf,
+    'nodeId'             => $node_id,
+    'nodeBundle'         => $node_bundle,
+    'nodeStatus'         => $node_status,
+    'instanceId'         => (string) $config->get('instance_id'),
     // The widget's "Widget administration" link points at THIS site's local
     // settings form, not a path on the Cinatra origin.
     'drupalAdminUrl'  => Url::fromRoute('cinatra.settings_form')->toString(),
