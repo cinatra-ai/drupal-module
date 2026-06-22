@@ -38,3 +38,28 @@ cinatra.token:
   requirements:
     _permission: 'use cinatra assistant'
     _csrf_token: 'TRUE'
+
+# Required-login (cinatra#410): per-user PKCE handshake broker relays. The
+# browser POSTs here (same-origin, CSRF protected via the route-seeded ?token=
+# query that _csrf_token validates, permission gated); the controller presents
+# the long-lived integration key server-to-server to the instance's
+# /api/widget-auth/{init,token} endpoints and returns ONLY the whitelisted
+# upstream envelope to the browser. The long-lived key never reaches JS. Mirrors
+# cinatra.token above.
+cinatra.widget_auth_init:
+  path: '/cinatra/widget-auth/init'
+  defaults:
+    _controller: '\Drupal\cinatra\Controller\WidgetAuthController::init'
+  methods: [POST]
+  requirements:
+    _permission: 'use cinatra assistant'
+    _csrf_token: 'TRUE'
+
+cinatra.widget_auth_token:
+  path: '/cinatra/widget-auth/token'
+  defaults:
+    _controller: '\Drupal\cinatra\Controller\WidgetAuthController::token'
+  methods: [POST]
+  requirements:
+    _permission: 'use cinatra assistant'
+    _csrf_token: 'TRUE'
