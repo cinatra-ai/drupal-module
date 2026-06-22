@@ -69,7 +69,7 @@ function _cinatra_widget_applies(): bool {
   if (!\Drupal::currentUser()->hasPermission('use cinatra assistant')) {
     return FALSE;
   }
-  /** @var RouteMatchInterface $route */
+  /** @var \Drupal\Core\Routing\RouteMatchInterface $route */
   $route = \Drupal::routeMatch();
   $route_name = $route->getRouteName();
   $is_node_route = in_array($route_name, ['entity.node.canonical', 'entity.node.edit_form'], TRUE);
@@ -122,10 +122,10 @@ function cinatra_page_attachments(array &$attachments): void {
   $node_id = '';
   $node_bundle = '';
   $node_status = '';
-  /** @var RouteMatchInterface $route */
+  /** @var \Drupal\Core\Routing\RouteMatchInterface $route */
   $route = \Drupal::routeMatch();
   if (in_array($route->getRouteName(), ['entity.node.canonical', 'entity.node.edit_form'], TRUE)) {
-    /** @var NodeInterface|NULL $node */
+    /** @var \Drupal\node\NodeInterface|null $node */
     $node = $route->getParameter('node');
     if ($node instanceof NodeInterface) {
       $node_id = (string) $node->id();
