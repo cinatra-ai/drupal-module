@@ -132,18 +132,24 @@ instance's own privacy terms cover this data; see <https://www.cinatra.ai>.
 
 ### Screenshots
 
+**The assistant in action.** The Cinatra assistant panel open on a node page,
+rewriting the article's title on request and applying the change back to the
+content.
+
+![Cinatra AI assistant panel open beside a Drupal article, rewriting the title and updating the content.](images/screenshot-in-action.png)
+
+**Sign in with your Cinatra account.** The assistant asks each person to sign in
+with their own Cinatra account, so it only does what that user is already allowed
+to do on the site.
+
+![Cinatra sign-in window in Drupal with a "Sign in with Cinatra" button.](images/screenshot-login.png)
+
 **Connect to your Cinatra instance.** The **Configuration → Web services →
 Cinatra** settings page: enter your instance's web address and click **Connect
 with Cinatra** — the integration credential is provisioned automatically, so you
 never copy or paste a key.
 
 ![Cinatra settings page in Drupal showing the instance URL field and the Connect with Cinatra button.](images/screenshot-connect.png)
-
-**The assistant in action.** The Cinatra assistant panel open on a node page,
-rewriting the article's title on request and applying the change back to the
-content.
-
-![Cinatra AI assistant panel open beside a Drupal article, rewriting the title and updating the content.](images/screenshot-in-action.png)
 
 ### What's new since 0.1.0
 
@@ -221,17 +227,23 @@ time, attach them to the project page's Images field (or keep them inline in the
 body as above). Like the logo, they are export-ignored and never ship in the
 release tarball.
 
-1. **`screenshot-connect.png` — connect to your Cinatra instance.**
-   The **Configuration → Web services → Cinatra** admin settings page, showing
-   the instance-address field and the **Connect with Cinatra** button.
-   - *Alt text:* "Cinatra settings page in Drupal showing the instance URL field
-     and the Connect with Cinatra button."
-
-2. **`screenshot-in-action.png` — the assistant in action.**
+1. **`screenshot-in-action.png` — the assistant in action.**
    The Cinatra assistant panel open on a node page, rewriting the article's
    title on request and applying the change back to the content.
    - *Alt text:* "Cinatra AI assistant panel open beside a Drupal article,
      rewriting the title and updating the content."
+
+2. **`screenshot-login.png` — sign in with your Cinatra account.**
+   The Cinatra sign-in window the assistant shows so each person works with their
+   own Cinatra account and their own permissions.
+   - *Alt text:* "Cinatra sign-in window in Drupal with a Sign in with Cinatra
+     button."
+
+3. **`screenshot-connect.png` — connect to your Cinatra instance.**
+   The **Configuration → Web services → Cinatra** admin settings page, showing
+   the instance-address field and the **Connect with Cinatra** button.
+   - *Alt text:* "Cinatra settings page in Drupal showing the instance URL field
+     and the Connect with Cinatra button."
 
 **Screenshot conventions:** PNG; hide real instance addresses; keep each image's
 longest edge reasonable so the page stays light. Store final screenshots under
