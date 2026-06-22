@@ -67,6 +67,12 @@
   // contract version and pins it on token-exchange + stream-init.
   // ---------------------------------------------------------------------------
   var CLIENT_CONTRACT_VERSIONS = ['v1', 'v2'];
+  // Required-login (cinatra#410): the agent slug + the auth `client` name the
+  // hand-mirrored Drupal differentiators (vs the WordPress source copy). The
+  // hosted PKCE init/token resolve the agent's instances config key from
+  // `client`, so it must match the agent's instancesConfigKey ('drupal').
+  var AGENT_SLUG = 'drupal-content-editor';
+  var AUTH_CLIENT = 'drupal';
   var negotiatedVersion = null;   // set ONLY by a successful negotiate()
   var supportsChanges = false;    // enabled ONLY when explicitly advertised
   var supportsMarkdown = false;   // enabled ONLY when explicitly advertised
@@ -421,6 +427,29 @@
     '.cw-diff-before { color: #5a6477; text-decoration: line-through; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
     '.cw-diff-after { color: #364e81; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }',
     '.cw-diff-footer { padding: 5px 12px; background: #e8e8e3; color: #5a6477; font-size: 11px; border-top: 1px solid #15213a14; }',
+
+    /* Required-login window (cinatra#410). Shown in place of the conversation
+       (.cw-messages + .cw-pill) until a valid per-user token is held. Matches the
+       Cinatra /sign-in palette: brand navy #15213a primary on the #f7f7f3 panel,
+       muted #5a6477 secondary text. NO email/password inputs and NO sign-up — the
+       only affordance is the button that opens the hosted /widget-auth popup. */
+    '.cw-login {',
+    '  flex: 1; min-height: 0; display: flex; flex-direction: column;',
+    '  align-items: center; justify-content: center;',
+    '  padding: 32px 28px; text-align: center; gap: 16px; box-sizing: border-box;',
+    '}',
+    '.cw-login-mark { display: flex; align-items: center; justify-content: center; }',
+    '.cw-login-title { font: 600 18px/1.3 system-ui, -apple-system, sans-serif; color: #15213a; letter-spacing: -0.01em; margin: 0; }',
+    '.cw-login-sub { font: 14px/1.55 system-ui, -apple-system, sans-serif; color: #5a6477; max-width: 280px; margin: 0; }',
+    '.cw-login-btn {',
+    '  width: 100%; max-width: 260px; padding: 10px 16px; margin-top: 4px;',
+    '  background: #15213a; color: #ffffff; border: none; border-radius: 10px;',
+    '  font: 600 14px system-ui, -apple-system, sans-serif; cursor: pointer;',
+    '  transition: background 0.15s;',
+    '}',
+    '.cw-login-btn:hover { background: #1d2c4d; }',
+    '.cw-login-btn:disabled { opacity: 0.55; cursor: default; }',
+    '.cw-login-err { font: 13px/1.5 system-ui, -apple-system, sans-serif; color: #b42318; min-height: 18px; max-width: 280px; }',
   ].join('\n');
   shadow.appendChild(style);
 
@@ -573,6 +602,51 @@
   spacerEl.className = 'cw-messages-spacer';
   panel.appendChild(spacerEl);
 
+  // ---------------------------------------------------------------------------
+  // Required-login window (cinatra#410). Built once at mount; shown by
+  // applyPanelMode() when there is no valid per-user token, hidden in
+  // conversation mode. The .cw-messages + .cw-pill conversation surfaces are
+  // hidden while this is shown, so the conversation is NEVER visible pre-login.
+  // This panel has NO credential inputs and NO sign-up — its only affordance is
+  // the button that opens the Cinatra-hosted /widget-auth login popup, so raw
+  // credentials never touch this CMS-origin DOM.
+  // ---------------------------------------------------------------------------
+  var loginEl = document.createElement('div');
+  loginEl.className = 'cw-login';
+
+  var loginMark = document.createElement('div');
+  loginMark.className = 'cw-login-mark';
+  var loginLogo = mkSvg(40, 25, '0 0 512 320');
+  loginLogo.setAttribute('fill', 'none');
+  loginLogo.appendChild(mkEl('path', { d: 'M72 214 C 72 200 96 190 130 188 C 168 186 196 200 256 210 C 316 220 358 214 400 200 C 426 192 440 196 440 208 C 440 222 420 234 388 242 C 340 254 288 256 256 256 C 202 256 132 248 100 238 C 80 232 72 224 72 214 Z', fill: '#c79545' }));
+  loginLogo.appendChild(mkEl('path', { d: 'M146 188 C 150 130 176 86 212 72 C 226 66 240 64 252 64 C 262 64 270 70 268 80 L 264 100 C 272 88 288 82 300 82 C 332 82 356 118 362 188 Z', fill: '#c79545' }));
+  loginMark.appendChild(loginLogo);
+  loginEl.appendChild(loginMark);
+
+  var loginTitle = document.createElement('p');
+  loginTitle.className = 'cw-login-title';
+  loginTitle.textContent = 'Sign in to continue';
+  loginEl.appendChild(loginTitle);
+
+  var loginSub = document.createElement('p');
+  loginSub.className = 'cw-login-sub';
+  loginSub.textContent = 'Sign in with your Cinatra account to use the assistant on this site.';
+  loginEl.appendChild(loginSub);
+
+  var loginBtn = document.createElement('button');
+  loginBtn.className = 'cw-login-btn';
+  loginBtn.type = 'button';
+  loginBtn.textContent = 'Sign in with Cinatra';
+  loginEl.appendChild(loginBtn);
+
+  var loginErr = document.createElement('div');
+  loginErr.className = 'cw-login-err';
+  loginErr.setAttribute('role', 'alert');
+  loginErr.setAttribute('aria-live', 'polite');
+  loginEl.appendChild(loginErr);
+
+  panel.appendChild(loginEl);
+
   // Prompt box (pill)
   var pill = document.createElement('div');
   pill.className = 'cw-pill';
@@ -629,6 +703,16 @@
   var hadChanges = false;
   var diffCardEl = null;
   var pendingDiff = null;
+
+  // Required-login state (cinatra#410). On a fresh mount there is never a valid
+  // per-user token, so the panel starts in 'login' mode. `userToken` is held in
+  // module scope (in-memory ONLY — never sessionStorage; a bearer in storage
+  // outlives the tab and is XSS-exfiltratable). `pkce` holds the in-flight
+  // handshake (verifier/state/popup) and is single-use.
+  var panelMode = 'login';   // 'login' | 'conversation'
+  var userToken = null;      // { token, expiresAtMs }
+  var pkce = null;           // { codeVerifier, state, popup } during a handshake
+  var popupTimer = null;     // setInterval handle while watching for popup close
 
   // Truncate long before/after values so they fit on one line in the diff card.
   function trunc(s, n) { return s && s.length > n ? s.slice(0, n) + '\u2026' : (s || ''); }
@@ -771,7 +855,11 @@
     circle.style.zIndex = '9999990';
     setWidgetSize();
     cwWidget.style.display = 'block';
-    textarea.focus();
+    // If a long-idle widget is reopened in conversation mode but the per-user
+    // token has since expired, drop back to login rather than show a dead
+    // conversation (the stream would 401 anyway). applyPanelMode() reflects it.
+    if (panelMode === 'conversation' && !userTokenValid()) { forceReLogin(); }
+    if (panelMode === 'conversation') { textarea.focus(); }
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -822,6 +910,27 @@
   });
   closeBtn.addEventListener('click', function() { collapseWidget(); });
   submitBtn.addEventListener('click', function() { doSubmit(); });
+  loginBtn.addEventListener('click', function() { startLogin(); });
+
+  // ---------------------------------------------------------------------------
+  // Required-login (cinatra#410): listen ONCE for the hosted /widget-auth popup's
+  // postMessage. The handshake is bound three ways — the message must come from
+  // the configured instance ORIGIN, carry the exact type, and its `state` must
+  // match the in-flight PKCE tuple. We additionally bind to the popup's window
+  // (ev.source === pkce.popup) so another same-origin Cinatra window/frame can
+  // never complete a handshake even if `state` were ever confused/leaked.
+  // ---------------------------------------------------------------------------
+  window.addEventListener('message', function (ev) {
+    var instOrigin;
+    try { instOrigin = new URL(config.cinatraUrl).origin; } catch (_) { return; }
+    if (ev.origin !== instOrigin) { return; }
+    var d = ev.data;
+    if (!d || d.type !== 'cinatra-widget-auth' || typeof d.code !== 'string') { return; }
+    if (!pkce) { return; }                              // no handshake in flight
+    if (!pkce.popup || ev.source !== pkce.popup) { return; } // source binding (fail-closed: a null/foreign source is rejected)
+    if (d.state !== pkce.state) { return; }             // CSRF/state binding
+    redeemCode(d.code);                                 // single-use; pkce consumed inside
+  });
 
   textarea.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey && !isStreaming) {
@@ -915,9 +1024,213 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Required-login (cinatra#410): the per-user PKCE handshake against the hosted
+  // /widget-auth surface (#407), the dual-token stream gate (#408), and the
+  // login-window mode toggle. The browser never holds the long-lived cnx_ key:
+  // both the init and token redemptions go through the same-origin Drupal broker
+  // routes, which present cnx_ server-to-server (exactly like the cit_ stream
+  // token mint). The opaque cwu_ user token is short-lived (15-min TTL, no
+  // refresh) and held in memory only.
+  //
+  // Drupal CSRF idiom (the ONLY divergence from the WordPress source copy):
+  // the broker routes are `_csrf_token: 'TRUE'`, which validates the token from
+  // the `?token=` QUERY parameter (the route-path-seeded token), NOT a header —
+  // mirroring the existing getStreamToken() above. Each route's token is seeded
+  // to its OWN path, so the init and token relays carry DIFFERENT tokens
+  // (authInitCsrfToken / authTokenCsrfToken). brokerUrl() appends the supplied
+  // token as a query param and brokerHeaders() carries no CSRF header.
+  // ---------------------------------------------------------------------------
+
+  function b64url(bytes) {
+    var s = '';
+    for (var i = 0; i < bytes.length; i++) { s += String.fromCharCode(bytes[i]); }
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function randB64url(n) {
+    var a = new Uint8Array(n);
+    crypto.getRandomValues(a);
+    return b64url(a);
+  }
+  async function sha256b64url(str) {
+    var data = new TextEncoder().encode(str);
+    var dig = await crypto.subtle.digest('SHA-256', data);
+    return b64url(new Uint8Array(dig));
+  }
+
+  // Append the given route-seeded Drupal CSRF token as the `?token=` query the
+  // broker validates. Each _csrf_token route seeds its token to its own path, so
+  // the caller passes the token that matches the endpoint.
+  function brokerUrl(endpoint, csrfToken) {
+    var url = String(endpoint);
+    if (csrfToken) {
+      url += (url.indexOf('?') === -1 ? '?' : '&') + 'token=' + encodeURIComponent(csrfToken);
+    }
+    return url;
+  }
+  function brokerHeaders() {
+    return { 'Content-Type': 'application/json' };
+  }
+
+  function userTokenValid() {
+    return !!(userToken && userToken.token && (userToken.expiresAtMs - 5000) > Date.now());
+  }
+
+  // Reflect panelMode into the DOM. The header (wordmark + close) stays in both
+  // modes; the conversation surfaces are display:none in login mode so they are
+  // never visible without a valid token.
+  function applyPanelMode() {
+    var login = panelMode === 'login';
+    loginEl.style.display = login ? 'flex' : 'none';
+    messagesEl.style.display = login ? 'none' : 'flex';
+    spacerEl.style.display = login ? 'none' : 'block';
+    pill.style.display = login ? 'none' : 'flex';
+  }
+
+  function clearHandshake() {
+    if (popupTimer) { try { clearInterval(popupTimer); } catch (_) {} popupTimer = null; }
+    pkce = null;
+  }
+
+  // Drop the user token and return to the login window. Used on expiry and on a
+  // fail-closed 401 from the dual-token stream. Cleans up streaming UI state so
+  // a stale "Thinking…" bubble never implies a response is still in progress.
+  function forceReLogin(message) {
+    userToken = null;
+    isStreaming = false;
+    clearHandshake();
+    panelMode = 'login';
+    applyPanelMode();
+    submitBtn.disabled = textarea.value.trim() === '';
+    loginErr.textContent = message || 'Your session expired. Please sign in again.';
+  }
+
+  function watchPopupClosed() {
+    if (popupTimer) { try { clearInterval(popupTimer); } catch (_) {} popupTimer = null; }
+    var ticks = 0;
+    popupTimer = setInterval(function () {
+      ticks++;
+      var closed = false;
+      try { closed = !pkce || !pkce.popup || pkce.popup.closed; } catch (_) { closed = false; }
+      if (closed || ticks > 600) {
+        try { clearInterval(popupTimer); } catch (_) {}
+        popupTimer = null;
+        if (pkce) {
+          pkce = null;
+          loginBtn.disabled = false;
+        }
+      }
+    }, 500);
+  }
+
+  async function startLogin() {
+    if (pkce) { return; }                  // reject concurrent handshakes
+    loginErr.textContent = '';
+    loginBtn.disabled = true;
+    try {
+      if (typeof window.crypto === 'undefined' || !window.crypto || !crypto.subtle || typeof btoa === 'undefined') {
+        throw new Error('Secure sign-in is not available in this browser.');
+      }
+      var verifier = randB64url(48);
+      var challenge = await sha256b64url(verifier);
+      var state = randB64url(24);
+
+      // 1) init via OUR same-origin broker (cnx_ presented server-to-server).
+      var initResp = await fetch(brokerUrl(config.authInitEndpoint, config.authInitCsrfToken), {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: brokerHeaders(),
+        body: JSON.stringify({
+          client: AUTH_CLIENT,
+          agentSlug: AGENT_SLUG,
+          codeChallenge: challenge,
+          codeChallengeMethod: 'S256',
+          state: state,
+          instanceId: config.instanceId || undefined,
+        }),
+      });
+      if (!initResp.ok) { throw new Error('Could not start sign-in.'); }
+      var initBody = await initResp.json();
+      if (!initBody || !initBody.authorizeUrl) { throw new Error('Could not start sign-in.'); }
+
+      // SECURITY: the popup destination MUST be same-origin with the configured
+      // instance — defense against a compromised broker steering the login popup
+      // off-instance. Resolve and re-assert the origin here.
+      var instOrigin = new URL(config.cinatraUrl).origin;
+      var authUrl = new URL(initBody.authorizeUrl, instOrigin + '/');
+      if (authUrl.origin !== instOrigin) { throw new Error('Refusing off-origin sign-in.'); }
+
+      pkce = { codeVerifier: verifier, state: state, popup: null };
+
+      // 2) open the hosted login popup. We need window.opener for the popup's
+      // postMessage back, so we do NOT pass noopener; the message listener's
+      // origin + type + state + source binding are the controls.
+      var popup = window.open(authUrl.href, 'cinatra-login',
+        'width=460,height=640,menubar=no,toolbar=no,location=yes,status=no');
+      if (!popup) {
+        pkce = null;
+        throw new Error('Pop-up blocked. Allow pop-ups for this site and try again.');
+      }
+      pkce.popup = popup;
+      watchPopupClosed();
+    } catch (err) {
+      clearHandshake();
+      loginErr.textContent = (err && err.message) ? err.message : 'Sign-in failed.';
+      loginBtn.disabled = false;
+    }
+  }
+
+  async function redeemCode(code) {
+    var local = pkce;
+    clearHandshake();                      // consume handshake + stop popup watch
+    loginBtn.disabled = true;
+    try {
+      var resp = await fetch(brokerUrl(config.authTokenEndpoint, config.authTokenCsrfToken), {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: brokerHeaders(),
+        body: JSON.stringify({
+          grantType: 'authorization_code',
+          client: AUTH_CLIENT,
+          agentSlug: AGENT_SLUG,
+          code: code,
+          codeVerifier: local.codeVerifier,
+        }),
+      });
+      if (!resp.ok) { throw new Error('Sign-in could not be completed.'); }
+      var body = await resp.json();
+      // Validate the token shape before trusting it (defends against a malformed
+      // broker/upstream response): opaque Bearer cwu_ token + a sane TTL.
+      if (!body || typeof body.token !== 'string' || body.token.indexOf('cwu_') !== 0) {
+        throw new Error('Sign-in could not be completed.');
+      }
+      if (body.tokenType && String(body.tokenType).toLowerCase() !== 'bearer') {
+        throw new Error('Sign-in could not be completed.');
+      }
+      var ttlSec = (typeof body.expiresIn === 'number' && body.expiresIn > 0) ? body.expiresIn : 900;
+      if (ttlSec > 900) { ttlSec = 900; }   // clamp to the backend max (15-min TTL)
+      userToken = { token: body.token, expiresAtMs: Date.now() + (ttlSec * 1000) };
+      try { if (local.popup && !local.popup.closed) { local.popup.close(); } } catch (_) {}
+      loginErr.textContent = '';
+      panelMode = 'conversation';
+      applyPanelMode();
+      textarea.focus();
+      submitBtn.disabled = textarea.value.trim() === '';
+    } catch (err) {
+      try { if (local && local.popup && !local.popup.closed) { local.popup.close(); } } catch (_) {}
+      loginErr.textContent = (err && err.message) ? err.message : 'Sign-in failed.';
+    } finally {
+      loginBtn.disabled = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // SSE streaming chat
   // ---------------------------------------------------------------------------
   async function sendMessage(userText) {
+    // DUAL-TOKEN GATE (cinatra#408): a valid per-user token is REQUIRED to
+    // stream. If it is missing/expired, force re-login BEFORE appending any
+    // message bubble — the conversation must never proceed without a token.
+    if (!userTokenValid()) { forceReLogin(); return; }
     hadChanges = false;
     diffCardEl = null;
     pendingDiff = null;
@@ -954,9 +1267,27 @@
       // token off-origin.
       var response = await fetch(STREAM_BASE + streamPath, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + streamToken },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + streamToken,
+          // DUAL-TOKEN (cinatra#408): the per-user token is required by the
+          // fail-closed stream route in addition to the cit_ Bearer above.
+          'X-Cinatra-Widget-User-Token': userToken.token,
+        },
         body: JSON.stringify({ contractVersion: negotiatedVersion, messages: history.map(function(m) { return { role: m.role, content: m.content }; }), context: buildDrupalContext() }),
       });
+
+      // FAIL-CLOSED RE-LOGIN (cinatra#408): an expired/revoked/invalid per-user
+      // token returns 401 with X-Cinatra-Widget-Auth: required. Drop the token,
+      // remove the in-flight "Thinking…" bubble, and return to the login window.
+      if (response.status === 401 && response.headers.get('X-Cinatra-Widget-Auth') === 'required') {
+        try { if (assistantEl && assistantEl.parentNode) { assistantEl.parentNode.removeChild(assistantEl); } } catch (_) {}
+        // The user turn never produced a response; drop it from history so the
+        // re-login does not replay a half-sent turn on the next send.
+        if (history.length && history[history.length - 1].role === 'user') { history.pop(); saveHistory(); }
+        forceReLogin();
+        return;
+      }
 
       if (!response.ok || !response.body) {
         var errText = 'Error ' + response.status;
@@ -1046,6 +1377,12 @@
   // Synchronous mount construction is complete: mark mounted (this hides the
   // fallback chrome). Set LAST so any throw above leaves the fallback visible.
   rootEl.dataset.cinatraMounted = 'true';
+
+  // Required-login (cinatra#410): render in login mode first (conversation
+  // surfaces hidden). On a fresh mount there is never a valid per-user token, so
+  // the login window is shown until the user signs in. Placed AFTER the marker
+  // so a throw still leaves the fallback chrome rather than a half-built widget.
+  applyPanelMode();
 
   // Reopen widget after an auto-reload triggered by a content edit.
   try {
