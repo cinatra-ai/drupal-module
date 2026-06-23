@@ -27,7 +27,7 @@
 #
 # DORMANCY / GATING (this workflow is INERT until the owner acts)
 # It cannot publish anything until ALL of these exist:
-#   (a) the `DRUPALCODE_DEPLOY_KEY` repo secret holds an SSH PRIVATE deploy key, and
+#   (a) the `CINATRA_DRUPALORG_DEPLOY_KEY_BASE64` repo secret holds an SSH PRIVATE deploy key, and
 #   (b) the owner installs the MATCHING PUBLIC key as a deploy key on the
 #       drupal.org GitLab project (git.drupalcode.org/project/cinatra) with write
 #       access, and
@@ -94,11 +94,11 @@ jobs:
       # Secret values are never printed; we only test for presence.
       - name: Require deploy key (fail closed if missing)
         env:
-          DRUPALCODE_DEPLOY_KEY: ${{ secrets.DRUPALCODE_DEPLOY_KEY }}
+          CINATRA_DRUPALORG_DEPLOY_KEY_BASE64: ${{ secrets.CINATRA_DRUPALORG_DEPLOY_KEY_BASE64 }}
         run: |
           set -euo pipefail
-          if [ -z "${DRUPALCODE_DEPLOY_KEY}" ]; then
-            echo "::error::DRUPALCODE_DEPLOY_KEY secret is not set. This workflow is dormant until the owner adds the private deploy key as a repo secret AND installs the matching public key on the drupal.org GitLab project. Refusing to proceed."
+          if [ -z "${CINATRA_DRUPALORG_DEPLOY_KEY_BASE64}" ]; then
+            echo "::error::CINATRA_DRUPALORG_DEPLOY_KEY_BASE64 secret is not set. This workflow is dormant until the owner adds the private deploy key as a repo secret AND installs the matching public key on the drupal.org GitLab project. Refusing to proceed."
             exit 1
           fi
           echo "Deploy key secret is present."
@@ -215,7 +215,7 @@ jobs:
       - name: Start ssh-agent and pin git.drupal.org host key
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         env:
-          DRUPALCODE_DEPLOY_KEY: ${{ secrets.DRUPALCODE_DEPLOY_KEY }}
+          CINATRA_DRUPALORG_DEPLOY_KEY_BASE64: ${{ secrets.CINATRA_DRUPALORG_DEPLOY_KEY_BASE64 }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -247,10 +247,13 @@ jobs:
           echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
           echo "SSH_AGENT_PID=${SSH_AGENT_PID}" >> "${GITHUB_ENV}"
 
-          # Add the key from stdin (NEVER on disk, NEVER echoed). Trailing newline
-          # is required by ssh-add for some key formats.
-          printf '%s\n' "${DRUPALCODE_DEPLOY_KEY}" | ssh-add - >/dev/null 2>&1 || {
-            echo "::error::ssh-add failed to load DRUPALCODE_DEPLOY_KEY (is it a valid OpenSSH private key?)."
+          # The secret holds the base64-encoded OpenSSH private key (the `_BASE64`
+          # convention; raw multi-line/space-containing keys are rejected by the
+          # Infisical entry tool). Decode it and add from stdin — NEVER on disk,
+          # NEVER echoed. The decoded key keeps its trailing newline, which
+          # ssh-add requires for some key formats.
+          printf '%s' "${CINATRA_DRUPALORG_DEPLOY_KEY_BASE64}" | base64 -d | ssh-add - >/dev/null 2>&1 || {
+            echo "::error::ssh-add failed to load the key from CINATRA_DRUPALORG_DEPLOY_KEY_BASE64 (base64 of an OpenSSH private key?)."
             exit 1
           }
           echo "Deploy key loaded into ssh-agent."
