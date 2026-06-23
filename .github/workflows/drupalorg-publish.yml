@@ -1,0 +1,335 @@
+# Tag-triggered drupal.org auto-publish.
+#
+# WHAT THIS DOES
+# When a release tag `v*` (e.g. `v0.1.2`) is pushed to this GitHub repo, this
+# workflow pushes the matching bare-semver tag (e.g. `0.1.2`) onto the project's
+# drupal.org Git over SSH. drupal.org's packager then auto-builds the
+# downloadable release tarball from that tag, and a maintainer publishes the
+# release node ("Add new release") on https://www.drupal.org/project/cinatra.
+# (This action does the Git push; creating the release node stays a maintainer
+# web-form step on drupal.org.)
+#
+# THE GH-TAG -> DRUPAL.ORG MAPPING (the correctness crux)
+#   GitHub release tag : `v<MAJOR>.<MINOR>.<PATCH>[-pre]`   e.g. v0.1.2
+#   drupal.org tag     : `<MAJOR>.<MINOR>.<PATCH>[-pre]`    e.g. 0.1.2  (leading `v` stripped)
+#   drupal.org branch  : `<MAJOR>.<MINOR>.x`                e.g. 0.1.x  (the SemVer release branch)
+# This mirrors the FIRST release, which was pushed manually: branch `0.1.x`,
+# tag `0.1.1`, identity `Sandro Groganz <sandro@cinatra.ai>`. GitHub's own
+# `github-release.yml` already fires on `v*`, so a single `v0.1.2` push both
+# decorates the GitHub Release AND (via this workflow) ships the drupal.org tag.
+#
+# TRANSPORT (read carefully)
+# drupal.org contrib hosting is GitLab at `git.drupalcode.org`, but that name is
+# a Fastly CDN front that serves HTTP(S) ONLY — it has no reachable SSH (port 22)
+# endpoint, and drupal.org publishes no altssh/443 SSH host. The REAL GitLab SSH
+# origin is `git.drupal.org`. So this workflow pushes over SSH to
+# `git@git.drupal.org:project/cinatra.git` (NOT git.drupalcode.org).
+#
+# DORMANCY / GATING (this workflow is INERT until the owner acts)
+# It cannot publish anything until ALL of these exist:
+#   (a) the `DRUPALCODE_DEPLOY_KEY` repo secret holds an SSH PRIVATE deploy key, and
+#   (b) the owner installs the MATCHING PUBLIC key as a deploy key on the
+#       drupal.org GitLab project (git.drupalcode.org/project/cinatra) with write
+#       access, and
+#   (c) an owner pushes a real `v*` tag (or runs the manual dispatch).
+# Until (a)+(b) are in place the run FAILS CLOSED (it refuses to proceed without
+# the secret and would not authenticate anyway). It NEVER runs on push-to-branch
+# or pull_request — only on a pushed `v*` tag or an explicit manual dispatch.
+#
+# MANUAL / DRY-RUN PATH
+# `workflow_dispatch` accepts `tag` (a `v*` tag that already exists on this repo)
+# and `dry_run` (default true). With `dry_run=true` it computes and PRINTS exactly
+# what it would push, then STOPS before any network write — safe to exercise.
+
+name: drupalorg-publish
+
+on:
+  push:
+    # Release tags only. Bare-semver/marker tags (e.g. `0.1.2`, `nightly`) do NOT
+    # match and never trigger this workflow; only `v*` does.
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v* tag to publish to drupal.org (e.g. v0.1.2). Must already exist on this repo."
+        required: true
+        type: string
+      dry_run:
+        description: "If true (default), compute and print what WOULD be pushed, then stop before any push."
+        required: false
+        type: boolean
+        default: true
+
+# Read-only token: this workflow authenticates to drupal.org with the SSH deploy
+# key, never with GITHUB_TOKEN. No write scope is needed on this repo.
+permissions:
+  contents: read
+
+# Never let two publishes race onto the same drupal.org branch/tag.
+concurrency:
+  group: drupalorg-publish
+  cancel-in-progress: false
+
+env:
+  # The real GitLab SSH origin for drupal.org contrib (NOT the Fastly HTTP front
+  # git.drupalcode.org). Host and SSH remote are kept in sync via these two vars.
+  DRUPAL_SSH_HOST: git.drupal.org
+  DRUPAL_GIT_REMOTE: "git@git.drupal.org:project/cinatra.git"
+
+jobs:
+  drupalorg-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Full history + all tags so the pushed tag and the 0.1.x branch lineage
+      # are present locally (a shallow clone cannot fast-forward the branch).
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Fail closed before doing anything if the deploy key is not configured.
+      # Secret values are never printed; we only test for presence.
+      - name: Require deploy key (fail closed if missing)
+        env:
+          DRUPALCODE_DEPLOY_KEY: ${{ secrets.DRUPALCODE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DRUPALCODE_DEPLOY_KEY}" ]; then
+            echo "::error::DRUPALCODE_DEPLOY_KEY secret is not set. This workflow is dormant until the owner adds the private deploy key as a repo secret AND installs the matching public key on the drupal.org GitLab project. Refusing to proceed."
+            exit 1
+          fi
+          echo "Deploy key secret is present."
+
+      # Resolve the GitHub tag from the trigger:
+      #  - push:           github.ref_name is the pushed v* tag.
+      #  - workflow_dispatch: the `tag` input (must already exist on the repo).
+      # Then derive the drupal.org tag (strip the leading `v`) and the 0.1.x-style
+      # release branch (MAJOR.MINOR.x). Reject anything that is not v<semver>.
+      - name: Compute drupal.org tag and release branch
+        id: map
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            GH_TAG="${INPUT_TAG}"
+          else
+            GH_TAG="${REF_NAME}"
+          fi
+
+          if [ -z "${GH_TAG}" ]; then
+            echo "::error::Could not determine the GitHub tag to publish."
+            exit 1
+          fi
+
+          # Must be a v-prefixed CANONICAL SemVer tag (semver.org BNF):
+          #   v MAJOR.MINOR.PATCH  with numeric identifiers that have NO leading
+          #   zeros, an optional `-prerelease` (dot-separated alnum identifiers,
+          #   numeric ones without leading zeros), and an optional `+build`
+          #   (dot-separated alnum identifiers). A non-canonical tag (a
+          #   leading-zero, empty-prerelease, incomplete, or bare marker tag) is
+          #   REJECTED so we never push a stray or malformed tag to drupal.org.
+          num='(0|[1-9][0-9]*)'                              # no leading zeros
+          core="${num}\\.${num}\\.${num}"
+          pre_id='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'   # alnum or no-leading-zero numeric
+          pre="(-${pre_id}(\\.${pre_id})*)?"
+          build_id='[0-9A-Za-z-]+'
+          build="(\\+${build_id}(\\.${build_id})*)?"
+          if ! printf '%s' "${GH_TAG}" | grep -Eq "^v${core}${pre}${build}\$"; then
+            echo "::error::Tag '${GH_TAG}' is not a v-prefixed canonical SemVer release tag (expected like v0.1.2 or v0.1.2-beta1). Refusing to publish."
+            exit 1
+          fi
+
+          # drupal.org tag = GitHub tag without the leading 'v'.
+          DRUPAL_TAG="${GH_TAG#v}"
+
+          # Release branch = MAJOR.MINOR.x (e.g. 0.1.2 / 0.1.2-beta1 -> 0.1.x).
+          MAJOR="$(printf '%s' "${DRUPAL_TAG}" | cut -d. -f1)"
+          MINOR="$(printf '%s' "${DRUPAL_TAG}" | cut -d. -f2)"
+          RELEASE_BRANCH="${MAJOR}.${MINOR}.x"
+
+          {
+            echo "gh_tag=${GH_TAG}"
+            echo "drupal_tag=${DRUPAL_TAG}"
+            echo "release_branch=${RELEASE_BRANCH}"
+          } >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "### drupal.org publish mapping"
+            echo ""
+            echo "| GitHub tag | drupal.org tag | drupal.org branch | SSH remote |"
+            echo "| --- | --- | --- | --- |"
+            echo "| \`${GH_TAG}\` | \`${DRUPAL_TAG}\` | \`${RELEASE_BRANCH}\` | \`${DRUPAL_GIT_REMOTE}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # Resolve the commit the GitHub tag points at, and assert it is an ancestor
+      # of (or identical to) the default branch tip — i.e. it is on the reviewed
+      # main lineage that the 0.1.x release branch tracks. This prevents
+      # publishing a tag built off some unrelated commit.
+      - name: Verify tag is on the release lineage
+        id: lineage
+        env:
+          GH_TAG: ${{ steps.map.outputs.gh_tag }}
+        run: |
+          set -euo pipefail
+
+          if ! git rev-parse -q --verify "refs/tags/${GH_TAG}" >/dev/null; then
+            echo "::error::Tag '${GH_TAG}' does not exist in this repository. (For manual dispatch, push/create the tag first.)"
+            exit 1
+          fi
+
+          TAG_COMMIT="$(git rev-list -n1 "refs/tags/${GH_TAG}")"
+          echo "tag_commit=${TAG_COMMIT}" >> "${GITHUB_OUTPUT}"
+
+          # The default branch content is what the drupal.org 0.1.x branch tracks.
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          git fetch --no-tags origin "${DEFAULT_BRANCH}" >/dev/null 2>&1 || true
+
+          if git merge-base --is-ancestor "${TAG_COMMIT}" "origin/${DEFAULT_BRANCH}"; then
+            echo "Tag commit ${TAG_COMMIT} is on origin/${DEFAULT_BRANCH} lineage."
+          else
+            echo "::error::Tag commit ${TAG_COMMIT} is NOT an ancestor of origin/${DEFAULT_BRANCH}. A drupal.org release tag must sit on the reviewed release lineage. Refusing to publish."
+            exit 1
+          fi
+
+      # Load the SSH deploy key into an agent and PIN git.drupal.org's host key.
+      #
+      # The host key is not trusted via blind TOFU. The verified ED25519 host key
+      # below is pinned from drupal.org's official publication
+      # (https://www.drupal.org/git-drupal-org-ssh-host-key), independently
+      # cross-checked against a live ssh-keyscan at authoring time:
+      #   git.drupal.org ED25519 SHA256:dPC6RYiFfvVB/epk5s/lisF4jCbOFJnitbYPy6Dsog8
+      # We write ONLY this pinned line to known_hosts, additionally re-verify a
+      # live keyscan's fingerprint matches the pin (fail closed on mismatch), and
+      # push with StrictHostKeyChecking=yes against this file — so a MITM serving
+      # a different key is rejected, not silently accepted.
+      #
+      # The private key is fed via stdin into ssh-agent and is never written to
+      # disk or printed.
+      - name: Start ssh-agent and pin git.drupal.org host key
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        env:
+          DRUPALCODE_DEPLOY_KEY: ${{ secrets.DRUPALCODE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Pinned, independently-verified host key (see step comment above).
+          PINNED_HOSTKEY='git.drupal.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKCkFTXM7BUQUHlDkVmQV6qNkIeSIRBTNzlLn+T/APHa'
+          PINNED_FPR='SHA256:dPC6RYiFfvVB/epk5s/lisF4jCbOFJnitbYPy6Dsog8'
+
+          printf '%s\n' "${PINNED_HOSTKEY}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          # Defense-in-depth: re-verify a live keyscan's ED25519 fingerprint still
+          # equals the pin. If drupal.org rotates its key this fails loudly (so the
+          # pin is refreshed deliberately) rather than us trusting a new key blind.
+          LIVE_FPR="$(ssh-keyscan -t ed25519 "${DRUPAL_SSH_HOST}" 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' | head -n1 || true)"
+          if [ -z "${LIVE_FPR}" ]; then
+            echo "::error::Could not keyscan ${DRUPAL_SSH_HOST} to confirm the pinned host key."
+            exit 1
+          fi
+          if [ "${LIVE_FPR}" != "${PINNED_FPR}" ]; then
+            echo "::error::${DRUPAL_SSH_HOST} host key fingerprint ${LIVE_FPR} does NOT match the pinned ${PINNED_FPR}. Refusing to push (possible key rotation or MITM); update the pin only after re-verifying against https://www.drupal.org/git-drupal-org-ssh-host-key."
+            exit 1
+          fi
+          echo "Host key for ${DRUPAL_SSH_HOST} verified against the pin (${PINNED_FPR})."
+
+          # Boot an agent for this and the push step (persist its socket to env).
+          eval "$(ssh-agent -s)"
+          echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
+          echo "SSH_AGENT_PID=${SSH_AGENT_PID}" >> "${GITHUB_ENV}"
+
+          # Add the key from stdin (NEVER on disk, NEVER echoed). Trailing newline
+          # is required by ssh-add for some key formats.
+          printf '%s\n' "${DRUPALCODE_DEPLOY_KEY}" | ssh-add - >/dev/null 2>&1 || {
+            echo "::error::ssh-add failed to load DRUPALCODE_DEPLOY_KEY (is it a valid OpenSSH private key?)."
+            exit 1
+          }
+          echo "Deploy key loaded into ssh-agent."
+
+      # The actual publish. For a dry run we print the exact branch/tag refspecs
+      # we WOULD push and stop. Otherwise we push, in ONE atomic operation, the
+      # 0.1.x branch fast-forward (so the tag's commit is on the branch lineage
+      # drupal.org packages from) and the bare-semver tag. `--atomic` makes the
+      # branch+tag land together or not at all (no half-published state). Neither
+      # refspec is forced (no leading '+'), so a non-fast-forward branch update or
+      # an existing divergent tag is REJECTED by the server, never clobbered.
+      - name: Push tag (and 0.1.x branch) to drupal.org
+        id: publish
+        env:
+          GH_TAG: ${{ steps.map.outputs.gh_tag }}
+          DRUPAL_TAG: ${{ steps.map.outputs.drupal_tag }}
+          RELEASE_BRANCH: ${{ steps.map.outputs.release_branch }}
+          TAG_COMMIT: ${{ steps.lineage.outputs.tag_commit }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          EVENT_NAME: ${{ github.event_name }}
+          # Enforce the pinned host key on the push: strict checking, only the
+          # known_hosts we wrote (the verified pin), no agent-forwarding/global config.
+          GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o IdentitiesOnly=no"
+        run: |
+          set -euo pipefail
+
+          echo "GitHub tag        : ${GH_TAG}"
+          echo "drupal.org tag    : ${DRUPAL_TAG}"
+          echo "drupal.org branch : ${RELEASE_BRANCH}"
+          echo "tag commit        : ${TAG_COMMIT}"
+          echo "SSH remote        : ${DRUPAL_GIT_REMOTE}"
+
+          # Branch push: advance (fast-forward only) the release branch to the tag
+          # commit. ${TAG_COMMIT}:refs/heads/${RELEASE_BRANCH} with NO leading '+'
+          # is a non-force update — the push is rejected (not forced) if it is not
+          # a fast-forward, which is the safe behaviour for a release branch.
+          BRANCH_REFSPEC="${TAG_COMMIT}:refs/heads/${RELEASE_BRANCH}"
+          # Tag push: bare-semver tag at the same commit; never force.
+          TAG_REFSPEC="refs/tags/${GH_TAG}:refs/tags/${DRUPAL_TAG}"
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${DRY_RUN}" = "true" ]; then
+            echo "::notice::DRY RUN — no network write. Would run:"
+            echo "  git push --atomic ${DRUPAL_GIT_REMOTE} ${BRANCH_REFSPEC} ${TAG_REFSPEC}"
+            {
+              echo ""
+              echo "**DRY RUN** — nothing was pushed. Would have run:"
+              echo '```'
+              echo "git push --atomic ${DRUPAL_GIT_REMOTE} ${BRANCH_REFSPEC} ${TAG_REFSPEC}"
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          # Defensive: the agent/known_hosts must be present (set by the prior
+          # step, which is skipped only on a dry run we already returned from).
+          if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+            echo "::error::ssh-agent is not available; cannot push."
+            exit 1
+          fi
+          if [ ! -s "$HOME/.ssh/known_hosts" ]; then
+            echo "::error::pinned known_hosts is missing; refusing to push."
+            exit 1
+          fi
+
+          echo "Atomically pushing ${RELEASE_BRANCH} fast-forward + tag ${DRUPAL_TAG} to drupal.org ..."
+          git push --atomic "${DRUPAL_GIT_REMOTE}" "${BRANCH_REFSPEC}" "${TAG_REFSPEC}"
+
+          {
+            echo ""
+            echo "Pushed \`${DRUPAL_TAG}\` (and fast-forwarded \`${RELEASE_BRANCH}\`) to drupal.org."
+            echo "drupal.org will package the release tarball from the tag; a maintainer then publishes the release node at https://www.drupal.org/project/cinatra (Add new release)."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # Always stop the agent we started (best-effort).
+      - name: Stop ssh-agent
+        if: ${{ always() }}
+        run: |
+          set +e
+          if [ -n "${SSH_AGENT_PID:-}" ]; then
+            ssh-agent -k >/dev/null 2>&1 || true
+          fi
+          exit 0
