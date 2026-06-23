@@ -212,8 +212,10 @@ jobs:
       #
       # The private key is fed via stdin into ssh-agent and is never written to
       # disk or printed.
+      # Always run (push and BOTH dispatch modes): on a dry run we use the loaded
+      # agent to do a read-only `git ls-remote` auth probe, so the dry run truly
+      # verifies the deploy key + installed public key without any write.
       - name: Start ssh-agent and pin git.drupal.org host key
-        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         env:
           CINATRA_DRUPALORG_DEPLOY_KEY_BASE64: ${{ secrets.CINATRA_DRUPALORG_DEPLOY_KEY_BASE64 }}
         run: |
@@ -295,6 +297,16 @@ jobs:
           TAG_REFSPEC="refs/tags/${GH_TAG}:refs/tags/${DRUPAL_TAG}"
 
           if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${DRY_RUN}" = "true" ]; then
+            # Real auth probe: the ssh-agent step ran (key loaded, host key pinned).
+            # `ls-remote` authenticates to drupal.org and reads a ref — NO write —
+            # so a dry run genuinely confirms the deploy key + installed public key.
+            echo "Verifying SSH auth to ${DRUPAL_SSH_HOST} (read-only ls-remote, no write) ..."
+            if git ls-remote "${DRUPAL_GIT_REMOTE}" "refs/heads/${RELEASE_BRANCH}" >/dev/null 2>&1; then
+              echo "::notice::SSH auth OK — the deploy key authenticates to drupal.org (matching public key is installed)."
+            else
+              echo "::error::SSH auth FAILED — the deploy key is not accepted. Install the matching public key as a WRITE-enabled deploy key on the drupalcode project, then re-run."
+              exit 1
+            fi
             echo "::notice::DRY RUN — no network write. Would run:"
             echo "  git push --atomic ${DRUPAL_GIT_REMOTE} ${BRANCH_REFSPEC} ${TAG_REFSPEC}"
             {
