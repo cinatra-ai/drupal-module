@@ -1,4 +1,4 @@
-# Cinatra — Drupal module
+# Cinatra for Drupal
 
 Puts the [Cinatra](https://cinatra.ai) AI assistant right on your Drupal pages,
 so content editors can draft, expand, and revise content in a chat panel next to
@@ -8,25 +8,12 @@ The assistant talks to **your** Cinatra instance — the one whose address you
 enter in the settings. You choose and control which instance your content goes
 to; it is not tied to a fixed outside service.
 
-## What does the assistant help me do?
+## Works with
 
-It's an AI assistant built right into the editor. It helps you draft, rewrite,
-shorten, retitle, and improve content and answer questions while you work.
-Because it runs through your own Cinatra instance, it isn't a generic writing
-tool — it works through a Cinatra agent on your instance, so it can draw on the
-tools, data, and knowledge you've connected there and bring that capability
-straight into your CMS. It knows the page you are on, so its suggestions
-fit the content you are actually editing.
+- Drupal `^10.3 || ^11`
+- A running Cinatra instance
 
-## Do I need a Cinatra account?
-
-You need access to a running Cinatra instance. Cinatra is an open source AI
-platform that you or your organisation host and connect the assistant to — learn
-more and get the source at <https://www.cinatra.ai>. Once your instance is
-running, open the Cinatra settings, enter the instance's web address, and
-connect.
-
-## What it does for editors
+## Capabilities
 
 - Adds an AI assistant panel on node pages, node edit forms, and the front page,
   so help is one click away while you write.
@@ -36,20 +23,38 @@ connect.
   assistant suggests and decides what to keep; when your instance supports it,
   suggested changes can be dropped straight into the form.
 - Shows the assistant **only** to the people you choose, using a dedicated
-  permission (see below) — not to every logged-in user.
+  Drupal permission — not to every logged-in user.
+- One-click **Connect with Cinatra**: enter your instance address and approve a
+  consent screen; the integration credential is provisioned and stored
+  automatically — no key is copied or pasted.
 
 ## Getting started
 
-1. Install the module (`composer require drupal/cinatra` once published, or place
-   it under `modules/custom/cinatra/`).
-2. Enable it: `drush en cinatra`.
-3. In Drupal, open **Configuration → Web services → Cinatra**, enter your Cinatra
-   instance address, and click **Connect with Cinatra**. Approve the connection
-   on the screen that appears, and you are set up. (No redirect in your setup?
-   Paste the one-line connection code instead, or use the **Manual
-   configuration** section.)
-4. On **People → Permissions**, give the **"Use the Cinatra AI assistant"**
-   permission to the content editors who should see the assistant.
+1. Install the module:
+
+   ```sh
+   composer require drupal/cinatra
+   ```
+
+   Alternatively, place the module directory under `modules/custom/cinatra/`.
+
+2. Enable it:
+
+   ```sh
+   drush en cinatra
+   ```
+
+3. In Drupal, open **Configuration → Web services → Cinatra**
+   (`/admin/config/services/cinatra`), enter your Cinatra instance address, and
+   click **Connect with Cinatra**. Approve the connection on the screen that
+   appears, and you are set up.
+
+   If your environment does not support a browser redirect, paste the one-line
+   connection string instead (expand "No browser redirect?"), or fill in the
+   **Manual configuration** fields directly.
+
+4. On **People → Permissions**, grant the **"Use the Cinatra AI assistant"**
+   permission to the roles whose members should see the assistant.
 
 Upgrading from the pre-release `cinatra_widget` module? Enabling this module
 copies your old `cinatra_widget` settings over automatically.
@@ -57,29 +62,78 @@ copies your old `cinatra_widget` settings over automatically.
 ## Who can use it
 
 The assistant appears only for users who have the **"Use the Cinatra AI
-assistant"** permission. The assistant can read the current page and suggest
-content changes, so give this permission to people you trust to edit content.
+assistant"** permission. The widget can read the current page and propose
+content edits, so grant this permission to people you trust to edit content.
 
 ## Requirements
 
-- Drupal core `^10.3 || ^11`.
+- Drupal core `^10.3 || ^11`
+- PHP `>=8.1`
 - A Cinatra instance you can reach, with the assistant turned on. With an older
-  Cinatra instance the panel shows a short "update Cinatra" notice instead of the
-  assistant.
+  Cinatra instance the panel shows a short "update Cinatra" notice instead of
+  the assistant.
 
 ## Your content
 
-When an editor chats with the assistant, the messages they type and the page they
-are on are sent to the Cinatra instance you set up — and nowhere else. That
-instance's own privacy terms cover this data; see <https://cinatra.ai>.
+When an editor chats with the assistant, the messages they type and the page
+they are on are sent to the Cinatra instance you set up — and nowhere else. That
+instance's own privacy terms apply; see <https://cinatra.ai>.
 
 ## Development
 
-This repo is the source of truth for the module. Cinatra developers consume it as
-a local clone for the dev docker stack. See the cinatra repo's
-`docs/developer/wp-drupal-plugin-development.md` for the multi-repo workflow.
+### Prerequisites
+
+- PHP `>=8.1`
+- [Composer](https://getcomposer.org/) for dependency management
+
+### Install dev dependencies
+
+```sh
+composer install
+```
+
+### Static analysis and coding standards
+
+```sh
+# Drupal coding standards (Drupal + DrupalPractice sniffs)
+composer phpcs
+
+# Auto-fix fixable coding-standards issues
+composer phpcbf
+
+# Static analysis (phpstan-drupal, deprecation rules)
+composer phpstan
+```
+
+The PHPCS configuration lives in `phpcs.xml.dist` and the PHPStan configuration
+in `phpstan.neon.dist`.
+
+### Tests
+
+Unit and functional tests live under `tests/`. To run them you need a Drupal
+test environment (the standard Drupal core test runner or DDEV/Lando):
+
+```sh
+# Example using the Drupal test runner from a Drupal root
+php core/scripts/run-tests.sh --module cinatra
+```
+
+### JS and CSS
+
+The module ships two authored files — `js/cinatra-fallback.js` and
+`css/cinatra-fallback.css` — which are the fallback chrome that shows while the
+assistant widget loads or when the instance is unreachable. These conform to
+Drupal JS/CSS conventions (`Drupal.behaviors`, `"use strict"`, `Drupal.t()`).
+
+`js/cinatra-widget.js` is the vendored assistant widget bundle (Apache-2.0) and
+is excluded from PHPCS; see `cinatra.libraries.yml` for the library declaration.
+
+### Contributing
+
+Please open a pull request against the `main` branch. Run `composer phpcs` and
+`composer phpstan` before submitting; the CI pipeline runs the same checks.
 
 ## License
 
-GPL-2.0-or-later. See [LICENSE](LICENSE). The bundled assistant is the Cinatra
-app frontend under Apache-2.0, which is compatible with the GPL.
+GPL-2.0-or-later. See [LICENSE](LICENSE). The bundled assistant widget is the
+Cinatra app frontend under Apache-2.0, which is compatible with the GPL.
