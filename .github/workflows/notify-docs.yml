@@ -1,0 +1,73 @@
+name: notify-docs
+
+# Tag-triggered docs republish for the Cinatra integrations hub.
+#
+# WHAT THIS DOES
+# This integration's documentation hub on docs.cinatra.ai
+# (https://docs.cinatra.ai/integrations/drupal/) is authored in this repo under
+# docs/ and compiled into the public cinatra-ai/docs Integrations chapter at this
+# integration's latest released version. On a pushed semver `v*` tag, this
+# workflow fires a repository_dispatch (event_type: cinatra-integration-released)
+# at cinatra-ai/ops so its docs build picks up this repo's docs/ at the new
+# release and republishes the hub — mirroring the public cinatra-ai/docs
+# notify-ops.yml pattern.
+#
+# DOCS PUBLISH ONLY ON A NEW RELEASE
+# This runs ONLY on a pushed `v*` tag (and the manual workflow_dispatch backfill).
+# It never runs on push-to-branch or pull_request, so docs publish only when the
+# integration cuts a release. A docs-only fix rides the next patch release tag.
+#
+# PRE-TAG VALIDATION
+# The docs-contract validator (.github/workflows/docs-contract-gate.yml) runs on
+# every pull_request and push to main, so docs/ is already proven to conform to
+# the contract before any release tag is cut.
+#
+# DORMANCY / GATING (this workflow is INERT until the owner acts)
+# It needs the CINATRA_OPS_DISPATCH_TOKEN repo secret (a fine-grained PAT scoped
+# to cinatra-ai/ops with Contents: write). Until that secret is set, the job
+# no-ops gracefully and docs republish via the ops build's scheduled fallback /
+# manual workflow_dispatch.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v* tag whose docs to republish (backfill). This never creates tags."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notify-docs
+  cancel-in-progress: true
+
+jobs:
+  notify:
+    name: Dispatch cinatra-integration-released
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fire repository_dispatch to ops
+        env:
+          GH_TOKEN: ${{ secrets.CINATRA_OPS_DISPATCH_TOKEN }}
+          SHA: ${{ github.sha }}
+          REF: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "CINATRA_OPS_DISPATCH_TOKEN not set — skipping dispatch."
+            echo "Operator: add the secret to enable on-tag docs republish; until then"
+            echo "the ops docs build picks this up on its scheduled fallback / manual run."
+            exit 0
+          fi
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/cinatra-ai/ops/dispatches \
+            -d "$(jq -nc --arg sha "$SHA" --arg ref "$REF" --arg repo "${GITHUB_REPOSITORY}" --arg slug "drupal" \
+                  '{event_type:"cinatra-integration-released",client_payload:{repo:$repo,slug:$slug,sha:$sha,ref:$ref}}')"
