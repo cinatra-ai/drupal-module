@@ -1,0 +1,26 @@
+name: docs-contract-gate
+
+# Thin caller for the reusable integration docs-contract validator (cinatra-ai/ci).
+# It validates this repo's docs/ against the docs contract authored in
+# cinatra-ai/docs PRE-TAG, so the per-repo hub stays consistent with the contract
+# before a release publishes it into the public Integrations chapter on
+# docs.cinatra.ai. The same gate runs in the ops docs build at compile time.
+#
+# Both the workflow ref (`@<sha>`) and the `ref` input are pinned to the SAME
+# commit SHA so the gate code is not pulled from mutable main.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  docs-contract-gate:
+    uses: cinatra-ai/ci/.github/workflows/docs-contract-gate.yml@1e0b01d53cecb920550e92370f4f2b41f2eca997 # v0.0.0-main.1e0b01d
+    with:
+      docs: "docs"
+      slug: "drupal"
+      ref: 1e0b01d53cecb920550e92370f4f2b41f2eca997

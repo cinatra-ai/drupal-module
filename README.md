@@ -8,6 +8,14 @@ The assistant talks to **your** Cinatra instance — the one whose address you
 enter in the settings. You choose and control which instance your content goes
 to; it is not tied to a fixed outside service.
 
+## Documentation
+
+The full documentation hub for this integration — overview, quick start,
+day-to-day usage, settings & permissions, troubleshooting, and advanced
+reference — lives at **https://docs.cinatra.ai/integrations/drupal/**. The
+source for those pages is this repository's [`docs/`](docs/) directory, published
+to docs.cinatra.ai on each release.
+
 ## Works with
 
 - Drupal `^10.3 || ^11`
