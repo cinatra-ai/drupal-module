@@ -7,7 +7,7 @@
   (see "Logo" + ../.gitattributes note). This whole .drupalorg/ directory is
   export-ignored from the release tarball, so none of it ships to end users.
 
-  Brand source: cinatra-ai/design (tokens/brand.json, assets/logo/variants.json).
+  Brand source: the Cinatra design system (tokens/brand.json, assets/logo/variants.json).
   Voice/marking rules: write plain "Cinatra" (no trademark glyphs — this is an
   open source project); write "open source" unhyphenated.
 -->
@@ -212,12 +212,12 @@ the repo-root `logo.png`, and a duplicate in the Images field is deprecated.
 
 > Why mustard-on-white and not the navy ground: the Cinatra brand rule is
 > "mustard on paper or surface; never mustard on the navy ground"
-> (`design/assets/logo/variants.json`, `meta.rule`). The mustard fedora reads
-> correctly on a white/paper ground, so that is the colourway used here. The PNG
-> is rendered with **square corners and no border** — Project Browser applies its
-> own mask and renders the tile on its own surface, so we bake in neither a
-> corner radius nor a chip. Brand source: `design/assets/logo/variants.json`
-> (`colorways.mustard`) and `design/tokens/brand.json`.
+> (brand asset metadata, `assets/logo/variants.json`, `meta.rule`). The mustard
+> fedora reads correctly on a white/paper ground, so that is the colourway used
+> here. The PNG is rendered with **square corners and no border** — Project Browser
+> applies its own mask and renders the tile on its own surface, so we bake in
+> neither a corner radius nor a chip. Brand source: the Cinatra design system's
+> `assets/logo/variants.json` (`colorways.mustard`) and `tokens/brand.json`.
 
 ## Screenshots — files + alt text
 

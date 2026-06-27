@@ -14,7 +14,7 @@ the release tarball.
 | Path | What it is |
 |---|---|
 | `project-page.md` | The project-page copy: short summary (≤200 chars), full description body, categories, maintenance/dev status, resources/links, logo spec, and the embedded screenshots + alt text. |
-| `generate-logo.mjs` | Deterministic generator for the project logo, derived from the Cinatra brand (`cinatra-ai/design`). Reproduces the sanctioned app-icon colourway. |
+| `generate-logo.mjs` | Deterministic generator for the project logo, derived from the Cinatra brand (the Cinatra design system). Reproduces the sanctioned app-icon colourway. |
 | `images/logo.png` | The Project Browser project logo — 512×512 PNG, square corners, ~1.3 KB. |
 | `images/logo_svg.txt` | Vector master of the logo for crisp rendering (`logo_svg.txt` is the name Project Browser reads). |
 | `images/screenshot-*.png` | Project-page screenshots — real captures against a live Drupal + Cinatra stack (`screenshot-connect.png`, `screenshot-in-action.png`), embedded in `project-page.md` with captions. |
@@ -42,10 +42,10 @@ the release tarball.
 
 ## Brand provenance
 
-Logo colours and geometry come from `cinatra-ai/design`:
+Logo colours and geometry come from the Cinatra design system:
 - `tokens/brand.json` — `color.mustard` (`#c79545`), `color.navy` (`#15213a`).
 - `assets/logo/variants.json` — `applications.appIcon` (mustard fedora on navy).
 - `scripts/generate-assets.mjs` — `appIconSvg()` (identical geometry/transform).
 
-Voice rules (`design/TRADEMARK.md`): this is an open source project — write plain
+Voice rules (the Cinatra brand trademark guidance): this is an open source project — write plain
 "Cinatra" with no trademark glyphs; write "open source" unhyphenated.

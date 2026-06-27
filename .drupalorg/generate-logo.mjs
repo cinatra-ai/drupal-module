@@ -2,13 +2,13 @@
 // Generate the Drupal.org / Project Browser project logo for the Cinatra module.
 //
 // SOURCE OF TRUTH: the Cinatra brand. This script reproduces the sanctioned
-// PRIMARY (mustard) colourway from the cinatra-ai/design repo — the mustard
-// fedora mark on a paper/white ground. See:
-//   design: assets/logo/variants.json  -> colorways.mustard, applications.favicon
-//           tokens/brand.json          -> color.mustard / color.paper
-//           scripts/generate-assets.mjs-> the mustard mark on paper
+// PRIMARY (mustard) colourway from the Cinatra design system — the mustard
+// fedora mark on a paper/white ground. See the canonical brand asset metadata:
+//   assets/logo/variants.json  -> colorways.mustard, applications.favicon
+//   tokens/brand.json          -> color.mustard / color.paper
+//   scripts/generate-assets.mjs-> the mustard mark on paper
 //
-// Brand rule (design/assets/logo/variants.json, meta.rule):
+// Brand rule (brand asset metadata, assets/logo/variants.json, meta.rule):
 //   "Mustard on paper or surface. Navy on paper. Cream on navy.
 //    Never mustard on a coloured chip or on the navy ground."
 // So the mark MUST be the mustard fedora on white/paper, NOT on the navy ground.
@@ -28,14 +28,15 @@
 // (logo.png / logo_svg.txt MUST live at the repo root on the default branch for
 // Project Browser to pick them up.)
 //
-// Run:  CINATRA_DESIGN_NODE_MODULES=/path/to/cinatra-ai/design/node_modules \
+// Run:  CINATRA_DESIGN_NODE_MODULES=/absolute/path/to/node_modules \
 //         node .drupalorg/generate-logo.mjs
 //
-// Deps: `sharp`, from the design repo's toolchain. This module is NOT inside a
+// Deps: `sharp`, from the brand tooling. This module is NOT inside a
 // package that declares sharp, so a bare `import sharp from "sharp"` cannot be
 // resolved here, and ESM does NOT honour NODE_PATH for bare specifiers. Point
-// CINATRA_DESIGN_NODE_MODULES at a `cinatra-ai/design` checkout that has run
-// `npm install`; this script resolves sharp from there via createRequire. (If
+// CINATRA_DESIGN_NODE_MODULES at a node_modules directory that has run
+// `npm install` and provides sharp; this script resolves sharp from there via
+// createRequire. (If
 // you instead `npm install sharp` somewhere reachable from this file, the env
 // var is optional.) pngquant is shelled out to if present on PATH.
 
@@ -47,7 +48,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const designModules = process.env.CINATRA_DESIGN_NODE_MODULES;
-// Resolve sharp from the design checkout first (the canonical toolchain), then
+// Resolve sharp from that node_modules first (the canonical toolchain), then
 // fall back to normal resolution from this module's location.
 const sharp = designModules
   ? require(join(designModules, "sharp"))
@@ -61,7 +62,7 @@ mkdirSync(outDir, { recursive: true });
 const MUSTARD = "#c79545"; // color.mustard.value — the brand colour (the mark)
 const WHITE = "#ffffff"; //   white/paper ground (mustard reads on paper, not navy)
 
-// The fedora mark geometry, copied verbatim from the design repo's
+// The fedora mark geometry, copied verbatim from the canonical brand tooling's
 // scripts/generate-assets.mjs (FEDORA_PATHS) / src/app/icon.svg. Keeping it
 // inline makes this script self-contained and deterministic; if the brand mark
 // changes upstream, re-copy these two paths and the transform.
