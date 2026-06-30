@@ -81,6 +81,15 @@ jobs:
   drupalorg-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Gate the drupal.org publish behind the org-wide `release-approval`
+    # Environment, BEFORE the deploy key is installed and the workflow goes
+    # live. Pushing the bare-semver tag to git.drupal.org publishes the release
+    # the drupal.org packager builds from, so it must pause for an owner
+    # approval. The protected Environment is provisioned in this repo (required
+    # reviewer, prevent_self_review=false, can_admins_bypass=false); a
+    # referenced-but-unprovisioned Environment auto-creates UNPROTECTED, so the
+    # line and the provisioning ship together.
+    environment: release-approval
     steps:
       # Full history + all tags so the pushed tag and the 0.1.x branch lineage
       # are present locally (a shallow clone cannot fast-forward the branch).
