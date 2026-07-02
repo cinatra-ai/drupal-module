@@ -18,7 +18,7 @@ to docs.cinatra.ai on each release.
 
 ## Works with
 
-- Drupal `^10.3 || ^11`
+- Drupal `^10.3 || ^11 || ^12`
 - A running Cinatra instance
 
 ## Capabilities
@@ -75,7 +75,7 @@ content edits, so grant this permission to people you trust to edit content.
 
 ## Requirements
 
-- Drupal core `^10.3 || ^11`
+- Drupal core `^10.3 || ^11 || ^12`
 - PHP `>=8.1`
 - A Cinatra instance you can reach, with the assistant turned on. With an older
   Cinatra instance the panel shows a short "update Cinatra" notice instead of
@@ -86,6 +86,21 @@ content edits, so grant this permission to people you trust to edit content.
 When an editor chats with the assistant, the messages they type and the page
 they are on are sent to the Cinatra instance you set up — and nowhere else. That
 instance's own privacy terms apply; see <https://cinatra.ai>.
+
+## Feature parity with the WordPress plugin
+
+For the core integration — the locally-shipped assistant widget, the
+server-side credential with its short-lived streaming-token broker, and the
+graceful fallback chrome — this module is at parity with the
+[Cinatra WordPress plugin](https://github.com/cinatra-ai/wordpress-plugin).
+
+One capability is intentionally **WordPress-only for now**: the WordPress
+plugin can notify a connected Cinatra instance when a post is published (a
+subscription registry plus a signed publish webhook). The equivalent Drupal
+node-publish notification is **not yet implemented**, because it first needs a
+matching inbound endpoint on the Cinatra side — a module-side emitter would
+otherwise have nowhere to deliver. This asymmetry is tracked in
+[issue #72](https://github.com/cinatra-ai/drupal-module/issues/72).
 
 ## Development
 
