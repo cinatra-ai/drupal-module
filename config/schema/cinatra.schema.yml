@@ -17,3 +17,11 @@ cinatra.settings:
       # tokens minted by the cinatra.token broker route.
       type: string
       label: 'Cinatra API key (credential — held server-side, never sent to the browser)'
+    webhook_secret:
+      # Webhook signing secret returned by the connect exchange (credential).
+      # Persisted server-side ONLY — like api_key, it is never sent to the
+      # browser — and is used to verify inbound webhook signatures (mirrors the
+      # WordPress companion's cinatra_webhook_secret option). Same "no native
+      # secret scalar" caveat as api_key applies.
+      type: string
+      label: 'Cinatra webhook secret (credential — held server-side, never sent to the browser)'

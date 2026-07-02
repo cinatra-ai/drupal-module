@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\cinatra\Controller;
 
+use Drupal\cinatra\Ssrf;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Controller\ControllerBase;
 use GuzzleHttp\ClientInterface;
@@ -182,10 +183,22 @@ final class WidgetAuthController extends ControllerBase {
       $relayHeaders['Origin'] = $browserOrigin;
     }
 
+    // HTTP-layer SSRF guard (defense-in-depth over CinatraUrl::normalize): the
+    // API-key-bearing relay must never be sent to a loopback/private or
+    // link-local address. Redirect-following is disabled below so a 3xx cannot
+    // retarget the request past this check.
+    if (!Ssrf::isAllowedUrl($endpoint)) {
+      $this->logger->warning('Cinatra widget-auth @segment blocked: the configured instance is not a public origin.', [
+        '@segment' => $segment,
+      ]);
+      return $this->jsonError('Cinatra could not complete sign-in. Check the connector settings, or contact your administrator.', 502);
+    }
+
     try {
       $response = $this->httpClient->post($endpoint, [
         'timeout' => 10,
         'http_errors' => FALSE,
+        'allow_redirects' => FALSE,
         'headers' => $relayHeaders,
         'json' => $forward,
       ]);

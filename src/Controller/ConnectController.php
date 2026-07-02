@@ -6,6 +6,7 @@ namespace Drupal\cinatra\Controller;
 
 use Drupal\cinatra\CinatraUrl;
 use Drupal\cinatra\Connect;
+use Drupal\cinatra\Ssrf;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Controller\ControllerBase;
 use Drupal\Core\KeyValueStore\KeyValueExpirableFactoryInterface;
@@ -214,10 +215,21 @@ final class ConnectController extends ControllerBase {
     if ($base === NULL) {
       return ['ok' => FALSE, 'response' => NULL];
     }
+    // HTTP-layer SSRF guard (defense-in-depth over CinatraUrl::normalize):
+    // never POST the connect exchange (which carries the code/install_code)
+    // to a loopback/private/link-local address. Redirect-following is disabled
+    // below so a 3xx cannot retarget the request past this check.
+    if (!Ssrf::isAllowedUrl($base . '/api/connect/token')) {
+      $this->logger->warning('Cinatra connect exchange blocked: the instance is not a public origin (grant=@grant).', [
+        '@grant' => (string) ($body['grant_type'] ?? 'unknown'),
+      ]);
+      return ['ok' => FALSE, 'response' => NULL];
+    }
     try {
       $response = $this->httpClient->post($base . '/api/connect/token', [
         'timeout' => 15,
         'http_errors' => FALSE,
+        'allow_redirects' => FALSE,
         'headers' => [
           'Content-Type' => 'application/json',
           'Accept' => 'application/json',
@@ -287,6 +299,14 @@ final class ConnectController extends ControllerBase {
       ? $r['cinatraInstanceId']
       : '';
     $config->set('instance_id', $instanceId);
+    // Persist the webhook signing secret when the exchange returns one,
+    // mirroring the WordPress companion (which stores + verifies it). It is
+    // held server-side only (like api_key) and is never sent to the browser.
+    // Only set it when present so a reconnect that returns no secret keeps any
+    // existing value rather than clearing it.
+    if (isset($r['webhookSecret']) && is_string($r['webhookSecret']) && $r['webhookSecret'] !== '') {
+      $config->set('webhook_secret', $r['webhookSecret']);
+    }
     $config->save();
 
     $this->messenger()->addStatus($this->t('Connected to Cinatra. The integration credential is stored on this server and is never sent to the browser.'));
