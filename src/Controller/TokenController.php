@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\cinatra\Controller;
 
 use Drupal\cinatra\Cinatra;
+use Drupal\cinatra\Ssrf;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Controller\ControllerBase;
 use Drupal\Core\Session\AccountInterface;
@@ -118,10 +119,21 @@ final class TokenController extends ControllerBase {
     $serverBase = $this->serverBaseUrl($cinatraUrl);
     $endpoint = $serverBase . '/api/agents/' . self::AGENT_SLUG . '/token';
 
+    // HTTP-layer SSRF guard (defense-in-depth over CinatraUrl::normalize): the
+    // API-key-bearing POST must never be sent to a loopback/private/link-local
+    // address (e.g. cloud metadata). The configured dev/container hosts are
+    // still permitted. Redirect-following is disabled below so a 3xx cannot
+    // retarget the request past this check.
+    if (!Ssrf::isAllowedUrl($endpoint)) {
+      $this->logger->warning('Cinatra token exchange blocked: the configured instance is not a public origin.');
+      return $this->jsonError('Could not reach the Cinatra instance.', 502);
+    }
+
     try {
       $response = $this->httpClient->post($endpoint, [
         'timeout' => 10,
         'http_errors' => FALSE,
+        'allow_redirects' => FALSE,
         'headers' => [
           'Authorization' => 'Bearer ' . $apiKey,
           'Content-Type' => 'application/json',
@@ -150,16 +162,11 @@ final class TokenController extends ControllerBase {
     $body = json_decode($raw, TRUE);
 
     if ($status < 200 || $status >= 300 || !is_array($body) || empty($body['token'])) {
-      // The instance returns a designed structured {error} string (e.g. "origin
-      // not configured"); pass that through to help the editor, but defensively
-      // scrub the long-lived key from it and never reflect raw upstream bodies.
-      $upstream = is_array($body) && isset($body['error']) && is_string($body['error'])
-        ? $body['error']
-        : NULL;
-      $message = $upstream !== NULL
-        ? $this->scrub($upstream, $apiKey)
-        : 'Token exchange failed (HTTP ' . $status . ').';
-      // Log the full (scrubbed) upstream detail server-side for diagnosis.
+      // Never reflect the upstream error to the browser — even the designed,
+      // scrubbed {error} string is internal detail. Log the full (scrubbed)
+      // upstream body server-side for diagnosis and return a fixed generic
+      // message, consistent with WidgetAuthController::relay and the WordPress
+      // broker.
       $this->logger->warning('Cinatra token exchange rejected (HTTP @status): @body', [
         '@status' => $status,
         '@body' => $this->scrub(mb_substr($raw, 0, 500), $apiKey),
@@ -169,7 +176,7 @@ final class TokenController extends ControllerBase {
       // upstream 5xx) is a server-side problem from the browser's perspective.
       // A raw 401 would otherwise be misread by the browser as its own Drupal
       // session expiring.
-      return $this->jsonError($message, 502);
+      return $this->jsonError('Cinatra could not issue an assistant token. Check the connector settings, or contact your administrator.', 502);
     }
 
     // Pass through only the short-lived token envelope. The browser streams to
