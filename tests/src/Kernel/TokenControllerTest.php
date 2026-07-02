@@ -538,7 +538,9 @@ final class TokenControllerTest extends KernelTestBase {
   /**
    * Tests that a non-2xx from the instance maps to a 502.
    *
-   * It surfaces the structured message without leaking the long-lived key.
+   * The upstream error is NEVER reflected to the browser: a fixed generic
+   * message is returned (the scrubbed detail is logged server-side) and the
+   * long-lived key is never leaked.
    *
    * @covers ::mint
    */
@@ -550,7 +552,9 @@ final class TokenControllerTest extends KernelTestBase {
     $response = $controller->mint();
     $this->assertSame(502, $response->getStatusCode());
     $body = json_decode($response->getContent(), TRUE);
-    $this->assertSame('invalid integration key', $body['error']);
+    // The upstream detail must not be reflected — only a fixed generic message.
+    $this->assertStringNotContainsString('invalid integration key', $response->getContent());
+    $this->assertSame('Cinatra could not issue an assistant token. Check the connector settings, or contact your administrator.', $body['error']);
     $this->assertStringNotContainsString('long-lived-secret-key', $response->getContent());
   }
 
