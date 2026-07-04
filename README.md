@@ -94,13 +94,18 @@ server-side credential with its short-lived streaming-token broker, and the
 graceful fallback chrome — this module is at parity with the
 [Cinatra WordPress plugin](https://github.com/cinatra-ai/wordpress-plugin).
 
-One capability is intentionally **WordPress-only for now**: the WordPress
-plugin can notify a connected Cinatra instance when a post is published (a
-subscription registry plus a signed publish webhook). The equivalent Drupal
-node-publish notification is **not yet implemented**, because it first needs a
-matching inbound endpoint on the Cinatra side — a module-side emitter would
-otherwise have nowhere to deliver. This asymmetry is tracked in
-[issue #72](https://github.com/cinatra-ai/drupal-module/issues/72).
+The node-publish notification is at parity too (issue
+[#72](https://github.com/cinatra-ai/drupal-module/issues/72)): when a node
+transitions into the published state the module emits a signed
+`node_published` webhook to the connected instance's **generic**
+inbound-webhook route
+(`/webhook/cinatra-ai/drupal-mcp-connector/node-published/<binding id>`),
+signed with [Standard-Webhooks](https://www.standardwebhooks.com/) headers
+over the per-site secret the connect exchange provisions. Unlike the
+WordPress plugin (whose in-field fleet keeps a legacy HMAC bridge), the
+Drupal module signs Standard-Webhooks from day one — there is no legacy arm.
+Emission is deferred to request shutdown, so saving a node is never blocked
+by webhook delivery.
 
 ## Development
 

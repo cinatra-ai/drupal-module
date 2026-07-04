@@ -290,6 +290,11 @@ final class ConnectController extends ControllerBase {
     }
 
     $config = $this->cinatraConfigFactory->getEditable('cinatra.settings');
+    // Captured BEFORE the overwrite: the previously connected instance, used
+    // below to decide whether an existing webhook pair may survive a
+    // pair-omitted response.
+    $previousUrl = (string) $config->get('cinatra_url');
+    $previousInstanceId = (string) $config->get('instance_id');
     $config->set('cinatra_url', $instanceUrl);
     $config->set('api_key', $credential);
     // Always overwrite instance_id from THIS connection so a reconnect to a
@@ -299,13 +304,33 @@ final class ConnectController extends ControllerBase {
       ? $r['cinatraInstanceId']
       : '';
     $config->set('instance_id', $instanceId);
-    // Persist the webhook signing secret when the exchange returns one,
-    // mirroring the WordPress companion (which stores + verifies it). It is
-    // held server-side only (like api_key) and is never sent to the browser.
-    // Only set it when present so a reconnect that returns no secret keeps any
-    // existing value rather than clearing it.
-    if (isset($r['webhookSecret']) && is_string($r['webhookSecret']) && $r['webhookSecret'] !== '') {
-      $config->set('webhook_secret', $r['webhookSecret']);
+    // Persist the webhook signing secret + server-issued binding id as a PAIR
+    // (cinatra-ai/cinatra#974): the exchange returns both or neither, and a
+    // secret is only usable against the binding it was minted with — storing
+    // one half would poison a previously working pair (codex). Both are held
+    // server-side only (like api_key) and never sent to the browser.
+    //
+    // When the response carries NO pair: for the SAME instance as before
+    // (url and instance id unchanged) the existing pair is kept — that is a
+    // transient binding-mint failure on the instance and the next reconnect
+    // re-mints idempotently. For a DIFFERENT instance both keys are CLEARED
+    // (codex round-1): keeping them would make the emitter send webhook
+    // material signed for the OLD instance to the newly configured origin
+    // (cross-instance signed material that stays replayable to the old
+    // instance within the Standard-Webhooks timestamp window).
+    $webhookSecret = (isset($r['webhookSecret']) && is_string($r['webhookSecret']))
+      ? $r['webhookSecret']
+      : '';
+    $webhookBindingId = (isset($r['webhookBindingId']) && is_string($r['webhookBindingId']))
+      ? $r['webhookBindingId']
+      : '';
+    if ($webhookSecret !== '' && $webhookBindingId !== '') {
+      $config->set('webhook_secret', $webhookSecret);
+      $config->set('webhook_binding_id', $webhookBindingId);
+    }
+    elseif ($previousUrl !== $instanceUrl || $previousInstanceId !== $instanceId) {
+      $config->set('webhook_secret', '');
+      $config->set('webhook_binding_id', '');
     }
     $config->save();
 
