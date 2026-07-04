@@ -20,8 +20,19 @@ cinatra.settings:
     webhook_secret:
       # Webhook signing secret returned by the connect exchange (credential).
       # Persisted server-side ONLY — like api_key, it is never sent to the
-      # browser — and is used to verify inbound webhook signatures (mirrors the
-      # WordPress companion's cinatra_webhook_secret option). Same "no native
-      # secret scalar" caveat as api_key applies.
+      # browser. A whsec_ Standard-Webhooks secret: the node-publish emitter
+      # signs its deliveries to cinatra's generic /webhook route with it
+      # (cinatra-ai/cinatra#974). Written together with webhook_binding_id as
+      # a PAIR (the exchange returns both or neither). Same "no native secret
+      # scalar" caveat as api_key applies.
       type: string
       label: 'Cinatra webhook secret (credential — held server-side, never sent to the browser)'
+    webhook_binding_id:
+      # Server-issued opaque binding id returned by the connect exchange
+      # together with webhook_secret (cinatra-ai/cinatra#974). It is the final
+      # path segment of the generic inbound-webhook URL the node-publish
+      # emitter POSTs to; cinatra resolves the connected-site identity and the
+      # per-binding secret from it. Not itself a secret (it travels in the
+      # URL), but held server-side only like the rest of the connection state.
+      type: string
+      label: 'Cinatra webhook binding id (server-issued; pairs with the webhook secret)'

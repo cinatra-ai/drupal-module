@@ -8,6 +8,7 @@
 declare(strict_types=1);
 
 use Drupal\cinatra\Cinatra;
+use Drupal\cinatra\PublishWebhook;
 use Drupal\Component\Utility\Html;
 use Drupal\Core\Render\Markup;
 use Drupal\Core\Routing\RouteMatchInterface;
@@ -224,4 +225,53 @@ function cinatra_page_bottom(array &$page_bottom): void {
       'tags' => ['config:cinatra.settings'],
     ],
   ];
+}
+
+/**
+ * Implements hook_ENTITY_TYPE_insert() for node entities.
+ *
+ * A node created directly in the published state is a publish event
+ * (cinatra-ai/cinatra#974): defer a signed node_published webhook to the
+ * connected Cinatra instance. Fully non-fatal — nothing here may block or
+ * fail the save.
+ */
+function cinatra_node_insert(NodeInterface $node): void {
+  if (!$node->isPublished()) {
+    return;
+  }
+  try {
+    PublishWebhook::fromContainer()->deferEmitNodePublished($node);
+  }
+  catch (\Throwable) {
+    // Quiet by design: the emitter logs its own fixed-text diagnostics; a
+    // failure to even construct/defer must never surface into the save.
+  }
+}
+
+/**
+ * Implements hook_ENTITY_TYPE_update() for node entities.
+ *
+ * Only a genuine transition INTO the published state emits (skip
+ * published->published edits and any non-publish change), mirroring the
+ * WordPress plugin's transition_post_status guard.
+ */
+function cinatra_node_update(NodeInterface $node): void {
+  if (!$node->isPublished()) {
+    return;
+  }
+  // The pre-save revision: Drupal >=11.2 exposes getOriginal(); older cores
+  // carry the ->original property. Either way, absence means "treat as a
+  // fresh publish" (never silently drop a legitimate publish).
+  $original = method_exists($node, 'getOriginal')
+    ? $node->getOriginal()
+    : ($node->original ?? NULL);
+  if ($original instanceof NodeInterface && $original->isPublished()) {
+    return;
+  }
+  try {
+    PublishWebhook::fromContainer()->deferEmitNodePublished($node);
+  }
+  catch (\Throwable) {
+    // Quiet by design (see cinatra_node_insert()).
+  }
 }
