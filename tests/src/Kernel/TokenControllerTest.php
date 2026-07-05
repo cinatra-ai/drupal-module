@@ -124,6 +124,10 @@ final class TokenControllerTest extends KernelTestBase {
     $out = $this->captured[0];
     $this->assertSame('https://cinatra.example/api/agents/drupal-content-editor/token', (string) $out->getUri());
     $this->assertSame('Bearer long-lived-secret-key', $out->getHeaderLine('Authorization'));
+    // The instance's cnx_ arm fail-closes the mint on a missing Origin header
+    // (paired-origin binding) — the broker must assert the site origin as a
+    // header, exactly like WidgetAuthController::relay() (drupal-module#78).
+    $this->assertSame('https://editor.example', $out->getHeaderLine('Origin'));
     $sent = json_decode((string) $out->getBody(), TRUE);
     $this->assertSame('v2', $sent['contractVersion']);
     $this->assertSame('https://editor.example', $sent['origin']);
@@ -143,6 +147,8 @@ final class TokenControllerTest extends KernelTestBase {
     $controller->mint();
     $sent = json_decode((string) $this->captured[0]->getBody(), TRUE);
     $this->assertSame('https://localhost:8443', $sent['origin']);
+    // The asserted Origin header carries the identical exact origin.
+    $this->assertSame('https://localhost:8443', $this->captured[0]->getHeaderLine('Origin'));
   }
 
   /**
