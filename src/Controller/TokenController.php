@@ -114,6 +114,15 @@ final class TokenController extends ControllerBase {
         'headers' => [
           'Authorization' => 'Bearer ' . $apiKey,
           'Content-Type' => 'application/json',
+          // Assert THIS site's origin on the server-to-server mint. The
+          // instance's cnx_ arm on /api/agents/{slug}/token enforces a paired
+          // Origin === the credential's bound connect-site origin and FAILS
+          // CLOSED on a missing Origin — without this header every
+          // cnx_-paired site gets a 401 on the cit_ mint. Same identity
+          // assertion WidgetAuthController::relay() already sends (the
+          // credential hash must also match the same connect-site row, so the
+          // header grants no trust). $origin is validated non-empty above.
+          'Origin' => $origin,
         ],
         'json' => [
           'contractVersion' => Cinatra::CONTRACT_VERSION,

@@ -6,6 +6,7 @@ namespace Drupal\cinatra\Controller;
 
 use Drupal\cinatra\CinatraUrl;
 use Drupal\cinatra\Connect;
+use Drupal\cinatra\ServerBase;
 use Drupal\cinatra\Ssrf;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Controller\ControllerBase;
@@ -215,6 +216,18 @@ final class ConnectController extends ControllerBase {
     if ($base === NULL) {
       return ['ok' => FALSE, 'response' => NULL];
     }
+    // Resolve the base this EXCHANGE reaches the instance at server-to-server
+    // through the shared validated CINATRA_BASE_URL container-topology
+    // override — the same resolution every other server-to-server call in
+    // this module applies (TokenController::serverBaseUrl() and
+    // PublishWebhook via ServerBase::resolve(); WidgetAuthController via its
+    // identical-contract private resolver). Without it a containerized
+    // Drupal dials the
+    // browser-facing origin (its own loopback) and the connect flow dies with
+    // a transport error, so the webhook pair is never minted. With the env
+    // unset (production) the resolver returns $base verbatim — unchanged.
+    // See \Drupal\cinatra\ServerBase for the validation/allowlist rationale.
+    $base = ServerBase::resolve($base, $this->logger);
     // HTTP-layer SSRF guard (defense-in-depth over CinatraUrl::normalize):
     // never POST the connect exchange (which carries the code/install_code)
     // to a loopback/private/link-local address. Redirect-following is disabled
