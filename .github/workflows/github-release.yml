@@ -29,6 +29,6 @@ permissions:
 
 jobs:
   github-release:
-    uses: cinatra-ai/.github/.github/workflows/reusable-release-notes.yml@97ff3cb56d71b049f0a5a1be4fa0f9fd234f5ad9 # v0.0.0-main.97ff3cb
+    uses: cinatra-ai/.github/.github/workflows/reusable-release-notes.yml@1e4448a75dc27b7be4d52ac3ce0734fa7c766957 # v0.1.1
     with:
       tag: ${{ inputs.tag }}
