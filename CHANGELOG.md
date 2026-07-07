@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are tag-driven: the GitHub release tag is `v<MAJOR>.<MINOR>.<PATCH>`
 and the corresponding drupal.org release tag is the bare `<MAJOR>.<MINOR>.<PATCH>`.
 
+## 0.1.6
+- Declare Drupal 12 support.
+- HTTP-layer SSRF guard on outbound broker calls, generic broker error messages, and the webhook secret is now persisted.
+- Standard-Webhooks node-publish emitter on the generic host URL.
+- Origin header on the session-token mint; ConnectController now extends ServerBase.
+- Document the WordPress-parity notification asymmetry.
+
 ## 0.1.5
 - Mirror the Cinatra widget from its source of truth and add a parity gate that keeps the mirrored copy in sync.
 - Fixed stale strings in the module.
