@@ -30,7 +30,11 @@ final class SettingsForm extends ConfigFormBase {
   public function __construct(
     ConfigFactoryInterface $config_factory,
     TypedConfigManagerInterface $typed_config_manager,
-    private readonly ConnectController $connectController,
+    // Injected dependency on a class that uses DependencySerializationTrait
+    // (via FormBase): it must be a non-private, non-readonly property so the
+    // trait's __sleep()/__wakeup() can serialize the service reference and
+    // re-inject it on unserialize. See https://www.drupal.org/node/3110266.
+    protected ConnectController $connectController,
   ) {
     parent::__construct($config_factory, $typed_config_manager);
   }
