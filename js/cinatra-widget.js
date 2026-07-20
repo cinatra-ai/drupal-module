@@ -79,6 +79,12 @@
   // `client`, so it must match the agent's instancesConfigKey ('drupal').
   var AGENT_SLUG = 'drupal-content-editor';
   var AUTH_CLIENT = 'drupal';
+  // cinatra#1221 S5 — the unified broker-auth assistant chat contract. The widget
+  // streams here (NOT the OLD /api/agents/{slug}/stream relay); the cit_/cwu_
+  // tokens are minted bound to THIS audience, so a token presented at the legacy
+  // relay now fails aud_mismatch. This is a FIXED same-origin path (not the
+  // capability-advertised streamPath) — the chat route is the single contract.
+  var CHAT_ROUTE_PATH = '/api/assistants/chat';
   var negotiatedVersion = null;   // set ONLY by a successful negotiate()
   var supportsChanges = false;    // enabled ONLY when explicitly advertised
   var supportsMarkdown = false;   // enabled ONLY when explicitly advertised
@@ -706,9 +712,6 @@
   var isOpen = false;
   var isFlyoutOpen = false;
   var isStreaming = false;
-  var hadChanges = false;
-  var diffCardEl = null;
-  var pendingDiff = null;
 
   // Required-login state (cinatra#410). On a fresh mount there is never a valid
   // per-user token, so the panel starts in 'login' mode. `userToken` is held in
@@ -770,6 +773,37 @@
   var history = [];
   try { var raw = window.sessionStorage.getItem(HISTORY_KEY); if (raw) history = JSON.parse(raw) || []; } catch (_) {}
   function saveHistory() { try { window.sessionStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch (_) {} }
+
+  // ---------------------------------------------------------------------------
+  // Conversation thread id (cinatra#1221 S5). The unified assistant chat contract
+  // (POST /api/assistants/chat) REQUIRES a `threadId` (1..200 chars) — the OLD
+  // relay had none. We mint one per conversation and persist it (sessionStorage,
+  // keyed with the history) so a reopen/auto-reload continues the SAME thread;
+  // "Clear conversation" mints a fresh one. Held here only; it is a client-chosen
+  // opaque id — the host authorizes it against the widget principal, never trusts
+  // it for identity.
+  // ---------------------------------------------------------------------------
+  var THREAD_KEY = 'cinatra_thread_' + (config.instanceId || 'default');
+  var _threadId = null;
+  function newThreadId() {
+    try { if (window.crypto && crypto.randomUUID) { return 'drw_' + crypto.randomUUID(); } } catch (_) {}
+    try {
+      var a = new Uint8Array(16); crypto.getRandomValues(a);
+      var s = ''; for (var i = 0; i < a.length; i++) { s += (a[i] + 256).toString(16).slice(1); }
+      return 'drw_' + s;
+    } catch (_) {}
+    return 'drw_' + String(Date.now()) + Math.random().toString(16).slice(2);
+  }
+  function getThreadId() {
+    if (_threadId) return _threadId;
+    try { _threadId = window.sessionStorage.getItem(THREAD_KEY) || null; } catch (_) {}
+    if (!_threadId) { _threadId = newThreadId(); try { window.sessionStorage.setItem(THREAD_KEY, _threadId); } catch (_) {} }
+    return _threadId;
+  }
+  function resetThreadId() {
+    _threadId = newThreadId();
+    try { window.sessionStorage.setItem(THREAD_KEY, _threadId); } catch (_) {}
+  }
 
   // ---------------------------------------------------------------------------
   // Markdown — inline renderer (no CDN dependency; XSS-safe: all user text
@@ -965,7 +999,7 @@
   });
 
   clearItem.addEventListener('click', function() {
-    history = []; saveHistory(); messagesEl.innerHTML = ''; closeFlyout();
+    history = []; saveHistory(); resetThreadId(); messagesEl.innerHTML = ''; closeFlyout();
   });
 
   // ---------------------------------------------------------------------------
@@ -1015,19 +1049,6 @@
     }
     resizeDragging = false;
   });
-
-  // ---------------------------------------------------------------------------
-  // Drupal context
-  // ---------------------------------------------------------------------------
-  function buildDrupalContext() {
-    return {
-      href: typeof window.location !== 'undefined' ? window.location.href : '',
-      nodeId: config.nodeId || '',
-      nodeBundle: config.nodeBundle || '',
-      nodeStatus: config.nodeStatus || '',
-      instanceId: config.instanceId || '',
-    };
-  }
 
   // ---------------------------------------------------------------------------
   // Required-login (cinatra#410): the per-user PKCE handshake against the hosted
@@ -1237,9 +1258,6 @@
     // stream. If it is missing/expired, force re-login BEFORE appending any
     // message bubble — the conversation must never proceed without a token.
     if (!userTokenValid()) { forceReLogin(); return; }
-    hadChanges = false;
-    diffCardEl = null;
-    pendingDiff = null;
     history.push({ role: 'user', content: userText });
     renderMessage('user', userText, false);
     saveHistory();
@@ -1250,11 +1268,123 @@
     messagesEl.appendChild(assistantEl);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
+    // Turn state. The unified route streams AG-UI events over a durable log; the
+    // widget accumulates the text deltas into one bubble and tracks the run id +
+    // last SSE event id for a best-effort resume.
     var assistantText = '';
+    var streamingStarted = false;
+    var pendingSeparator = false;   // insert a blank line when a new text segment opens after a tool round
+    var hadContentEdit = false;     // a *_content_editor_run tool call happened this turn
+    var sawTerminal = false;        // a RUN_FINISHED / RUN_ERROR frame arrived
+    var currentRunId = null;        // captured from the AG-UI events (resume target)
+    var lastEventId = '';           // SSE `id:` cursor for Last-Event-ID resume
     isStreaming = true;
     submitBtn.disabled = true;
 
+    // Extract a single SSE field value ("id" / "data") from a record line, or
+    // null if the line is not that field. Tolerates the one-space form the host
+    // emits ("id: x", "data: {...}") and a no-space form.
+    function sseField(line, name) {
+      if (line.indexOf(name + ':') !== 0) { return null; }
+      var v = line.slice(name.length + 1);
+      if (v.charAt(0) === ' ') { v = v.slice(1); }
+      return v;
+    }
+
+    // Apply one decoded AG-UI event. The unified harness (ag-ui-sink-adapter)
+    // maps the runtime's bespoke sink onto the AG-UI union — the `type` lives in
+    // the JSON, NOT on an SSE `event:` line. We render TEXT_MESSAGE_CONTENT
+    // deltas, key the content-edit reload on a *_content_editor_run TOOL_CALL,
+    // and treat RUN_ERROR / RUN_FINISHED as terminal (exactly once).
+    function handleAgUiEvent(ev) {
+      if (!ev || typeof ev !== 'object' || typeof ev.type !== 'string') { return; }
+      if (typeof ev.runId === 'string' && ev.runId) { currentRunId = ev.runId; }
+      switch (ev.type) {
+        case 'TEXT_MESSAGE_START':
+          // A fresh text segment after existing content (e.g. resumed prose after
+          // a tool round) is separated by a blank line for readability.
+          if (assistantText) { pendingSeparator = true; }
+          break;
+        case 'TEXT_MESSAGE_CONTENT':
+          if (typeof ev.delta === 'string' && ev.delta) {
+            if (!streamingStarted) { streamingStarted = true; assistantEl.classList.remove('cw-thinking'); }
+            if (pendingSeparator) { assistantText += '\n\n'; pendingSeparator = false; }
+            assistantText += ev.delta;
+            renderAssistantInto(assistantEl, assistantText);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+          break;
+        case 'TOOL_CALL_START':
+          // The AG-UI wire deliberately carries NO tool RESULT payload, so the
+          // old field-level `changes` diff is gone. We detect that a content edit
+          // occurred by the tool NAME and reload the page on completion so the
+          // applied change becomes visible (the content-editor demotes a
+          // published node to draft; the edit lives in the node's revisions).
+          if (typeof ev.toolCallName === 'string' && /_content_editor_run$/.test(ev.toolCallName)) {
+            hadContentEdit = true;
+            if (!streamingStarted) { streamingStarted = true; assistantEl.classList.remove('cw-thinking'); }
+          }
+          break;
+        case 'RUN_ERROR':
+          sawTerminal = true;
+          assistantEl.classList.remove('cw-thinking');
+          if (assistantText) { renderAssistantInto(assistantEl, assistantText); }
+          else { assistantEl.textContent = 'Error: ' + (typeof ev.message === 'string' && ev.message ? ev.message : 'The assistant stream failed.'); }
+          break;
+        case 'RUN_FINISHED':
+          sawTerminal = true;
+          if (assistantText) { renderAssistantInto(assistantEl, assistantText); }
+          break;
+        default:
+          // RUN_STARTED / TEXT_MESSAGE_END / TOOL_CALL_END / DATA_PART: no UI.
+          break;
+      }
+    }
+
+    // Consume an AG-UI SSE reader to a terminal frame (or the stream end). Frames
+    // are `id: <redisId>\n data: <json>\n\n`; `:`-comment/keepalive lines and
+    // blank lines are ignored. Returns once a terminal event is seen so a later
+    // resume tail cannot double-apply.
+    async function pumpReader(reader) {
+      var decoder = new TextDecoder();
+      var buffer = '';
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) { break; }
+        buffer += decoder.decode(chunk.value, { stream: true });
+        var records = buffer.split('\n\n');
+        buffer = records.pop() || '';
+        for (var r = 0; r < records.length; r++) {
+          if (!records[r]) { continue; }
+          var lines = records[r].split('\n');
+          var dataParts = [];
+          for (var j = 0; j < lines.length; j++) {
+            var idv = sseField(lines[j], 'id');
+            if (idv !== null) { if (idv) { lastEventId = idv; } continue; }
+            var dv = sseField(lines[j], 'data');
+            if (dv !== null) { dataParts.push(dv); }
+          }
+          if (!dataParts.length) { continue; }
+          var ev; try { ev = JSON.parse(dataParts.join('\n')); } catch (_) { continue; }
+          handleAgUiEvent(ev);
+          if (sawTerminal) { return; }
+        }
+      }
+    }
+
     try {
+      // SECURITY: build the stream URL from the configured instance origin + the
+      // FIXED unified chat path. It is a constant root-absolute path (not a
+      // server-advertised one), but we still re-resolve + re-assert the origin
+      // BEFORE minting the token so the cit_ Bearer can never leave the
+      // configured instance origin. The off-origin `throw` MUST precede
+      // getStreamToken() (the last-line-of-defense ordering).
+      var streamBase = new URL(config.cinatraUrl);
+      var streamUrl = new URL(CHAT_ROUTE_PATH, streamBase.origin + '/');
+      if (streamUrl.origin !== streamBase.origin) {
+        throw new Error('Refusing to stream to an off-origin endpoint.');
+      }
+
       // Capabilities are already negotiated (mount is gated on success), so the
       // broker token-exchange path is guaranteed available. Exchange a
       // short-lived token; the long-lived key never touches JS.
@@ -1266,21 +1396,25 @@
         assistantEl.textContent = 'Could not authorize the assistant: ' + (tokErr && tokErr.message ? tokErr.message : 'token exchange failed');
         return;
       }
-      // streamPath was validated same-origin during negotiate() (root-absolute
-      // pathname+search on the configured origin), so STREAM_BASE + streamPath
-      // reconstructs the SAME instance origin. Never concatenate a raw,
-      // unvalidated capability path here — that would risk shipping the Bearer
-      // token off-origin.
-      var response = await fetch(STREAM_BASE + streamPath, {
+
+      var response = await fetch(streamUrl.href, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ' + streamToken,
           // DUAL-TOKEN (cinatra#408): the per-user token is required by the
-          // fail-closed stream route in addition to the cit_ Bearer above.
+          // fail-closed broker-auth route in addition to the cit_ Bearer above.
           'X-Cinatra-Widget-User-Token': userToken.token,
         },
-        body: JSON.stringify({ contractVersion: negotiatedVersion, messages: history.map(function(m) { return { role: m.role, content: m.content }; }), context: buildDrupalContext() }),
+        // UNIFIED CONTRACT (cinatra#1221 S5). The route requires a `threadId` and
+        // resolves the widget binding from `assistant` (the connector kind /
+        // handle). The OLD relay's `contractVersion` + `context` fields are not
+        // part of this schema and are dropped.
+        body: JSON.stringify({
+          threadId: getThreadId(),
+          assistant: AUTH_CLIENT,
+          messages: history.map(function(m) { return { role: m.role, content: m.content }; }),
+        }),
       });
 
       // FAIL-CLOSED RE-LOGIN (cinatra#408): an expired/revoked/invalid per-user
@@ -1303,6 +1437,7 @@
           try { parsed = JSON.parse(raw); } catch (_) {}
           // Structured contract/admin error: { error: { message, code } }.
           if (parsed && parsed.error && parsed.error.message) { errText = parsed.error.message; }
+          else if (parsed && typeof parsed.error === 'string') { errText = parsed.error; }
           else { errText += ': ' + raw.slice(0, 200); }
         } catch (_) {}
         assistantEl.classList.remove('cw-thinking');
@@ -1310,67 +1445,45 @@
         return;
       }
 
-      var reader = response.body.getReader();
-      var decoder = new TextDecoder();
-      var buffer = '';
-      var streamingStarted = false;
+      // RESUME CREDENTIAL (cinatra#1221 S5, OPTION A). The run-bound resume token
+      // is delivered on a response header; the browser re-presents it on the
+      // AG-UI resume/tail GET if the primary stream drops before a terminal
+      // frame. NOTE: cross-origin, this header is readable ONLY once the host
+      // adds it to Access-Control-Expose-Headers AND CORS-reflects the resume GET
+      // (both core follow-ups); until then this is null and resume degrades to a
+      // fresh turn. Never persisted; in-memory for this turn only.
+      var resumeToken = null;
+      try { resumeToken = response.headers.get('X-Cinatra-Chat-Resume-Token'); } catch (_) {}
 
-      while (true) {
-        var chunk = await reader.read();
-        if (chunk.done) break;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        var records = buffer.split('\n\n');
-        buffer = records.pop() || '';
-        for (var r = 0; r < records.length; r++) {
-          var lines = records[r].split('\n');
-          var eventName = '', dataStr = '';
-          for (var j = 0; j < lines.length; j++) {
-            if (lines[j].indexOf('event: ') === 0) eventName = lines[j].slice(7).trim();
-            else if (lines[j].indexOf('data: ') === 0) dataStr = lines[j].slice(6);
-          }
-          if (!eventName || !dataStr) continue;
-          var data; try { data = JSON.parse(dataStr); } catch (_) { continue; }
-          if (eventName === 'text' && data && typeof data.content === 'string') {
-            if (!streamingStarted) { streamingStarted = true; assistantEl.classList.remove('cw-thinking'); }
-            assistantText += data.content;
-            renderAssistantInto(assistantEl, assistantText);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-          } else if (eventName === 'changes' && data && Array.isArray(data.fields)) {
-            // Hide the apply-changes affordance when the instance reports it
-            // does not support the changes frame (capability negotiation).
-            if (!supportsChanges) { continue; }
-            hadChanges = true;
-            pendingDiff = data.fields;
-            try {
-              var nodeKey = 'cinatra-drupal-diff-' + (data.nodeId || '');
-              window.sessionStorage.setItem(nodeKey, JSON.stringify(data.fields));
-            } catch (_) {}
-            diffCardEl = renderDiffCard(data.fields);
-            messagesEl.appendChild(diffCardEl);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-          } else if (eventName === 'error' && data && data.message) {
-            assistantEl.classList.remove('cw-thinking');
-            assistantEl.textContent = 'Error: ' + data.message;
-          } else if (eventName === 'done') {
-            if (assistantText) renderAssistantInto(assistantEl, assistantText);
-            if (data && data.fallback) { assistantText = ''; }
-            if (hadChanges && !(data && data.fallback)) {
-              if (diffCardEl) {
-                var footer = document.createElement('div');
-                footer.className = 'cw-diff-footer';
-                footer.textContent = 'Reloading to apply changes…';
-                diffCardEl.appendChild(footer);
-                messagesEl.scrollTop = messagesEl.scrollHeight;
-              }
-              try { window.sessionStorage.setItem('cinatra-reopen', '1'); } catch (_) {}
-              setTimeout(function() { window.location.reload(); }, 1500);
+      await pumpReader(response.body.getReader());
+
+      // BEST-EFFORT RESUME: the primary stream ended WITHOUT a terminal frame
+      // (transport drop) and we hold a run-bound resume token — reconnect ONCE to
+      // the AG-UI resume/tail route with Last-Event-ID and continue. Any failure
+      // (network / 401 / cross-origin CORS block) degrades silently to whatever
+      // already streamed. Same-origin re-assertion mirrors the POST.
+      if (!sawTerminal && resumeToken && currentRunId) {
+        try {
+          var resumeUrl = new URL('/api/assistants/runs/' + encodeURIComponent(currentRunId) + '/stream', streamBase.origin + '/');
+          if (resumeUrl.origin === streamBase.origin) {
+            var resumeHeaders = { 'Authorization': 'Bearer ' + resumeToken };
+            if (lastEventId) { resumeHeaders['Last-Event-ID'] = lastEventId; }
+            var resumeResp = await fetch(resumeUrl.href, { method: 'GET', headers: resumeHeaders });
+            if (resumeResp && resumeResp.ok && resumeResp.body) {
+              await pumpReader(resumeResp.body.getReader());
             }
           }
-        }
+        } catch (_) { /* degrade: keep whatever streamed */ }
       }
 
-      if (assistantText) { history.push({ role: 'assistant', content: assistantText, diff: pendingDiff || undefined }); saveHistory(); }
+      if (assistantText) { history.push({ role: 'assistant', content: assistantText }); saveHistory(); }
       else if (!streamingStarted) { assistantEl.classList.remove('cw-thinking'); assistantEl.textContent = '(no response)'; }
+
+      // A content edit was applied — reload the page so the change is visible.
+      if (hadContentEdit && sawTerminal) {
+        try { window.sessionStorage.setItem('cinatra-reopen', '1'); } catch (_) {}
+        setTimeout(function() { window.location.reload(); }, 1500);
+      }
     } catch (err) {
       assistantEl.classList.remove('cw-thinking');
       assistantEl.textContent = 'Network error: ' + (err && err.message ? err.message : 'unknown');
