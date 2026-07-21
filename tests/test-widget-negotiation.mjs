@@ -1,18 +1,39 @@
-// Standalone behavior tests for the vendored widget's capability negotiation.
+// Standalone behavior tests for the vendored widget: capability negotiation +
+// the S5 (cinatra#1221) parent↔iframe embed bridge.
 //
 // Runs under plain `node tests/test-widget-negotiation.mjs` — no jsdom, no
 // bundler, no Drupal. Exit code 0 = all pass, 1 = a failure.
 //
-// Covers the "drop the old-instance fallback, keep negotiation" contract
-// (cinatra#220): /capabilities is a HARD PREREQUISITE. The widget mounts ONLY
-// when negotiation succeeds + validates; on ANY failure it never attaches its
-// Shadow DOM and never sets data-cinatra-mounted (so the always-visible
-// fallback button stays as the unavailable/incompatible chrome).
+// This is the Drupal MIRROR of the WordPress source harness
+// (cinatra-ai/wordpress-plugin/tests/test-widget-negotiation.mjs). It differs
+// ONLY in the CMS seams: the drupalSettings.cinatra config accessor, the Drupal
+// broker CSRF idiom (the `_csrf_token` `?token=` query rather than the WP REST
+// nonce header), the node-native content context, and the in-place-refresh sink
+// (a same-document `cinatra:content-applied` CustomEvent rather than the WP
+// wp.data invalidateResolution). The §12 bridge assertions are identical.
 //
-//   - /capabilities failure (HTTP not-ok / network)  -> UNAVAILABLE (no mount)
-//   - missing required field (no streamPath)          -> INCOMPATIBLE (no mount)
-//   - no mutually-supported contractVersion           -> UNAVAILABLE (no mount)
-//   - healthy v2 instance (control)                   -> MOUNTS
+// ARCHITECTURE (S5 cinatra#1221): the assistant conversation moved INTO a
+// Cinatra-served `/embed/assistant` iframe. The widget no longer streams; it
+// negotiates + logs in, then frames the embed page as the SOLE session owner and
+// speaks the §12 parent-side bridge. So this harness covers, in one place:
+//
+//   NEGOTIATION (HARD PREREQUISITE — cinatra#220):
+//     - /capabilities failure (HTTP not-ok / network / malformed)  -> NO MOUNT
+//     - supportsTokenExchange !== true / missing tokenPath          -> NO MOUNT
+//     - no mutually-supported contractVersion                       -> NO MOUNT
+//     - healthy v2 instance (control)                               -> MOUNTS
+//     - duplicate include                                           -> mounts once
+//
+//   REQUIRED-LOGIN GATE (cinatra#410): mounts in LOGIN mode; no iframe, no token,
+//     no bootstrap until the hosted-PKCE handshake yields an opaque cwu_ token.
+//
+//   §12 BRIDGE (cinatra#1221): the iframe is sandboxed and framed at
+//     /embed/assistant WITHOUT tokens in its URL; on READY the parent mints cit_
+//     ONCE and posts a single BOOTSTRAP to the EXACT Cinatra origin (never "*")
+//     carrying cit_/cwu_; origin + source-window binding rejects a spoofed READY;
+//     single bootstrap per frame; resize is CLAMPED; apply_intent is permission-
+//     checked, LRU-deduped, and routes through an IN-PLACE draft refresh (no
+//     egress, no reload — #1214).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -25,6 +46,18 @@ const WIDGET_SRC = fs.readFileSync(
   "utf8",
 );
 
+const INSTANCE_ORIGIN = "https://instance.example";
+// Drupal same-origin broker routes (vs the WP `/wp-json/cinatra/v1/*` routes).
+const TOKEN_ENDPOINT = "https://site.example/cinatra/token";
+const AUTH_INIT = "https://site.example/cinatra/widget-auth/init";
+const AUTH_TOKEN = "https://site.example/cinatra/widget-auth/token";
+// Drupal per-route `_csrf_token` seeds (each route seeds its OWN token, so init
+// and token carry DIFFERENT tokens; the cit_ mint carries a third).
+const CSRF_INIT = "drupal-csrf-init";
+const CSRF_TOKEN = "drupal-csrf-token";
+const CSRF_MINT = "drupal-csrf-mint";
+const ID_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
+
 let failures = 0;
 function check(label, cond) {
   if (cond) {
@@ -35,42 +68,63 @@ function check(label, cond) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Minimal DOM/window shim. Records attachShadow, the data-cinatra-mounted marker,
+// the login handshake surfaces, and — new for the bridge — the mounted iframe
+// (sandbox attr + src + contentWindow), the frame window's postMessage sink
+// (BOOTSTRAP capture), and the Drupal in-place-refresh sink (a document
+// `cinatra:content-applied` CustomEvent — the apply refresh).
+// ---------------------------------------------------------------------------
 function makeEnv(fetchImpl, sharedRoot, captured) {
   let attachShadowCount = 0;
-  // Required-login (cinatra#410): the login handshake needs Web Crypto, btoa,
-  // window.open, and a captured window 'message' listener. The login-gate test
-  // drives a real login through these before streaming.
-  const messageListeners = [];
+  const messageListeners = [];   // window 'message' listeners (auth popup + bridge)
   const openedPopups = [];
 
-  function makeStubEl(isRoot) {
+  function makeStubEl(isRoot, tag) {
     const el = {
+      _tag: tag || "div",
       style: {},
       dataset: {},
       shadowRoot: null,
       classList: { add() {}, remove() {}, contains() { return false; } },
       attributes: {},
       children: [],
+      parentNode: null,
       _clickHandlers: [],
+      _loadHandlers: [],
       set placeholder(v) {
         this._placeholder = v;
         if (captured) { captured.textarea = this; }
       },
       get placeholder() { return this._placeholder; },
-      // Identify the login button by its label so a test can fire ONLY its click
-      // handler (the login-gate test drives login then send distinctly).
+      set className(v) {
+        this._className = v;
+        if (captured) { captured.byClass[v] = this; }
+      },
+      get className() { return this._className; },
       set textContent(v) {
         this._textContent = v;
         if (captured && v === "Sign in with Cinatra") { captured.loginBtnEl = this; }
       },
       get textContent() { return this._textContent; },
-      setAttribute(k, v) { this.attributes[k] = v; },
+      setAttribute(k, v) {
+        this.attributes[k] = v;
+        if (captured && this._tag === "iframe" && k === "src") { captured.iframeSrc = v; }
+      },
       getAttribute(k) { return this.attributes[k]; },
-      appendChild(c) { this.children.push(c); return c; },
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; },
+      removeChild(c) {
+        const i = this.children.indexOf(c);
+        if (i !== -1) this.children.splice(i, 1);
+        c.parentNode = null;
+        return c;
+      },
       addEventListener(type, handler) {
         if (type === "click") {
           this._clickHandlers.push(handler);
           if (captured) { captured.clickHandlers.push(handler); }
+        } else if (type === "load") {
+          this._loadHandlers.push(handler);
         }
       },
       removeEventListener() {},
@@ -84,6 +138,16 @@ function makeEnv(fetchImpl, sharedRoot, captured) {
       focus() {},
       getBoundingClientRect() { return { left: 0, top: 0, width: 0, height: 0 }; },
     };
+    if ((tag || "div") === "iframe") {
+      // The frame window: the bridge captures it as `frameWindow` and posts the
+      // BOOTSTRAP to it (addressed to the Cinatra origin). Record every post.
+      el.contentWindow = {
+        postMessage(msg, targetOrigin) {
+          if (captured) { captured.bootstrapPosts.push({ msg, targetOrigin }); }
+        },
+      };
+      if (captured) { captured.iframeEl = el; }
+    }
     return el;
   }
 
@@ -91,47 +155,49 @@ function makeEnv(fetchImpl, sharedRoot, captured) {
 
   const documentStub = {
     getElementById(id) { return id === "cinatra-root" ? rootEl : null; },
-    createElement() { return makeStubEl(); },
-    createElementNS() { return makeStubEl(); },
+    createElement(tag) { return makeStubEl(false, tag); },
+    createElementNS() { return makeStubEl(false, "svg"); },
     querySelector() { return null; },
     addEventListener() {},
+    // The Drupal in-place-refresh sink: refreshCurrentDraft() dispatches a
+    // `cinatra:content-applied` CustomEvent here (no reload, no egress). Record it.
+    dispatchEvent(ev) { if (captured) { captured.applied.push(ev); } return true; },
     head: makeStubEl(),
     body: makeStubEl(),
     readyState: "complete",
   };
 
-  const storage = (() => {
-    const m = new Map();
-    return {
-      getItem(k) { return m.has(k) ? m.get(k) : null; },
-      setItem(k, v) { m.set(k, String(v)); },
-      removeItem(k) { m.delete(k); },
-    };
-  })();
-
   const sandbox = {
     window: {
       drupalSettings: {
         cinatra: {
-          cinatraUrl: "https://instance.example",
-          tokenEndpoint: "https://site.example/cinatra/token",
-          // Required-login broker relays + the per-route Drupal CSRF tokens
-          // (cinatra#410). Each _csrf_token route is seeded to its own path, so
-          // init and token carry DIFFERENT tokens.
-          authInitEndpoint: "https://site.example/cinatra/widget-auth/init",
-          authTokenEndpoint: "https://site.example/cinatra/widget-auth/token",
-          authInitCsrfToken: "drupal-csrf-init",
-          authTokenCsrfToken: "drupal-csrf-token",
-          csrfToken: "drupal-csrf",
+          cinatraUrl: INSTANCE_ORIGIN,
+          tokenEndpoint: TOKEN_ENDPOINT,
+          authInitEndpoint: AUTH_INIT,
+          authTokenEndpoint: AUTH_TOKEN,
+          // Drupal per-route CSRF seeds: init and token carry DIFFERENT tokens;
+          // the cit_ mint carries its own.
+          authInitCsrfToken: CSRF_INIT,
+          authTokenCsrfToken: CSRF_TOKEN,
+          csrfToken: CSRF_MINT,
           instanceId: "i1",
+          // Node-native canonical resource (server-provided; Drupal has no client
+          // editor store). buildContentContext() reads these.
+          nodeId: 5,
+          nodeBundle: "article",
+          nodeStatus: "draft",
         },
       },
-      sessionStorage: storage,
       innerWidth: 1280,
       innerHeight: 800,
       location: { href: "https://site.example/node/1", reload() {} },
       addEventListener(type, handler) { if (type === "message") { messageListeners.push(handler); } },
-      removeEventListener() {},
+      removeEventListener(type, handler) {
+        if (type === "message") {
+          const i = messageListeners.indexOf(handler);
+          if (i !== -1) messageListeners.splice(i, 1);
+        }
+      },
       open(url) { const popup = { url, closed: false, close() { this.closed = true; } }; openedPopups.push(popup); return popup; },
       crypto: {
         getRandomValues(arr) { for (let i = 0; i < arr.length; i++) { arr[i] = (i * 7 + 3) & 0xff; } return arr; },
@@ -141,9 +207,9 @@ function makeEnv(fetchImpl, sharedRoot, captured) {
     document: documentStub,
     console,
     fetch: fetchImpl,
-    setTimeout: () => 0,
+    setTimeout: (fn) => { return 0; },
     clearTimeout: () => {},
-    setInterval: () => 0,
+    setInterval: () => { return 0; },
     clearInterval: () => {},
     btoa: (s) => Buffer.from(s, "binary").toString("base64"),
     TextEncoder,
@@ -151,18 +217,10 @@ function makeEnv(fetchImpl, sharedRoot, captured) {
       constructor() { this.signal = {}; }
       abort() {}
     },
-    Object,
-    Array,
-    JSON,
-    Promise,
-    Date,
-    Math,
-    String,
-    Uint8Array,
-    // The widget resolves caps.streamPath against the configured origin with
-    // the WHATWG URL constructor (same-origin guard). Real browsers always
-    // expose URL; the vm sandbox must too, or the guard would throw and mask
-    // the behavior under test.
+    CustomEvent: class {
+      constructor(type, init) { this.type = type; this.detail = init && init.detail; }
+    },
+    Object, Array, JSON, Promise, Date, Math, String, Number, Uint8Array, isFinite,
     URL,
     TextDecoder: class { decode() { return ""; } },
   };
@@ -186,127 +244,85 @@ function jsonResponse(status, body) {
   });
 }
 
+async function flush(n) { for (let i = 0; i < (n || 20); i++) { await Promise.resolve(); } }
+
+// Boot the IIFE with a /capabilities behavior and settle the negotiation chain.
 async function boot(fetchImpl, sharedRoot) {
-  const env = makeEnv(fetchImpl, sharedRoot);
+  const captured = newCaptured();
+  const env = makeEnv(fetchImpl, sharedRoot, captured);
   vm.runInNewContext(WIDGET_SRC, env.sandbox, { filename: "cinatra-widget.js" });
-  for (let i = 0; i < 20; i++) { await Promise.resolve(); }
+  await flush();
   return {
-    env,
+    env, captured,
     mounted: env.rootEl.dataset.cinatraMounted === "true",
     attachShadow: env.attachShadowCount() > 0,
     attachShadowCount: env.attachShadowCount(),
   };
 }
 
+function newCaptured() {
+  return { clickHandlers: [], textarea: null, loginBtnEl: null, byClass: {}, iframeEl: null, iframeSrc: null, bootstrapPosts: [], applied: [] };
+}
+
 const HEALTHY = {
   agentSlug: "drupal-content-editor",
   contractVersion: "v2",
   supportedContractVersions: ["v1", "v2"],
-  minContractVersion: "v1",
-  maxContractVersion: "v2",
   capabilities: {
-    supportsChangesFrame: true,
-    supportsMarkdown: true,
     supportsTokenExchange: true,
-    sseFrames: ["text", "changes", "error", "done"],
-    streamPath: "/api/agents/drupal-content-editor/stream",
     tokenPath: "/api/agents/drupal-content-editor/token",
   },
 };
 
 async function main() {
-  console.log("widget capability negotiation (hard prerequisite)");
+  console.log("widget negotiation + §12 embed bridge");
 
+  // -------------------------------------------------------------------------
+  // NEGOTIATION (hard prerequisite).
+  // -------------------------------------------------------------------------
   {
     const r = await boot(() => jsonResponse(200, HEALTHY));
     check("healthy v2 instance -> MOUNTS (control)", r.mounted && r.attachShadow);
   }
-
   {
     const r = await boot(() => jsonResponse(500, { error: "boom" }));
     check("/capabilities 5xx -> UNAVAILABLE (no mount, no attachShadow)", !r.mounted && !r.attachShadow);
   }
-
   {
     const r = await boot(() => jsonResponse(404, { error: "Unknown agent" }));
     check("/capabilities 404 -> UNAVAILABLE (no mount)", !r.mounted && !r.attachShadow);
   }
-
   {
     const r = await boot(() => Promise.reject(new Error("network down")));
     check("/capabilities network error -> UNAVAILABLE (no mount)", !r.mounted && !r.attachShadow);
   }
-
-  {
-    const body = JSON.parse(JSON.stringify(HEALTHY));
-    delete body.capabilities.streamPath;
-    const r = await boot(() => jsonResponse(200, body));
-    check("missing required field (streamPath) -> INCOMPATIBLE (no mount)", !r.mounted && !r.attachShadow);
-  }
-
-  {
-    const body = JSON.parse(JSON.stringify(HEALTHY));
-    body.capabilities.supportsTokenExchange = false;
-    const r = await boot(() => jsonResponse(200, body));
-    check("supportsTokenExchange:false -> INCOMPATIBLE (no mount)", !r.mounted && !r.attachShadow);
-  }
-
-  // REGRESSION (token-exfiltration guard): an otherwise-healthy /capabilities
-  // whose streamPath resolves OFF the configured cinatraUrl origin MUST NOT
-  // mount. Otherwise STREAM_BASE + streamPath would ship the short-lived Bearer
-  // stream token to a foreign origin. cinatraUrl is "https://instance.example".
-  // Each vector below either smuggles an authority (// , https:// , @host,
-  // backslash tricks) or is otherwise not a plain root-absolute same-origin
-  // path; all must => negotiate() false => NO mount => fallback chrome.
-  {
-    const OFF_ORIGIN_STREAM_PATHS = [
-      "@evil.example/stream",         // raw concat => https://instance.example@evil.example/... => evil origin
-      "//evil.example/stream",        // protocol-relative authority
-      "https://evil.example/stream",  // absolute foreign URL
-      "\\\\evil.example/stream",      // backslash authority (\\host) — resolves off-origin
-      "/\\evil.example/stream",       // /\host backslash-authority trick
-      "/\\/evil.example/stream",      // /\/host backslash-authority trick
-    ];
-    for (const sp of OFF_ORIGIN_STREAM_PATHS) {
-      const body = JSON.parse(JSON.stringify(HEALTHY));
-      body.capabilities.streamPath = sp;
-      const r = await boot(() => jsonResponse(200, body));
-      check(
-        `off-origin streamPath ${JSON.stringify(sp)} -> NO mount (no attachShadow)`,
-        !r.mounted && !r.attachShadow,
-      );
-    }
-  }
-
-  // Control for the same-origin guard: a healthy root-absolute same-origin
-  // streamPath (with a query) still mounts — the guard must not over-reject.
-  {
-    const body = JSON.parse(JSON.stringify(HEALTHY));
-    body.capabilities.streamPath = "/api/agents/drupal-content-editor/stream?v=2";
-    const r = await boot(() => jsonResponse(200, body));
-    check("same-origin streamPath with query -> MOUNTS (guard control)", r.mounted && r.attachShadow);
-  }
-
-  {
-    const body = JSON.parse(JSON.stringify(HEALTHY));
-    body.supportedContractVersions = ["v0", "v9"];
-    const r = await boot(() => jsonResponse(200, body));
-    check("no mutual contractVersion -> UNAVAILABLE (no mount)", !r.mounted && !r.attachShadow);
-  }
-
   {
     const r = await boot(() => Promise.resolve({
-      ok: true,
-      status: 200,
+      ok: true, status: 200,
       json: () => Promise.reject(new SyntaxError("bad json")),
       text: () => Promise.resolve("<html>not json"),
       headers: { get() { return null; } },
     }));
     check("malformed JSON -> UNAVAILABLE (no mount)", !r.mounted && !r.attachShadow);
   }
-
-  // Duplicate include against the SAME root -> mounts exactly once (the second
-  // copy sees the marker / existing shadowRoot and bails).
+  {
+    const body = JSON.parse(JSON.stringify(HEALTHY));
+    body.capabilities.supportsTokenExchange = false;
+    const r = await boot(() => jsonResponse(200, body));
+    check("supportsTokenExchange:false -> INCOMPATIBLE (no mount)", !r.mounted && !r.attachShadow);
+  }
+  {
+    const body = JSON.parse(JSON.stringify(HEALTHY));
+    delete body.capabilities.tokenPath;
+    const r = await boot(() => jsonResponse(200, body));
+    check("missing tokenPath -> INCOMPATIBLE (no mount)", !r.mounted && !r.attachShadow);
+  }
+  {
+    const body = JSON.parse(JSON.stringify(HEALTHY));
+    body.supportedContractVersions = ["v0", "v9"];
+    const r = await boot(() => jsonResponse(200, body));
+    check("no mutual contractVersion -> UNAVAILABLE (no mount)", !r.mounted && !r.attachShadow);
+  }
   {
     const first = await boot(() => jsonResponse(200, HEALTHY));
     const second = await boot(() => jsonResponse(200, HEALTHY), first.env.rootEl);
@@ -317,126 +333,182 @@ async function main() {
     );
   }
 
-  // REQUIRED-LOGIN GATE (cinatra#410, behavioral): a healthy same-origin instance
-  // mounts in LOGIN mode (no per-user token), so a user message must NOT stream
-  // until login completes. This drives the full hosted-PKCE handshake (init via
-  // the broker -> popup -> postMessage -> token via the broker -> opaque cwu_)
-  // and then a real send, asserting:
-  //   * before login: a send attempt does NOT POST the stream;
-  //   * the login init + token relays go to OUR same-origin broker carrying the
-  //     Drupal CSRF token in the `?token=` QUERY (NOT a header) — the divergence
-  //     from the WordPress source copy;
-  //   * after login: the stream POST carries BOTH the cit_ Bearer AND the
-  //     X-Cinatra-Widget-User-Token: cwu_ dual token (#408).
+  // -------------------------------------------------------------------------
+  // LOGIN GATE + §12 BRIDGE — one end-to-end drive.
+  // -------------------------------------------------------------------------
   {
-    const TOKEN_ENDPOINT = "https://site.example/cinatra/token";
-    const AUTH_INIT = "https://site.example/cinatra/widget-auth/init";
-    const AUTH_TOKEN = "https://site.example/cinatra/widget-auth/token";
-    // cinatra#1221 S5 — the widget streams the UNIFIED broker-auth chat contract
-    // (POST /api/assistants/chat), NOT the OLD /api/agents/{slug}/stream relay.
-    const STREAM_URL = "https://instance.example/api/assistants/chat";
-    const INSTANCE_ORIGIN = "https://instance.example";
-    const fetched = [];
     let initState = null;
-    const urlNoQuery = (u) => String(u).split("?")[0];
+    const fetched = [];
     const fetchImpl = (url, opts) => {
       const u = String(url);
-      const base = urlNoQuery(u);
+      const base = u.split("?")[0];   // Drupal appends the CSRF token as ?token=
       const body = (opts && opts.body) ? JSON.parse(opts.body) : null;
       fetched.push({ url: u, base, method: (opts && opts.method) || "GET", headers: (opts && opts.headers) || {}, body });
-      if (u.indexOf("/capabilities") !== -1) { return jsonResponse(200, HEALTHY); }
+      if (base.indexOf("/capabilities") !== -1) { return jsonResponse(200, HEALTHY); }
       if (base === AUTH_INIT) {
         initState = body && body.state;
         return jsonResponse(200, { txnId: "txn1", authorizeUrl: INSTANCE_ORIGIN + "/widget-auth?txn=txn1", instanceId: "i1" });
       }
       if (base === AUTH_TOKEN) { return jsonResponse(200, { token: "cwu_user-tok", tokenType: "Bearer", expiresIn: 900 }); }
-      if (base === TOKEN_ENDPOINT) { return jsonResponse(200, { token: "stream-tok", expiresIn: 300 }); }
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        body: { getReader() { return { read() { return Promise.resolve({ done: true }); } }; } },
-        text: () => Promise.resolve(""),
-        headers: { get() { return null; } },
-      });
+      if (base === TOKEN_ENDPOINT) { return jsonResponse(200, { token: "cit_site-tok", expiresIn: 300 }); }
+      return jsonResponse(200, {});
     };
 
-    const captured = { clickHandlers: [], textarea: null, loginBtnEl: null };
+    const captured = newCaptured();
     const env = makeEnv(fetchImpl, undefined, captured);
     vm.runInNewContext(WIDGET_SRC, env.sandbox, { filename: "cinatra-widget.js" });
-    for (let i = 0; i < 20; i++) { await Promise.resolve(); }
+    await flush();
     const mounted = env.rootEl.dataset.cinatraMounted === "true";
 
-    // (1) Pre-login: a send attempt must NOT reach the stream (login gate).
-    let preLoginStreamed = false;
-    if (mounted && captured.textarea) {
-      captured.textarea.value = "hello";
-      for (const h of captured.clickHandlers) { try { h({ stopPropagation() {} }); } catch (_) {} }
-      for (let i = 0; i < 20; i++) { await Promise.resolve(); }
-      preLoginStreamed = fetched.some((f) => f.base === STREAM_URL && f.method === "POST");
-    }
-    check(
-      "login gate: pre-login send does NOT POST the stream (token-less stream blocked)",
-      mounted && !preLoginStreamed,
-    );
+    // (1) Pre-login: the iframe is NOT mounted and no cit_ token is minted (the
+    //     login gate holds — the conversation surface never appears token-less).
+    const preLoginNoFrame = mounted && !captured.iframeEl;
+    const preLoginNoToken = !fetched.some((f) => f.base === TOKEN_ENDPOINT);
+    check("login gate: pre-login has NO iframe and NO cit_ mint (token-less conversation blocked)", preLoginNoFrame && preLoginNoToken);
 
-    // (2) Drive the login handshake.
+    // (2) Drive the hosted-PKCE login: click sign-in, deliver the popup callback.
     let loggedIn = false;
     if (mounted && captured.loginBtnEl && captured.loginBtnEl._clickHandlers.length) {
       for (const h of captured.loginBtnEl._clickHandlers) { try { h({}); } catch (_) {} }
-      for (let i = 0; i < 20; i++) { await Promise.resolve(); }
+      await flush();
       const popup = env.openedPopups[env.openedPopups.length - 1];
       for (const listener of env.messageListeners) {
         try { listener({ origin: INSTANCE_ORIGIN, source: popup, data: { type: "cinatra-widget-auth", code: "auth-code-1", state: initState } }); } catch (_) {}
       }
-      for (let i = 0; i < 30; i++) { await Promise.resolve(); }
+      await flush(30);
       loggedIn = true;
     }
     const initPost = fetched.find((f) => f.base === AUTH_INIT && f.method === "POST");
     const tokenPost = fetched.find((f) => f.base === AUTH_TOKEN && f.method === "POST");
-    // Drupal CSRF idiom: each endpoint's OWN route-seeded token is in the
-    // ?token= QUERY, never a header (X-CSRF-Token).
-    const initCsrfQueryOk = !!initPost && /[?&]token=drupal-csrf-init(&|$)/.test(initPost.url) && !initPost.headers["X-CSRF-Token"];
-    const tokenCsrfQueryOk = !!tokenPost && /[?&]token=drupal-csrf-token(&|$)/.test(tokenPost.url) && !tokenPost.headers["X-CSRF-Token"];
+    // Drupal CSRF idiom: the route-seeded token rides the ?token= QUERY (each
+    // route its OWN token), NOT a header — so no CSRF header is present.
+    const initCsrfOk = !!initPost && initPost.url.indexOf("token=" + CSRF_INIT) !== -1 && !initPost.headers["X-WP-Nonce"];
+    const tokenCsrfOk = !!tokenPost && tokenPost.url.indexOf("token=" + CSRF_TOKEN) !== -1 && !tokenPost.headers["X-WP-Nonce"];
     const verifierSent = !!tokenPost && tokenPost.body && typeof tokenPost.body.codeVerifier === "string" && tokenPost.body.codeVerifier.length > 0;
     check(
-      "login handshake: init+token relayed with per-route CSRF in ?token= query (not a header) + PKCE verifier",
-      loggedIn && initCsrfQueryOk && tokenCsrfQueryOk && verifierSent,
+      "login handshake: init+token relayed to OUR broker (same-origin) with the per-route ?token= CSRF + PKCE verifier",
+      loggedIn && initCsrfOk && tokenCsrfOk && verifierSent,
     );
 
-    // (3) Post-login: a real send streams with BOTH the cit_ Bearer and cwu_.
-    let sent = false;
-    if (loggedIn && captured.textarea) {
-      captured.textarea.value = "hello again";
-      for (const h of captured.clickHandlers) { try { h({ stopPropagation() {} }); } catch (_) {} }
-      for (let i = 0; i < 30; i++) { await Promise.resolve(); }
-      sent = true;
-    }
-    const streamPost = fetched.find((f) => f.base === STREAM_URL && f.method === "POST");
-    const bearerOk = !!streamPost && /^Bearer stream-tok$/.test(String(streamPost.headers.Authorization || ""));
-    const dualTokenOk = !!streamPost && streamPost.headers["X-Cinatra-Widget-User-Token"] === "cwu_user-tok";
-    const tokenMints = fetched.filter((f) => f.base === TOKEN_ENDPOINT).length;
-    check(
-      "send happy path: post-login stream POST carries cit_ Bearer + cwu_ dual token; cit_ minted once",
-      mounted && sent && bearerOk && dualTokenOk && tokenMints === 1,
-    );
-    // cinatra#1221 S5 — the UNIFIED contract body: a REQUIRED threadId (1..200),
-    // the `assistant` binding handle (== connector kind), and role/content
-    // messages. The OLD relay's `contractVersion` + `context` are gone.
-    const bodyThreadOk =
-      !!streamPost && streamPost.body &&
-      typeof streamPost.body.threadId === "string" &&
-      streamPost.body.threadId.length > 0 && streamPost.body.threadId.length <= 200;
-    const bodyAssistantOk = !!streamPost && streamPost.body && streamPost.body.assistant === "drupal";
-    const bodyMessagesOk =
-      !!streamPost && streamPost.body && Array.isArray(streamPost.body.messages) &&
-      streamPost.body.messages.every((m) => typeof m.role === "string" && typeof m.content === "string");
-    const bodyNoLegacyFields =
-      !!streamPost && streamPost.body &&
-      streamPost.body.context === undefined && streamPost.body.contractVersion === undefined;
-    check(
-      "send happy path: unified body carries threadId + assistant handle + role/content messages (no legacy context/contractVersion)",
-      bodyThreadOk && bodyAssistantOk && bodyMessagesOk && bodyNoLegacyFields,
-    );
+    // (3) Post-login: the sandboxed iframe is mounted at /embed/assistant, with
+    //     the disambiguators but WITHOUT any token in the URL.
+    const iframe = captured.iframeEl;
+    const src = captured.iframeSrc || "";
+    const sandboxAttr = iframe ? iframe.getAttribute("sandbox") : "";
+    const sandboxOk = sandboxAttr === "allow-scripts allow-same-origin";
+    const srcOk = src.indexOf(INSTANCE_ORIGIN + "/embed/assistant") === 0 &&
+      src.indexOf("instanceId=i1") !== -1 && src.indexOf("assistant=drupal") !== -1;
+    const noTokenInUrl = src.indexOf("cit_") === -1 && src.indexOf("cwu_") === -1 && src.toLowerCase().indexOf("token") === -1;
+    check("post-login: sandboxed iframe framed at /embed/assistant (disambiguators only, NO token in URL)", !!iframe && sandboxOk && srcOk && noTokenInUrl);
+
+    // (4) READY from a SPOOFED origin / SPOOFED source-window is IGNORED (no
+    //     bootstrap, no cit_ mint). Origin + source-window binding.
+    const frameWin = iframe && iframe.contentWindow;
+    const readyMsg = { type: "cinatra.embed.ready", protocolVersion: 1, nonce: "nonce0123456789abcdef012", seq: 0 };
+    function deliverToBridge(ev) { for (const l of env.messageListeners) { try { l(ev); } catch (_) {} } }
+    deliverToBridge({ origin: "https://evil.example", source: frameWin, data: readyMsg });
+    deliverToBridge({ origin: INSTANCE_ORIGIN, source: { not: "the frame" }, data: readyMsg });
+    await flush();
+    // cit_ is pre-minted at enterConversation (before the frame mounts), so the
+    // security property here is: NO BOOTSTRAP is posted for a spoofed READY.
+    check("bridge: READY from wrong origin OR wrong source-window is IGNORED (no bootstrap posted)", captured.bootstrapPosts.length === 0);
+
+    // (5) A well-formed READY from the real frame -> ONE bootstrap posted to the
+    //     EXACT Cinatra origin (never "*"), echoing the nonce, seq 0, carrying
+    //     cit_/cwu_; cit_ minted exactly once. The cms carries the node-native
+    //     canonical resource (resourceId=nodeId, resourceType=nodeBundle).
+    deliverToBridge({ origin: INSTANCE_ORIGIN, source: frameWin, data: readyMsg });
+    await flush(30);
+    const posts = captured.bootstrapPosts;
+    const post = posts[0];
+    const bmsg = post && post.msg;
+    const bootstrapOk = posts.length === 1 && !!bmsg &&
+      bmsg.type === "cinatra.embed.bootstrap" &&
+      bmsg.protocolVersion === 1 &&
+      post.targetOrigin === INSTANCE_ORIGIN && post.targetOrigin !== "*" &&
+      ID_PATTERN.test(bmsg.correlationId) &&
+      bmsg.nonceEcho === readyMsg.nonce &&
+      bmsg.seq === 0 &&
+      bmsg.auth && bmsg.auth.citToken === "cit_site-tok" && bmsg.auth.cwuToken === "cwu_user-tok" &&
+      bmsg.session && bmsg.session.assistant === "drupal" && ID_PATTERN.test(bmsg.session.threadId) &&
+      bmsg.cms && bmsg.cms.instanceId === "i1" && bmsg.cms.resourceId === "5" && bmsg.cms.resourceType === "article" && bmsg.cms.status === "draft";
+    const cit_mints = fetched.filter((f) => f.base === TOKEN_ENDPOINT).length;
+    check("bridge: READY -> ONE BOOTSTRAP to the exact origin (nonce echo, seq 0, cit_+cwu_, node cms), cit_ minted once", bootstrapOk && cit_mints === 1);
+
+    const correlationId = bmsg && bmsg.correlationId;
+
+    // (6) Single bootstrap per frame: a SECOND READY does not re-bootstrap.
+    deliverToBridge({ origin: INSTANCE_ORIGIN, source: frameWin, data: { type: "cinatra.embed.ready", protocolVersion: 1, nonce: "secondNonce0123456789abc", seq: 0 } });
+    await flush();
+    check("bridge: single bootstrap per frame (a second READY is ignored)", captured.bootstrapPosts.length === 1);
+
+    // (7) resize: an in-range height ABOVE the panel cap is CLAMPED (not trusted);
+    //     a height OVER the schema max is REJECTED. maxPanelHeight() ==
+    //     innerHeight(800) - 120 == 680; RESIZE_MAX_HEIGHT == 20000.
+    const cwWidget = captured.byClass["cw-widget"];
+    deliverToBridge({ origin: INSTANCE_ORIGIN, source: frameWin, data: { type: "cinatra.embed.resize", protocolVersion: 1, correlationId, seq: 1, height: 5000 } });
+    await flush();
+    const clampedH = cwWidget && parseInt(String(cwWidget.style.height || "0"), 10);
+    check("bridge: in-range resize height above the cap is CLAMPED (<= 680px)", typeof clampedH === "number" && clampedH > 0 && clampedH <= 680);
+    // Over the schema max -> rejected: the height is unchanged from the clamp above.
+    deliverToBridge({ origin: INSTANCE_ORIGIN, source: frameWin, data: { type: "cinatra.embed.resize", protocolVersion: 1, correlationId, seq: 2, height: 999999 } });
+    await flush();
+    const afterOverMax = cwWidget && parseInt(String(cwWidget.style.height || "0"), 10);
+    check("bridge: over-schema-max resize height (>20000) is REJECTED (height unchanged)", afterOverMax === clampedH);
+
+    // (8) apply_intent (untrusted selector) -> ONE in-place draft refresh via the
+    //     Drupal CustomEvent sink; a DUPLICATE id is deduped (LRU); a WRONG
+    //     correlationId is ignored; and NO content-egress fetch is made.
+    const fetchCountBeforeApply = fetched.length;
+    const applyMsg = (seq, id) => ({ origin: INSTANCE_ORIGIN, source: frameWin, data: { type: "cinatra.embed.apply_intent", protocolVersion: 1, correlationId, seq, viewType: "content_change_proposal", proposalId: id } });
+    deliverToBridge(applyMsg(3, "prop-A"));
+    await flush();
+    deliverToBridge(applyMsg(4, "prop-A"));      // duplicate id -> LRU dedup
+    await flush();
+    deliverToBridge({ origin: INSTANCE_ORIGIN, source: frameWin, data: { type: "cinatra.embed.apply_intent", protocolVersion: 1, correlationId: "WRONGcorrelationId012345", seq: 5, viewType: "content_change_proposal", proposalId: "prop-B" } });
+    await flush();
+    const oneRefresh = captured.applied.length === 1 &&
+      captured.applied[0].type === "cinatra:content-applied" &&
+      captured.applied[0].detail && captured.applied[0].detail.resourceId === "5";
+    const noApplyEgress = fetched.length === fetchCountBeforeApply; // no fetch at all on apply
+    check("bridge: apply_intent -> ONE in-place draft refresh (dup id + wrong correlationId ignored)", oneRefresh);
+    check("bridge: apply_intent does NOT egress (no fetch on apply — #1214)", noApplyEgress);
+
+    // (9) a DIFFERENT proposal id refreshes again (proves it was dedup, not a
+    //     one-shot latch).
+    deliverToBridge(applyMsg(6, "prop-C"));
+    await flush();
+    check("bridge: a new proposal id refreshes again (dedup, not a one-shot latch)", captured.applied.length === 2);
+
+    // (10) presence-XOR: an apply carrying BOTH selector keys (one empty) is
+    //      REJECTED (matches the core presence-XOR schema), so no refresh fires.
+    const beforeBoth = captured.applied.length;
+    deliverToBridge({ origin: INSTANCE_ORIGIN, source: frameWin, data: { type: "cinatra.embed.apply_intent", protocolVersion: 1, correlationId, seq: 7, viewType: "content_change_proposal", proposalId: "", changeSetId: "cs-1" } });
+    await flush();
+    check("bridge: apply carrying BOTH selector keys is rejected (presence-XOR, no refresh)", captured.applied.length === beforeBoth);
+  }
+
+  // -------------------------------------------------------------------------
+  // SYNCHRONOUS BOOTSTRAP RELEASE (source-level, defense-in-depth). A frame's
+  // WindowProxy identity is STABLE across navigations, so no post-await window
+  // check can be fully airtight. The design instead removes the async gap: the
+  // cit_ token is PRE-MINTED before the frame mounts, and the READY->BOOTSTRAP
+  // release reads it from the synchronous cache and posts in the SAME message
+  // task (no await) — a same-origin navigation cannot interleave within one
+  // synchronous task. This lives in closure-private state (unreachable from the
+  // sandbox), so — as the harness already does for the login/mint ordering — we
+  // pin the security-relevant STRUCTURE against the widget source.
+  {
+    const ec = WIDGET_SRC.indexOf("function enterConversation");
+    const ecRegion = ec === -1 ? "" : WIDGET_SRC.slice(ec, ec + 900);
+    const preMintsBeforeMount =
+      /getStreamToken\s*\(\)/.test(ecRegion) &&
+      /mountBridgeIframe\s*\(/.test(ecRegion) &&
+      ecRegion.indexOf("getStreamToken") < ecRegion.indexOf("mountBridgeIframe");
+    const syncRelease =
+      /function\s+getCachedCitToken/.test(WIDGET_SRC) &&
+      /bootstrapped\s*=\s*true;\s*\n?\s*postToFrame\s*\(\s*buildBootstrap/.test(WIDGET_SRC);
+    check("frame-safety: cit_ pre-minted before mount AND READY->BOOTSTRAP released synchronously from cache (no async gap)", preMintsBeforeMount && syncRelease);
   }
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
