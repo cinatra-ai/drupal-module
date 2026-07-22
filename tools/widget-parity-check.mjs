@@ -221,38 +221,60 @@ assert(
   "the embed src does not carry both instanceId= and assistant= query params",
 );
 
-// 3c — targetOrigin discipline: NO wildcard, AND every outbound post is addressed
+// 3c — targetOrigin discipline: NO wildcard, AND every WINDOW post is addressed
 // to the resolved Cinatra origin variable (an explicit non-"*" literal or a
-// different origin would be a leak). We (i) ban a "*" 2nd arg, (ii) require a
-// `.postMessage(<x>, cinatraOrigin)` to exist, and (iii) require that EVERY
-// `.postMessage(` in executable code targets `cinatraOrigin` (no post to any
-// other/computed origin). A rewrite that posts elsewhere fails here.
+// different origin would be a leak). §12b adds a second, HARDENED transport: a
+// send on the retained MessageChannel endpoint (`activePort`) carries NO
+// targetOrigin — the origin-targeted READY transfer that delivered the port IS
+// the binding — so it is exempt from the origin-arg requirement, but NOT from the
+// "*" ban. We (i) ban a "*" arg on ANY post, (ii) require at least one post
+// (BOOTSTRAP is delivered over some transport), and (iii) require that EVERY
+// WINDOW `.postMessage(` targets `cinatraOrigin` (no post to any other/computed
+// origin). A rewrite that posts a window message elsewhere fails here.
 // Ban a "*" literal ANYWHERE in a postMessage argument list (not just
 // immediately before `)`), so a `postMessage(msg, cinatraOrigin || "*")`
-// short-circuit fallback is caught too.
+// short-circuit fallback is caught too — for BOTH transports.
 const WILDCARD_POSTMESSAGE_RE = /\.postMessage\s*\([^;)]*?(['"])\*\1/;
 assert(
   'no postMessage uses a wildcard "*" targetOrigin (anywhere in the args)',
   !WILDCARD_POSTMESSAGE_RE.test(code),
   'a postMessage with a "*" argument was found — every post must be addressed to the exact Cinatra origin',
 );
-const postMessageCalls = [...code.matchAll(/\.postMessage\s*\(([^;)]*?)\)/g)];
+// Match EVERY postMessage call with its RECEIVER token (`\S*` = the contiguous
+// non-space run before `.postMessage`, so it never crosses spaces/newlines) and
+// its arg list. Capturing broadly is deliberate: a window send via ANY receiver
+// spelling — `frameWindow.postMessage`, `getWindow().postMessage`,
+// `(frameWindow).postMessage` — is still checked and cannot evade the origin
+// requirement (a narrower `\w+`-only receiver form would let a non-identifier
+// receiver slip a wrong-origin post past this gate).
+const postMessageCalls = [
+  ...code.matchAll(/(\S*)\.postMessage\s*\(([^;)]*?)\)/g),
+];
 assert(
   "at least one postMessage to the frame exists (BOOTSTRAP is delivered)",
   postMessageCalls.length > 0,
   "no postMessage call found — the bridge never bootstraps the frame",
 );
-// The 2nd argument must be EXACTLY `cinatraOrigin` — the arg list ENDS with
-// `, cinatraOrigin` and nothing appended. This rejects a computed/short-circuit
-// target such as `cinatraOrigin || "*"` or a ternary (which a loose `\b` form
-// would have accepted).
-const everyPostToCinatraOrigin = postMessageCalls.every((m) =>
-  /,\s*cinatraOrigin\s*$/.test(m[1].trim()),
-);
+// A send is COMPLIANT iff it is EITHER a WINDOW send whose arg list ENDS with
+// `, cinatraOrigin` and nothing appended (this rejects a computed/short-circuit
+// target such as `cinatraOrigin || "*"` or a ternary), OR the origin-less send on
+// the retained port endpoint `activePort` — the §12b document-bound transport,
+// the ONLY sanctioned origin-less sink (the origin-targeted READY transfer that
+// delivered the port IS its binding). Anything else — a window send to another/
+// computed origin, or an origin-less send on a NON-port receiver — is a leak/
+// regression and fails here. ("*" is separately banned above for BOTH transports.)
+const nonCompliantPosts = postMessageCalls.filter((m) => {
+  const receiver = m[1];
+  const args = m[2].trim();
+  const windowToCinatraOrigin = /,\s*cinatraOrigin$/.test(args);
+  const retainedPortSend =
+    /(?:^|[^\w$])activePort$/.test(receiver) && !args.includes(",");
+  return !(windowToCinatraOrigin || retainedPortSend);
+});
 assert(
-  "every postMessage's targetOrigin is EXACTLY `cinatraOrigin` (no computed/short-circuit origin)",
-  everyPostToCinatraOrigin,
-  "a postMessage targetOrigin is not exactly `cinatraOrigin` — the outbound target must be the resolved Cinatra origin with nothing appended",
+  "every postMessage is EITHER a window send to EXACTLY `cinatraOrigin` OR the origin-less retained-port send (activePort)",
+  nonCompliantPosts.length === 0,
+  "a postMessage is neither addressed to exactly `cinatraOrigin` nor the sanctioned origin-less `activePort` send — an outbound send must not leak to another/computed origin",
 );
 
 // 3d — inbound gate MUST be the REJECT form (a `!==` early-return), not merely a
@@ -345,8 +367,8 @@ assert(
 assert(
   "BOOTSTRAP is released SYNCHRONOUSLY from the pre-minted cache (getCachedCitToken)",
   /getCachedCitToken\s*\(/.test(code) &&
-    /bootstrapped\s*=\s*true\s*;\s*postToFrame\s*\(\s*buildBootstrap/.test(code),
-  "the READY handler does not release the bootstrap synchronously from getCachedCitToken() — an async mint-then-post reopens the navigation-release gap",
+    /bootstrapped\s*=\s*true\s*;\s*sendBootstrap\s*\(\s*buildBootstrap/.test(code),
+  "the READY handler does not release the bootstrap synchronously from getCachedCitToken() over the selected transport (sendBootstrap) — an async mint-then-post reopens the navigation-release gap",
 );
 assert(
   "bridge binds uplinks to the minted correlationId (drop on mismatch)",
@@ -374,6 +396,41 @@ assert(
   embedSrcBuild
     ? "the /embed/assistant src builder references a token — tokens must never be in the frame URL"
     : "could not locate the /embed/assistant src builder",
+);
+
+// ---------------------------------------------------------------------------
+// INVARIANT 3f-4 — §12b DOCUMENT-BOUND MESSAGEPORT TRANSPORT (cinatra#1965/#1970).
+// The iframe transfers ONE MessageChannel endpoint in the (origin+source-gated)
+// READY; the parent RETAINS it, sends the token-bearing BOOTSTRAP over that port,
+// and services uplinks on it — never a window postMessage — so a same-origin
+// REPLACEMENT of the frame (a fresh realm that never inherited the retained
+// endpoint) can never receive the credentials or the port-bound traffic. A legacy
+// WINDOW transport remains ONLY for the negotiated transition with an
+// as-yet-unmigrated instance whose READY carries no port; `requirePort` refuses
+// that downgrade. Structural markers so a regression that drops the port transport
+// (or the downgrade refusal) is loud. These identifiers are part of the
+// byte-identical §12 bridge core shared across both CMS widgets.
+// ---------------------------------------------------------------------------
+assert(
+  "bridge takes the transferred port from the origin-gated READY (event.ports)",
+  /event\.ports\b/.test(code),
+  "no `event.ports` read — the parent must take the transferred MessagePort the frame sent on READY",
+);
+assert(
+  "bridge sends the token-bearing BOOTSTRAP over the retained port (activePort.postMessage, no targetOrigin)",
+  /activePort\s*\.\s*postMessage\s*\(/.test(code),
+  "no `activePort.postMessage(` — in port mode the bootstrap must ride the retained document-bound port, not a window",
+);
+assert(
+  "bridge services uplinks on the retained port (activePort message listener)",
+  /activePort\s*\.\s*addEventListener\s*\(\s*['"]message['"]/.test(code),
+  "no `activePort.addEventListener('message', …)` — steady-state uplinks must ride the retained port in port mode",
+);
+assert(
+  "bridge refuses the legacy downgrade under requirePort (a no-port READY sends NOTHING)",
+  /config\.requirePort\b/.test(code) &&
+    /!\s*transferredPort\s*&&\s*requirePort/.test(code),
+  "no `config.requirePort` toggle + `!transferredPort && requirePort` fail-closed guard — a downgrade could be forced by stripping the transferred port",
 );
 
 // ---------------------------------------------------------------------------

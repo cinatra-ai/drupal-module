@@ -25,10 +25,22 @@
  * TRUST BOUNDARY (§4/§6/§12):
  *   * The iframe is `sandbox="allow-scripts allow-same-origin"` (no top-nav, no
  *     forms, no popups, no downloads, no modals) framing `/embed/assistant`.
- *   * Every postMessage to the frame uses an EXPLICIT targetOrigin (the Cinatra
- *     instance origin), NEVER "*".
- *   * Inbound frame messages are accepted ONLY when `event.origin === cinatraOrigin`
- *     AND `event.source === iframe.contentWindow` (origin + source-window binding).
+ *   * §12b DOCUMENT-BOUND MESSAGEPORT TRANSPORT (cinatra#1965/#1970): the iframe
+ *     transfers ONE MessageChannel endpoint in the (origin+source-gated) READY;
+ *     the parent RETAINS it, sends the token-bearing BOOTSTRAP over that port, and
+ *     services uplinks on it — NEVER a window postMessage — so a same-origin
+ *     REPLACEMENT of the frame (a fresh realm that never inherited the retained
+ *     endpoint) can never receive the credentials or the port-bound traffic. A
+ *     legacy origin-pinned WINDOW transport remains ONLY for the negotiated
+ *     transition with an as-yet-unmigrated instance whose READY carries no
+ *     transferred port; `requirePort` refuses that downgrade.
+ *   * Every WINDOW postMessage to the frame uses an EXPLICIT targetOrigin (the
+ *     Cinatra instance origin), NEVER "*"; a port-bound send needs no origin (the
+ *     origin-targeted READY transfer that delivered the port IS the binding).
+ *   * Inbound WINDOW frame messages (READY is one) are accepted ONLY when
+ *     `event.origin === cinatraOrigin` AND `event.source === iframe.contentWindow`
+ *     (origin + source-window binding); a port message's provenance IS that origin
+ *     gate — the port was transferred ONLY to the Cinatra origin.
  *   * READY→BOOTSTRAP: the parent mints a CSPRNG correlationId (≥128-bit), echoes
  *     the frame nonce, sends seq=0, and one bootstrap per frame (re-auth = reload).
  *   * Two INDEPENDENT monotonic seq counters (one per direction) per correlationId.
@@ -800,9 +812,20 @@
   // The iframe (`/embed/assistant`) is the SOLE session owner. This shell mints
   // the credentials, delivers them ONCE via BOOTSTRAP, and services the closed
   // set of iframe→parent uplinks. Every trust-boundary control is enforced here:
-  // origin + source-window binding, schema/protocolVersion/nonce agreement, dual
-  // monotonic seq, single-bootstrap-per-frame, apply_intent untrusted-selector
-  // permission checks + bounded LRU dedup, and the resize clamp.
+  // origin + source-window binding (on the READY window message), schema/
+  // protocolVersion/nonce agreement, dual monotonic seq, single-bootstrap-per-
+  // frame, apply_intent untrusted-selector permission checks + bounded LRU dedup,
+  // and the resize clamp.
+  //
+  // §12b DOCUMENT-BOUND MESSAGEPORT TRANSPORT (cinatra#1965/#1970): the iframe
+  // transfers ONE MessageChannel endpoint in the (origin+source-gated) READY; the
+  // parent RETAINS it, sends the token-bearing BOOTSTRAP over it, and services
+  // uplinks on it — NEVER a window postMessage — so a same-origin REPLACEMENT of
+  // the frame (a fresh realm that never inherited the retained endpoint) can never
+  // receive the credentials or subsequent port-bound traffic. A legacy WINDOW
+  // transport is kept ONLY for the negotiated transition with an as-yet-unmigrated
+  // instance whose READY carries no transferred port; `requirePort` refuses that
+  // downgrade so it cannot be forced by stripping the port.
   // ---------------------------------------------------------------------------
   var iframeEl = null;          // the mounted embed iframe (null until conversation)
   var frameWindow = null;       // iframeEl.contentWindow captured at load
@@ -812,6 +835,16 @@
   var inboundSeqLast = null;    // iframe->parent monotonic gate (READY seeds it)
   var outboundSeqLast = null;   // parent->iframe monotonic counter (bootstrap = 0)
   var appliedLru = [];          // §6f bounded seen apply-id LRU for this correlationId
+  // §12b transport state — chosen at READY (see onBridgeMessage).
+  var activePort = null;        // the retained transferred MessagePort (port mode) or null
+  var activeTransport = null;   // 'port' | 'legacy' | null — chosen at READY
+  // Downgrade resistance: when true, a READY that transfers NO port is REFUSED
+  // (the token-bearing bootstrap is never sent over the legacy window). Defaults
+  // FALSE during the negotiated transition so the widget still interoperates with
+  // an as-yet-unmigrated instance whose READY carries no transferred port; a
+  // deployment hardens by setting drupalSettings.cinatra.requirePort = true once
+  // every instance transfers a port.
+  var requirePort = (config.requirePort === true);
 
   // A CSPRNG base64url correlationId carrying >=128 bits (24 base64url chars ==
   // 144 bits), satisfying ID_PATTERN (§6b).
@@ -837,6 +870,19 @@
   function postToFrame(message) {
     if (!frameWindow) return;
     frameWindow.postMessage(message, cinatraOrigin);
+  }
+
+  // §12b send the token-bearing BOOTSTRAP over the SELECTED transport. In PORT
+  // mode it rides ONLY the retained entangled port — NEVER a window postMessage —
+  // so a same-origin replacement of the frame cannot receive the credentials. In
+  // LEGACY mode it posts to the origin-pinned frame window (postToFrame: explicit
+  // origin, never "*"). Mirrors the core sendBootstrapOverTransport (§12b).
+  function sendBootstrap(bootstrap) {
+    if (activeTransport === 'port') {
+      activePort.postMessage(bootstrap);
+      return;
+    }
+    postToFrame(bootstrap);
   }
 
   // §3a READY validator (pre-bootstrap; the ONLY message without a correlationId).
@@ -1008,8 +1054,36 @@
     a11yLive.textContent = 'The assistant applied changes to this content.';
   }
 
-  // The single inbound bridge listener — origin + source-window bound. Attached
-  // when the iframe mounts and detached on teardown.
+  // Dispatch a validated post-bootstrap uplink to its handler (the closed set).
+  // Shared by the LEGACY window path (onBridgeMessage) and the PORT path
+  // (onPortMessage) so both transports service the identical uplink set.
+  function dispatchUplink(d) {
+    if (d.type === MSG.resize) { handleResize(d.height); return; }
+    if (d.type === MSG.focus) { handleFocus(d.focus); return; }
+    if (d.type === MSG.a11y) { handleA11y(d.liveRegion, d.politeness); return; }
+    if (d.type === MSG.applyIntent) { handleApplyIntent(d); return; }
+    // Unknown type: dropped (the set is closed).
+  }
+
+  // §12b PORT uplink path — in PORT mode steady-state iframe->parent uplinks ride
+  // the retained entangled port. No origin/source check is needed: the port was
+  // transferred ONLY to the Cinatra origin by the origin-targeted READY, so its
+  // provenance IS the origin gate (a NARROWING, never a loosening), and it is
+  // document-bound — immune to the same-origin WindowProxy-replacement residual
+  // §12b closes. Envelope validation (correlationId binding + monotonic seq) is
+  // identical to the legacy window path.
+  function onPortMessage(event) {
+    if (!bootstrapped || activeTransport !== 'port') return;
+    var d = event.data;
+    if (!d || typeof d !== 'object' || typeof d.type !== 'string') return;
+    if (!validUplinkEnvelope(d)) return;
+    dispatchUplink(d);
+  }
+
+  // The inbound WINDOW bridge listener — origin + source-window bound. It carries
+  // the pre-bootstrap READY (which transfers the §12b port) and, in LEGACY mode
+  // only, the post-bootstrap uplinks. Attached when the iframe mounts, detached on
+  // teardown.
   function onBridgeMessage(event) {
     // (§6a) strict origin, BEFORE schema.
     if (event.origin !== cinatraOrigin) return;
@@ -1026,6 +1100,18 @@
       // bootstrap per frame; re-auth = reload the frame).
       if (bootstrapped) return;
       if (!isValidReady(d)) return;
+      // §12b select the transport FIRST — BEFORE any side-effecting token/relogin
+      // step — from the port the frame transferred on this (origin+source-gated)
+      // READY. A transferred port -> PORT MODE: the tokens ride ONLY the entangled
+      // port, so a same-origin replacement of the frame (a fresh realm that never
+      // inherited the port) can never receive them. NO port under `requirePort` ->
+      // FAIL CLOSED doing NOTHING AT ALL (no forceReLogin, no state mutation, no
+      // send): the token-bearing bootstrap is never sent over the legacy window, so
+      // a downgrade cannot be forced by stripping the transferred port. NO port
+      // without `requirePort` -> LEGACY MODE: the origin-pinned window transport,
+      // for an as-yet-unmigrated instance during the negotiated transition.
+      var transferredPort = (event.ports && event.ports.length > 0) ? event.ports[0] : null;
+      if (!transferredPort && requirePort) return;
       if (!userTokenValid()) { forceReLogin(); return; }
       // The cit_ token was PRE-MINTED in enterConversation() before this frame
       // mounted, so it is read from cache SYNCHRONOUSLY here — there is NO await
@@ -1037,26 +1123,35 @@
       var citToken = getCachedCitToken();
       if (!citToken) { forceReLogin('Your session expired. Please sign in again.'); return; }
       // Seed the iframe->parent monotonic gate with READY's seq (§6c); post-
-      // bootstrap uplinks must strictly increase from it.
+      // bootstrap uplinks must strictly increase from it (whichever transport they
+      // then ride).
       if (!acceptInboundSeq(d.seq)) return;
-      // Set the single-bootstrap latch BEFORE posting so a re-entrant delivery
-      // cannot double-bootstrap. event.source === frameWindow was already verified
-      // above, so this posts to the exact document that sent READY.
+      // Bind the chosen transport, then set the single-bootstrap latch BEFORE
+      // posting so a re-entrant delivery cannot double-bootstrap. In PORT mode the
+      // bootstrap rides only the retained port; in LEGACY mode event.source ===
+      // frameWindow was already verified above, so the window post targets the
+      // exact document that sent READY.
+      if (transferredPort) {
+        activePort = transferredPort;
+        activeTransport = 'port';
+        activePort.addEventListener('message', onPortMessage);
+        activePort.start();
+      } else {
+        activeTransport = 'legacy';
+      }
       bootstrapped = true;
-      postToFrame(buildBootstrap(d.nonce, citToken));
+      sendBootstrap(buildBootstrap(d.nonce, citToken));
       return;
     }
 
-    // All other messages are post-bootstrap uplinks: require an established
-    // correlationId + a monotonic seq for the iframe->parent direction.
-    if (!bootstrapped) return;
+    // All other WINDOW messages are LEGACY-mode post-bootstrap uplinks. In PORT
+    // mode the uplinks ride the retained port (onPortMessage), never the window —
+    // so a stray/spoofed window uplink is dropped here WITHOUT touching the seq
+    // gate. Each legacy uplink still requires the established correlationId + a
+    // monotonic seq for the iframe->parent direction.
+    if (!bootstrapped || activeTransport !== 'legacy') return;
     if (!validUplinkEnvelope(d)) return;
-
-    if (d.type === MSG.resize) { handleResize(d.height); return; }
-    if (d.type === MSG.focus) { handleFocus(d.focus); return; }
-    if (d.type === MSG.a11y) { handleA11y(d.liveRegion, d.politeness); return; }
-    if (d.type === MSG.applyIntent) { handleApplyIntent(d); return; }
-    // Unknown type: dropped (the set is closed).
+    dispatchUplink(d);
   }
 
   // Build the sandboxed embed iframe and attach the bridge listener. The src is
@@ -1095,6 +1190,12 @@
   // NEXT conversation entry mounts a FRESH frame (single bootstrap per frame).
   function teardownBridge() {
     try { window.removeEventListener('message', onBridgeMessage); } catch (_) {}
+    // §12b release the retained port so the entangled channel is closed with the
+    // frame (a fresh frame mints a fresh channel; single bootstrap per frame).
+    if (activePort) {
+      try { activePort.removeEventListener('message', onPortMessage); } catch (_) {}
+      try { activePort.close(); } catch (_) {}
+    }
     if (iframeEl && iframeEl.parentNode) {
       try { iframeEl.parentNode.removeChild(iframeEl); } catch (_) {}
     }
@@ -1106,6 +1207,8 @@
     inboundSeqLast = null;
     outboundSeqLast = null;
     appliedLru = [];
+    activePort = null;
+    activeTransport = null;
   }
 
   // Enter conversation mode: a valid cwu_ token is held. PRE-MINT the short-lived
