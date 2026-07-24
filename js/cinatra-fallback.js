@@ -5,9 +5,9 @@
  * Wires the floating fallback button + "cannot connect" error card that the
  * module renders whenever the Cinatra URL is configured. If the real bundle
  * mounts (#cinatra-root gets data-cinatra-mounted="true") the fallback hides
- * itself. Otherwise, clicking the button HEAD-checks the bundle URL and shows
- * a graceful, admin-facing message — never a silent missing widget. Mirrors the
- * WordPress plugin's inline fallback.
+ * itself. Otherwise, clicking the button probes the instance's public embed page
+ * (the widget host) and shows a graceful, admin-facing message — never a silent
+ * missing widget. Mirrors the WordPress plugin's inline fallback.
  */
 (function (Drupal, drupalSettings) {
   "use strict";
@@ -69,11 +69,16 @@
           return;
         }
         // The widget bundle now ships locally, so a missing widget means the
-        // instance itself is unreachable/misconfigured. Probe the auth-free
-        // capabilities endpoint (the new reachability signal) rather than the
-        // removed remote bundle.js path.
-        // Bounded-timeout probe via a guarded AbortController (AbortSignal.timeout
-        // is not universal and can throw synchronously on older browsers).
+        // instance itself is unreachable/misconfigured. The legacy auth-free
+        // /api/agents/{slug}/capabilities probe was removed with the
+        // unified-broker cutover (cinatra#2029); the widget host is now the public
+        // /embed/assistant page. It is cross-origin and emits no CORS headers, so
+        // this is a `no-cors` probe: a resolved (opaque) response means the
+        // instance answered — reachable; a rejection (DNS / connection refused /
+        // timeout) means it did not — unreachable. The opaque response status is
+        // intentionally not read.
+        // Bounded-timeout via a guarded AbortController (AbortSignal.timeout is not
+        // universal and can throw synchronously on older browsers).
         var controller =
           typeof AbortController !== "undefined" ? new AbortController() : null;
         var timer = controller
@@ -85,33 +90,19 @@
               }
             }, 4000)
           : null;
-        fetch(cu + "/api/agents/drupal-content-editor/capabilities", {
+        fetch(cu + "/embed/assistant", {
           method: "GET",
+          mode: "no-cors",
           cache: "no-store",
           signal: controller ? controller.signal : undefined,
         })
-          .then(function (r) {
+          .then(function () {
             if (timer) {
               clearTimeout(timer);
             }
-            if (r.ok) {
-              msg.textContent = Drupal.t(
-                "Cinatra is reachable but the assistant has not loaded yet. Try refreshing the page."
-              );
-            } else if (r.status === 404) {
-              // Assigned via textContent (no HTML sink), so use the raw "!"
-              // placeholder for the URL to avoid HTML-entity over-escaping
-              // (e.g. "&" rendering as "&amp;").
-              msg.textContent = Drupal.t(
-                "This Cinatra instance does not support the local assistant. Update Cinatra at: !url",
-                { "!url": cu }
-              );
-            } else {
-              msg.textContent = Drupal.t(
-                "Cinatra returned HTTP @status. Check your instance at: !url",
-                { "@status": r.status, "!url": cu }
-              );
-            }
+            msg.textContent = Drupal.t(
+              "Cinatra is reachable but the assistant has not loaded yet. Try refreshing the page."
+            );
             box.style.display = "block";
           })
           .catch(function () {
