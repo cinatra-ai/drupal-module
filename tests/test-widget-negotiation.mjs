@@ -17,12 +17,14 @@
 // negotiates + logs in, then frames the embed page as the SOLE session owner and
 // speaks the §12 parent-side bridge. So this harness covers, in one place:
 //
-//   NEGOTIATION (HARD PREREQUISITE — cinatra#220):
-//     - /capabilities failure (HTTP not-ok / network / malformed)  -> NO MOUNT
-//     - supportsTokenExchange !== true / missing tokenPath          -> NO MOUNT
-//     - no mutually-supported contractVersion                       -> NO MOUNT
-//     - healthy v2 instance (control)                               -> MOUNTS
-//     - duplicate include                                           -> mounts once
+//   UNCONDITIONAL MOUNT (S5 unified-broker cutover, cinatra#2029): the shell no
+//   longer pre-flight-negotiates. The bespoke `GET /api/agents/{slug}/capabilities`
+//   was deleted (cinatra#1991, no migration window) and the AG-UI capability
+//   handshake moved CLIENT-SIDE into the /embed/assistant iframe (unified broker
+//   `GET /api/assistants/chat/capabilities`). So the shell now:
+//     - boot                        -> MOUNTS (login-gated), makes NO /capabilities fetch
+//     - every network call rejects  -> STILL MOUNTS (no pre-flight gate to abort on)
+//     - duplicate include           -> mounts once
 //
 //   REQUIRED-LOGIN GATE (cinatra#410): mounts in LOGIN mode; no iframe, no token,
 //     no bootstrap until the hosted-PKCE handshake yields an opaque cwu_ token.
@@ -253,7 +255,9 @@ function jsonResponse(status, body) {
 
 async function flush(n) { for (let i = 0; i < (n || 20); i++) { await Promise.resolve(); } }
 
-// Boot the IIFE with a /capabilities behavior and settle the negotiation chain.
+// Boot the IIFE and settle the microtask queue. The shell mounts synchronously
+// (login-gated) with no pre-flight fetch; `fetchImpl` is a spy so a test can
+// assert the shell issued NO capabilities request at boot.
 async function boot(fetchImpl, sharedRoot) {
   const captured = newCaptured();
   const env = makeEnv(fetchImpl, sharedRoot, captured);
@@ -270,16 +274,6 @@ async function boot(fetchImpl, sharedRoot) {
 function newCaptured() {
   return { clickHandlers: [], textarea: null, loginBtnEl: null, byClass: {}, iframeEl: null, iframeSrc: null, bootstrapPosts: [], applied: [] };
 }
-
-const HEALTHY = {
-  agentSlug: "drupal-content-editor",
-  contractVersion: "v2",
-  supportedContractVersions: ["v1", "v2"],
-  capabilities: {
-    supportsTokenExchange: true,
-    tokenPath: "/api/agents/drupal-content-editor/token",
-  },
-};
 
 // A synchronous MessagePort double for the §12b port transport: captures posts
 // (the BOOTSTRAP; no targetOrigin), a message listener list, start/close state,
@@ -313,7 +307,6 @@ async function driveToPostLogin(cfgExtra) {
     const base = u.split("?")[0];
     const body = (opts && opts.body) ? JSON.parse(opts.body) : null;
     fetched.push({ url: u, base, method: (opts && opts.method) || "GET", headers: (opts && opts.headers) || {}, body });
-    if (base.indexOf("/capabilities") !== -1) { return jsonResponse(200, HEALTHY); }
     if (base === AUTH_INIT) {
       initState = body && body.state;
       return jsonResponse(200, { txnId: "txn1", authorizeUrl: INSTANCE_ORIGIN + "/widget-auth?txn=txn1", instanceId: "i1" });
@@ -343,57 +336,34 @@ async function driveToPostLogin(cfgExtra) {
 }
 
 async function main() {
-  console.log("widget negotiation + §12 embed bridge");
+  console.log("widget unconditional mount + §12 embed bridge");
 
   // -------------------------------------------------------------------------
-  // NEGOTIATION (hard prerequisite).
+  // UNCONDITIONAL MOUNT (S5 unified-broker cutover, cinatra#2029). The shell no
+  // longer pre-flight-negotiates against the deleted /api/agents/{slug}/
+  // capabilities route (cinatra#1991); the AG-UI capability handshake runs
+  // CLIENT-SIDE inside the /embed/assistant iframe against the unified broker. So
+  // the shell mounts unconditionally (login-gated) and makes NO capabilities
+  // request at boot.
   // -------------------------------------------------------------------------
   {
-    const r = await boot(() => jsonResponse(200, HEALTHY));
-    check("healthy v2 instance -> MOUNTS (control)", r.mounted && r.attachShadow);
+    const fetches = [];
+    const r = await boot((url) => { fetches.push(String(url)); return jsonResponse(200, {}); });
+    check("boot -> MOUNTS unconditionally (attachShadow), login-gated", r.mounted && r.attachShadow);
+    check(
+      "boot -> NO capability pre-flight (no /capabilities, no /api/agents/… fetch at boot)",
+      !fetches.some((u) => u.indexOf("/capabilities") !== -1 || u.indexOf("/api/agents/") !== -1),
+    );
   }
   {
-    const r = await boot(() => jsonResponse(500, { error: "boom" }));
-    check("/capabilities 5xx -> UNAVAILABLE (no mount, no attachShadow)", !r.mounted && !r.attachShadow);
-  }
-  {
-    const r = await boot(() => jsonResponse(404, { error: "Unknown agent" }));
-    check("/capabilities 404 -> UNAVAILABLE (no mount)", !r.mounted && !r.attachShadow);
-  }
-  {
+    // No pre-flight gate: even if every network call rejects, the shell STILL
+    // mounts (the retired negotiation would have aborted the mount here).
     const r = await boot(() => Promise.reject(new Error("network down")));
-    check("/capabilities network error -> UNAVAILABLE (no mount)", !r.mounted && !r.attachShadow);
+    check("every network call rejects -> STILL MOUNTS (no pre-flight gate to abort on)", r.mounted && r.attachShadow);
   }
   {
-    const r = await boot(() => Promise.resolve({
-      ok: true, status: 200,
-      json: () => Promise.reject(new SyntaxError("bad json")),
-      text: () => Promise.resolve("<html>not json"),
-      headers: { get() { return null; } },
-    }));
-    check("malformed JSON -> UNAVAILABLE (no mount)", !r.mounted && !r.attachShadow);
-  }
-  {
-    const body = JSON.parse(JSON.stringify(HEALTHY));
-    body.capabilities.supportsTokenExchange = false;
-    const r = await boot(() => jsonResponse(200, body));
-    check("supportsTokenExchange:false -> INCOMPATIBLE (no mount)", !r.mounted && !r.attachShadow);
-  }
-  {
-    const body = JSON.parse(JSON.stringify(HEALTHY));
-    delete body.capabilities.tokenPath;
-    const r = await boot(() => jsonResponse(200, body));
-    check("missing tokenPath -> INCOMPATIBLE (no mount)", !r.mounted && !r.attachShadow);
-  }
-  {
-    const body = JSON.parse(JSON.stringify(HEALTHY));
-    body.supportedContractVersions = ["v0", "v9"];
-    const r = await boot(() => jsonResponse(200, body));
-    check("no mutual contractVersion -> UNAVAILABLE (no mount)", !r.mounted && !r.attachShadow);
-  }
-  {
-    const first = await boot(() => jsonResponse(200, HEALTHY));
-    const second = await boot(() => jsonResponse(200, HEALTHY), first.env.rootEl);
+    const first = await boot(() => jsonResponse(200, {}));
+    const second = await boot(() => jsonResponse(200, {}), first.env.rootEl);
     check(
       "duplicate include -> mounts exactly once (attachShadow called once total)",
       first.mounted && first.env.rootEl.dataset.cinatraMounted === "true" &&
@@ -412,8 +382,7 @@ async function main() {
       const base = u.split("?")[0];   // Drupal appends the CSRF token as ?token=
       const body = (opts && opts.body) ? JSON.parse(opts.body) : null;
       fetched.push({ url: u, base, method: (opts && opts.method) || "GET", headers: (opts && opts.headers) || {}, body });
-      if (base.indexOf("/capabilities") !== -1) { return jsonResponse(200, HEALTHY); }
-      if (base === AUTH_INIT) {
+        if (base === AUTH_INIT) {
         initState = body && body.state;
         return jsonResponse(200, { txnId: "txn1", authorizeUrl: INSTANCE_ORIGIN + "/widget-auth?txn=txn1", instanceId: "i1" });
       }
