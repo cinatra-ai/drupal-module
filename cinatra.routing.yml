@@ -63,3 +63,36 @@ cinatra.widget_auth_token:
   requirements:
     _permission: 'use cinatra assistant'
     _csrf_token: 'TRUE'
+
+# Host-facing AUTHENTICATED PREVIEW of a node, including an unpublished/draft
+# one (cinatra#2046 — the Drupal render-plane counterpart of the WordPress
+# plugin's /wp-json/cinatra/v1/preview/<id>). The connected Cinatra instance
+# fetches this ONCE per review gate, server-to-server, and pins an inert capture
+# of the rendered page so a reviewer sees the proposed change inside this site's
+# own theme without the site ever being fetched again at view time.
+#
+# THE PATH PARAMETER IS A RAW `{nid}`, NOT AN UPCAST `{node}`. Drupal's
+# parameter converter runs BEFORE access checking, so an upcast parameter would
+# LOAD an unpublished node for an unsigned caller. With a raw integer the access
+# check decides while the node is still just a number in a path
+# (deny-before-load), and the controller loads it only after that.
+#
+# AUTH is the connect-provisioned Standard-Webhooks shared secret this module
+# already signs its publish webhook with — the one credential both ends hold.
+# The host presents webhook-id / webhook-timestamp / webhook-signature over the
+# canonical content "preview.<nid>"; PreviewAccessCheck recomputes it with the
+# same PublishWebhook::sign(), constant-time compares, enforces a 300s freshness
+# window, and consumes the message id single-use. NO Drupal permission is
+# involved: this is a server-to-server credential, not a user session — which is
+# exactly why the check is a custom one and not `_permission`.
+cinatra.preview:
+  path: '/cinatra/preview/{nid}'
+  defaults:
+    _controller: '\Drupal\cinatra\Controller\PreviewController::preview'
+    _title_callback: '\Drupal\cinatra\Controller\PreviewController::title'
+  methods: [GET]
+  requirements:
+    nid: '\d+'
+    _custom_access: '\Drupal\cinatra\Access\PreviewAccessCheck::access'
+  options:
+    no_cache: 'TRUE'

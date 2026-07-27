@@ -8,8 +8,13 @@
 declare(strict_types=1);
 
 use Drupal\cinatra\Cinatra;
+use Drupal\cinatra\PreviewAuth;
+use Drupal\cinatra\PreviewRender;
 use Drupal\cinatra\PublishWebhook;
 use Drupal\Component\Utility\Html;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Entity\Display\EntityViewDisplayInterface;
+use Drupal\Core\Render\Element;
 use Drupal\Core\Render\Markup;
 use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\Url;
@@ -274,4 +279,75 @@ function cinatra_node_update(NodeInterface $node): void {
   catch (\Throwable) {
     // Quiet by design (see cinatra_node_insert()).
   }
+}
+
+/**
+ * Implements hook_entity_view_alter().
+ *
+ * SERVER-EMITTED REGION ANCHORS for the authenticated preview (cinatra#2046).
+ *
+ * The reviewer surface highlights the regions THIS module owns inside a pinned
+ * capture of the rendered page, and composes a proposed field value into the
+ * region of the same name. Those regions must be marked by the adapter: the
+ * host is forbidden to guess them with CSS selectors, because a guess would
+ * silently place a proposed value in the wrong part of someone's theme. So this
+ * hook emits `data-cinatra-region="<field>"` around the owned FIELD regions at
+ * Drupal's own render layer — the fields the connector declares reviewable
+ * (`body` and every declared `field_*`; see drupal-mcp-connector's
+ * resolveReviewablePaths) and nothing else. The `title` region is emitted by
+ * PreviewController::title(), because Drupal renders a node's title through the
+ * page-title block rather than as a field inside the node build.
+ *
+ * REGISTERED GLOBALLY BUT INERT. It reads PreviewRender::isTarget() first and
+ * returns untouched unless THIS module is rendering THAT node through the
+ * authenticated preview route. A normal visitor never sets that flag, so the
+ * public page is byte-identical to what it was before this feature existed: no
+ * visual change, no DOM change, no unpublished content, nothing to scrape. The
+ * id guard also matters within a preview — one page render builds many nodes
+ * (teaser lists, related content, menus) and only the previewed one is the
+ * review target.
+ *
+ * Wrapping happens on the RENDER ARRAY (#prefix/#suffix), not in a template, so
+ * it holds for any theme — including one that overrides field.html.twig and
+ * drops the attributes a template-level marker would have relied on.
+ */
+function cinatra_entity_view_alter(array &$build, EntityInterface $entity, EntityViewDisplayInterface $display): void {
+  if (!$entity instanceof NodeInterface || !PreviewRender::isTarget($entity->id())) {
+    return;
+  }
+  $nid = (int) $entity->id();
+  foreach (Element::children($build) as $key) {
+    $field_name = $build[$key]['#field_name'] ?? NULL;
+    if (!is_string($field_name) || $field_name === '') {
+      continue;
+    }
+    $region = PreviewAuth::regionForField($field_name);
+    if ($region === NULL) {
+      continue;
+    }
+    $prefix = isset($build[$key]['#prefix']) ? (string) $build[$key]['#prefix'] : '';
+    if (PreviewRender::alreadyAnchored($prefix, $region)) {
+      // Idempotent: never emit two anchors for one field.
+      continue;
+    }
+    $suffix = isset($build[$key]['#suffix']) ? (string) $build[$key]['#suffix'] : '';
+    // Markup::create keeps the anchor byte-exact: #prefix/#suffix are otherwise
+    // run through Xss::filterAdmin, which is free to rewrite attributes. The
+    // string is built entirely from module constants, an escaped machine name
+    // and an integer — nothing external reaches it.
+    $open = PreviewRender::anchorOpen($region, $nid);
+    $build[$key]['#prefix'] = Markup::create($open . $prefix);
+    $build[$key]['#suffix'] = Markup::create($suffix . PreviewRender::anchorClose());
+    // Anchored output must NEVER be persisted. Clearing max-age on the parent
+    // build alone is not enough: render-cache metadata bubbles UP, not down, so
+    // a field element that carries its OWN #cache[keys] (a contrib formatter, a
+    // layout-builder component) would be cached WITH the anchor and later
+    // served to an ordinary visitor — and, symmetrically, an existing cache HIT
+    // for that element would silently return anchor-less markup and drop the
+    // region. Dropping the keys on every element this hook touches closes both
+    // directions. (A convergence review caught this.)
+    unset($build[$key]['#cache']['keys']);
+    $build[$key]['#cache']['max-age'] = 0;
+  }
+  $build['#cache']['max-age'] = 0;
 }
