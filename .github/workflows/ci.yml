@@ -25,6 +25,25 @@ jobs:
             php -l "$f"
           done
 
+  php-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: "8.3"
+      - name: Authenticated-preview auth + region-anchor contract (cinatra#2046)
+        # Standalone harness (no Drupal install): the Standard-Webhooks preview
+        # verification matrix, id binding, the freshness window, the owned-region
+        # vocabulary, the anchor markup, and the render-flag inertness. The
+        # drupal.org PHPUnit runner is currently skipped (see .gitlab-ci.yml
+        # SKIP_PHPUNIT), so this is what actually gates the security boundary on
+        # every pull request; the route-level integration lives in
+        # tests/src/Functional/PreviewRouteTest.php.
+        run: php tests/test-preview-auth.php
+
   js-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 5

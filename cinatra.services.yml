@@ -1,0 +1,10 @@
+services:
+  # Scoped strictly to the authenticated-preview route (cinatra#2046): turns
+  # that route's access denial into a bare 401 instead of the site's themed 403
+  # page (a credential failure, mirroring the WordPress adapter's REST status),
+  # and stamps the preview response no-store / noindex because it can carry
+  # unpublished content. A no-op for every other request on the site.
+  cinatra.preview_response_subscriber:
+    class: Drupal\cinatra\EventSubscriber\PreviewResponseSubscriber
+    tags:
+      - { name: event_subscriber }
