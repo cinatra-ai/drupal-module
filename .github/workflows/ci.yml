@@ -122,3 +122,51 @@ jobs:
         run: composer install --no-interaction --no-progress --prefer-dist
       - name: PHPStan
         run: vendor/bin/phpstan analyse --no-progress
+
+  # cinatra#2165 — PHP 8.5 ceiling gate.
+  #
+  # This module does not merely support a range on paper: it is bind-mounted
+  # into, and executed by, the Cinatra Drupal companion container, whose base
+  # image moved from php 8.3-apache to php 8.5-apache. Every gate above pins
+  # 8.3, so the interpreter the module actually runs under in that container was
+  # not exercised anywhere — a PHP 8.4/8.5 deprecation (implicitly-nullable
+  # parameter declarations being the one that bites Drupal contrib hardest)
+  # could land silently and only surface as a runtime notice inside the image.
+  #
+  # Deliberately ONE ADDITIVE JOB rather than a `strategy.matrix` on the jobs
+  # above: a matrix rewrites their check names to "php-lint (8.3)" etc., and
+  # `php-lint` / `phpcs` / `phpstan` are branch-protection REQUIRED contexts —
+  # renaming them would leave the required checks pending forever. This job adds
+  # a new context and touches none of the existing ones.
+  #
+  # `extensions:` is explicit because drupal/core declares `ext-gd` (and the
+  # zip/dom/mbstring family) as hard Composer requirements; without them
+  # `composer install` fails resolution before any analyser runs.
+  php-85:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up PHP 8.5
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: "8.5"
+          tools: composer
+          extensions: gd, zip, dom, mbstring, curl, xml
+      - name: php -l (lint every PHP file under 8.5)
+        run: |
+          set -e
+          find . -path ./vendor -prune -o \( -name '*.php' -o -name '*.module' -o -name '*.install' \) -print | while read -r f; do
+            php -l "$f"
+          done
+      - name: Authenticated-preview auth + region-anchor contract under 8.5
+        # Same standalone harness the 8.3 job runs (see php-tests). E_ALL so a
+        # deprecation raised while the harness exercises the module's own code
+        # is visible in the log rather than swallowed.
+        run: php -d error_reporting=E_ALL -d display_errors=1 tests/test-preview-auth.php
+      - name: Install dev dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+      - name: PHPCS (Drupal, DrupalPractice) under 8.5
+        run: vendor/bin/phpcs -q
+      - name: PHPStan (with phpstan-deprecation-rules) under 8.5
+        run: vendor/bin/phpstan analyse --no-progress
