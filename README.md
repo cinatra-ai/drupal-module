@@ -13,8 +13,7 @@ to; it is not tied to a fixed outside service.
 The full documentation hub for this integration — overview, quick start,
 day-to-day usage, settings & permissions, troubleshooting, and advanced
 reference — lives at **https://docs.cinatra.ai/integrations/drupal/**. The
-source for those pages is this repository's [`docs/`](docs/) directory, published
-to docs.cinatra.ai on each release.
+same pages are available in this repository's [`docs/`](docs/) directory.
 
 ## Works with
 
