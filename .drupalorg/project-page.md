@@ -187,16 +187,14 @@ Apache-2.0, which is compatible with the GPL.
 
 ## Logo
 
-The Project Browser project logo is generated from the Cinatra brand and stored
-in `.drupalorg/images/`:
+The Project Browser project logo, in `.drupalorg/images/`, carries the Cinatra
+brand:
 
 - `.drupalorg/images/logo.png` — **512×512 PNG**, no animation, square corners,
   ~2 KB (well under the ~10 KB Project Browser guidance; compressed with
   pngquant). The sanctioned brand **primary (mustard)** colourway: the mustard
   fedora mark (`#c79545`) on a white/paper ground (`#ffffff`).
 - `.drupalorg/images/logo_svg.txt` — the vector master for crisp rendering.
-
-Regenerate with `node .drupalorg/generate-logo.mjs` (see that script's header).
 
 **Promotion at project-creation time** (Project Browser requires the files at the
 repo *root* on the default branch):
