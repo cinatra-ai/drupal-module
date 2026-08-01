@@ -158,7 +158,7 @@ Drupal JS/CSS conventions (`Drupal.behaviors`, `"use strict"`, `Drupal.t()`).
 `js/cinatra-widget.js` is the vendored assistant widget bundle (Apache-2.0) and
 is excluded from PHPCS; see `cinatra.libraries.yml` for the library declaration.
 
-### Widget source of truth (cinatra#411)
+### Widget source of truth
 
 The bundled `js/cinatra-widget.js` is a
 **canonical, locally-shipped** widget — NOT a re-vendor of any Cinatra host
