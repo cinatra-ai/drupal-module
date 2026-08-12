@@ -154,7 +154,7 @@ $check(PreviewResponseSubscriber::isPreviewPath('/cinatra/preview/42'), 'the pre
 $check(!PreviewResponseSubscriber::isPreviewPath('/cinatra/preview/42x'), 'a trailing-garbage look-alike does not match');
 $check(!PreviewResponseSubscriber::isPreviewPath('/cinatra/preview/42/edit'), 'a deeper path does not match');
 $check(!PreviewResponseSubscriber::isPreviewPath('/x/cinatra/preview/42'), 'a prefixed look-alike does not match');
-$check(!PreviewResponseSubscriber::isPreviewPath('/cinatra/token'), 'a sibling module route does not match');
+$check(!PreviewResponseSubscriber::isPreviewPath('/admin/config/services/cinatra'), 'a sibling module route does not match');
 $check(PreviewResponseSubscriber::ROUTE_NAME === 'cinatra.preview', 'the subscriber names the preview route');
 
 echo "\n$checks checks, $failures failure(s)\n";

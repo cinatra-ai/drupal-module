@@ -7,7 +7,6 @@
 
 declare(strict_types=1);
 
-use Drupal\cinatra\Cinatra;
 use Drupal\cinatra\PreviewAuth;
 use Drupal\cinatra\PreviewRender;
 use Drupal\cinatra\PublishWebhook;
@@ -40,7 +39,7 @@ function cinatra_help(string $route_name, RouteMatchInterface $route_match): arr
         'about' => [
           '#type' => 'html_tag',
           '#tag' => 'p',
-          '#value' => t('The Cinatra module embeds the Cinatra AI assistant on node pages so editors can draft and revise content in context. The assistant widget is shipped locally with the module; your Cinatra instance is used as a versioned data API. The long-lived integration credential is held server-side and exchanged for short-lived streaming tokens, so it never reaches the browser.'),
+          '#value' => t('The Cinatra module embeds the Cinatra AI assistant on node pages so editors can draft and revise content in context. The assistant widget is shipped locally with the module; your Cinatra instance is used as a versioned data API. The integration credential is held server-side and never reaches the browser. Each editor signs in to Cinatra inside the assistant panel, and that sign-in stays between the person and Cinatra — this site never receives their credential.'),
         ],
         'uses_heading' => [
           '#type' => 'html_tag',
@@ -140,44 +139,28 @@ function cinatra_page_attachments(array &$attachments): void {
     }
   }
 
-  // Same-origin broker route the browser POSTs to for a short-lived token, plus
-  // the CSRF token that route requires. The long-lived key stays server-side.
-  $token_endpoint = Url::fromRoute('cinatra.token')->toString();
-  $csrf_token = \Drupal::csrfToken()->get('cinatra/token');
-
-  // Required-login (cinatra#410): the per-user PKCE handshake relays. Drupal's
-  // _csrf_token route validates the ?token= query against a seed derived from
-  // THAT route's own path (exactly like cinatra.token above, which is seeded to
-  // 'cinatra/token'), so each relay needs its OWN token seeded to its own path.
-  // The bundle sends each endpoint its matching token. The browser still never
-  // holds the long-lived key; these relays present it server-to-server.
-  $auth_init_endpoint = Url::fromRoute('cinatra.widget_auth_init')->toString();
-  $auth_token_endpoint = Url::fromRoute('cinatra.widget_auth_token')->toString();
-  $auth_init_csrf = \Drupal::csrfToken()->get('cinatra/widget-auth/init');
-  $auth_token_csrf = \Drupal::csrfToken()->get('cinatra/widget-auth/token');
-
   $attachments['#attached']['library'][] = 'cinatra/bundle';
-  // NOTE: no 'apiKey'. The browser receives only short-lived tokens minted by
-  // the cinatra.token broker route from the server-side credential.
+  // EVERY VALUE BELOW IS A PUBLIC SELECTOR (cinatra#2674). There is no
+  // 'apiKey', and — since the widget bootstrap moved to protocol 2 — no bearer,
+  // no broker endpoint and no CSRF token for one either. The browser used to be
+  // handed three same-origin broker URLs and their route-seeded CSRF tokens so
+  // it could mint a site token and run the per-user PKCE handshake; the iframe
+  // now does all of that itself on the Cinatra origin, so this site neither
+  // obtains nor forwards a credential. What is left names the instance, the
+  // node on screen, and this site's own settings page.
+  //
+  // Dropping the CSRF token also drops the 'session' cache context this array
+  // used to require, so the page is shareable across sessions again.
   $attachments['#attached']['drupalSettings']['cinatra'] = [
-    'contractVersion'    => Cinatra::CONTRACT_VERSION,
-    'cinatraUrl'         => $cinatra_url,
-    'tokenEndpoint'      => $token_endpoint,
-    'csrfToken'          => $csrf_token,
-    'authInitEndpoint'   => $auth_init_endpoint,
-    'authTokenEndpoint'  => $auth_token_endpoint,
-    'authInitCsrfToken'  => $auth_init_csrf,
-    'authTokenCsrfToken' => $auth_token_csrf,
-    'nodeId'             => $node_id,
-    'nodeBundle'         => $node_bundle,
-    'nodeStatus'         => $node_status,
-    'instanceId'         => (string) $config->get('instance_id'),
+    'cinatraUrl'      => $cinatra_url,
+    'nodeId'          => $node_id,
+    'nodeBundle'      => $node_bundle,
+    'nodeStatus'      => $node_status,
+    'instanceId'      => (string) $config->get('instance_id'),
     // The widget's "Widget administration" link points at THIS site's local
     // settings form, not a path on the Cinatra origin.
     'drupalAdminUrl'  => Url::fromRoute('cinatra.settings_form')->toString(),
   ];
-  // The CSRF token is per-session; keep it out of shared render caches.
-  $attachments['#cache']['contexts'][] = 'session';
 }
 
 /**

@@ -21,9 +21,9 @@ use Symfony\Component\HttpFoundation\RequestStack;
  * The connect exchange (POST /api/connect/token) must resolve its transport
  * base through \Drupal\cinatra\ServerBase — the validated CINATRA_BASE_URL
  * container-topology override — the same resolution every other
- * server-to-server call in this module applies (TokenController and
- * PublishWebhook via ServerBase::resolve(); WidgetAuthController via its
- * identical-contract private resolver). Before drupal-module#78 the exchange
+ * server-to-server call in this module applies (PublishWebhook via
+ * ServerBase::resolve(); the retired widget brokers used it too, until
+ * cinatra#2674 removed them). Before drupal-module#78 the exchange
  * was the ONE call that applied no override resolution at all,
  * so a containerized Drupal dialed the browser-facing origin (its own
  * loopback) and the connect flow could never complete in that topology.

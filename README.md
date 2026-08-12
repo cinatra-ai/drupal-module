@@ -89,8 +89,9 @@ instance's own privacy terms apply; see <https://cinatra.ai>.
 ## Feature parity with the WordPress plugin
 
 For the core integration — the locally-shipped assistant widget, the
-server-side credential with its short-lived streaming-token broker, and the
-graceful fallback chrome — this module is at parity with the
+server-side integration credential, the in-frame sign-in that keeps each
+editor's Cinatra credential between them and Cinatra, and the graceful fallback
+chrome — this module is at parity with the
 [Cinatra WordPress plugin](https://github.com/cinatra-ai/wordpress-plugin).
 
 The node-publish notification is at parity too (issue

@@ -26,43 +26,21 @@ cinatra.connect_callback:
   options:
     no_cache: 'TRUE'
 
-# Server-to-server token broker. The browser POSTs here (same-origin, CSRF
-# protected); the controller holds the long-lived integration key from config,
-# calls the Cinatra instance token-exchange endpoint, and returns ONLY the
-# short-lived token to the browser. The long-lived key never reaches JS.
-cinatra.token:
-  path: '/cinatra/token'
-  defaults:
-    _controller: '\Drupal\cinatra\Controller\TokenController::mint'
-  methods: [POST]
-  requirements:
-    _permission: 'use cinatra assistant'
-    _csrf_token: 'TRUE'
-
-# Required-login (cinatra#410): per-user PKCE handshake broker relays. The
-# browser POSTs here (same-origin, CSRF protected via the route-seeded ?token=
-# query that _csrf_token validates, permission gated); the controller presents
-# the long-lived integration key server-to-server to the instance's
-# /api/widget-auth/{init,token} endpoints and returns ONLY the whitelisted
-# upstream envelope to the browser. The long-lived key never reaches JS. Mirrors
-# cinatra.token above.
-cinatra.widget_auth_init:
-  path: '/cinatra/widget-auth/init'
-  defaults:
-    _controller: '\Drupal\cinatra\Controller\WidgetAuthController::init'
-  methods: [POST]
-  requirements:
-    _permission: 'use cinatra assistant'
-    _csrf_token: 'TRUE'
-
-cinatra.widget_auth_token:
-  path: '/cinatra/widget-auth/token'
-  defaults:
-    _controller: '\Drupal\cinatra\Controller\WidgetAuthController::token'
-  methods: [POST]
-  requirements:
-    _permission: 'use cinatra assistant'
-    _csrf_token: 'TRUE'
+# RETIRED — the widget credential broker routes (cinatra#2674).
+#
+# This module used to expose three same-origin POST routes for the assistant
+# widget: `/cinatra/token` minted a short-lived site transport token, and
+# `/cinatra/widget-auth/{init,token}` relayed the per-user PKCE handshake to the
+# instance. Each presented the long-lived integration key server-to-server and
+# handed a bearer back to the browser, which handed it into the iframe.
+#
+# The iframe now runs that whole ceremony itself, on the Cinatra origin, and the
+# instance's `/api/widget-auth/{init,token}` answer 410 Gone. So these routes are
+# REMOVED rather than left relaying to a retired endpoint: a stale cached page
+# that still POSTs to one gets a plain 404 from Drupal, no key-bearing request
+# leaves this site, and nothing is logged as an upstream failure. There is no
+# compatibility arm — the point of the change is that this site can no longer
+# obtain a bearer at all.
 
 # Host-facing AUTHENTICATED PREVIEW of a node, including an unpublished/draft
 # one (cinatra#2046 — the Drupal render-plane counterpart of the WordPress

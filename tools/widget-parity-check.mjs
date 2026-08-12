@@ -15,30 +15,36 @@
 // property access) — the real defense is review + the runtime bridge/negotiation
 // tests; this gate is the cheap tripwire that makes the COMMON drift loud in CI.
 //
-// ARCHITECTURE (S5 cinatra#1221) — WHY THE INVARIANT SET CHANGED
-// --------------------------------------------------------------
-// The assistant conversation now lives in a Cinatra-served `/embed/assistant`
-// iframe that the widget frames as the SOLE session owner. The vanilla AG-UI
-// renderer + SSE stream loop that used to live in the widget are DELETED: the
-// widget NO LONGER streams and holds NO `Authorization: Bearer` fetch. It relays
-// the short-lived cit_/cwu_ tokens ONLY into a single postMessage BOOTSTRAP.
+// ARCHITECTURE — WHY THE INVARIANT SET IS WHAT IT IS
+// ---------------------------------------------------
+// The assistant conversation lives in a Cinatra-served `/embed/assistant` iframe
+// that the widget frames as the SOLE session owner (S5 cinatra#1221). The vanilla
+// AG-UI renderer + SSE stream loop that used to live in the widget are gone: the
+// widget does not stream and holds no `Authorization: Bearer` fetch.
 //
-// The OLD gate asserted the OPPOSITE of the new trust boundary — it REQUIRED a
-// `Authorization: Bearer <getStreamToken()>` stream fetch (INV3). That invariant
-// is now a LIABILITY: keeping it would force a Bearer stream back into the browser
-// or fail every widget PR. It is REPLACED, in lockstep with the widget rewrite, by
-// the §12 trust-boundary invariants below. KEPT unchanged: no-apiKey (INV1), the
-// cit_ broker mint (INV2, now feeding BOOTSTRAP not a header), the dead-bundle-route
-// ban (INV5), and the login-gate marker (INV6).
+// PROTOCOL 2 (cinatra#2674) FLIPPED THE CREDENTIAL INVARIANTS THEMSELVES.
+// At protocol 1 this gate REQUIRED the widget to mint a short-lived `cit_` token
+// through a same-origin broker and to carry `citToken`/`cwuToken` in a BOOTSTRAP
+// message. That was the correct invariant then and is a LIABILITY now: the site
+// is no longer a party to the sign-in at all. The frame mints its own credential
+// on the Cinatra origin; the widget sends ONE selector-only CONTEXT message.
 //
-// UNIFIED-BROKER CUTOVER (cinatra#2029; the "AC2" follow-up slice). The retired
-// shell capability pre-flight — CLIENT_CONTRACT_VERSIONS + negotiateCapabilities
-// against the bespoke `GET /api/agents/{slug}/capabilities` — has NOW landed its
-// removal everywhere: that route was DELETED by cinatra#1991 (no migration window)
-// and the AG-UI handshake moved CLIENT-SIDE into the /embed/assistant iframe
-// (against the unified broker `GET /api/assistants/chat/capabilities`). So INV4
-// FLIPPED from "REQUIRE the pre-flight is present" to "BAN the deleted route +
-// BAN the retired pre-flight from creeping back in" (no dual-pathing).
+// So the credential invariants are INVERTED rather than deleted — the difference
+// matters, because a deleted invariant is silent about a regression and an
+// inverted one is loud. This gate now REQUIRES the absence it used to forbid:
+//   * no broker endpoint is read and no token mint exists (INV2, flipped);
+//   * the message type is `cinatra.embed.context` at version literal 2, and the
+//     retired `…bootstrap` type / `citToken` / `cwuToken` / `auth:` field cannot
+//     come back (INV3f, flipped);
+//   * no credential-shaped VALUE may be composed, and the outbound refusal that
+//     enforces it must be present (INV3g, extended);
+//   * the shell runs NO login gate of its own — the frame owns sign-in (INV6,
+//     flipped);
+//   * the iframe sandbox grants the popup capability the frame-owned sign-in
+//     needs, and still nothing else (INV3a, widened by exactly two flags).
+//
+// The unified-broker cutover invariants (INV4) and the dead-bundle-route ban
+// (INV5) are unchanged.
 //
 // This SAME file is shipped verbatim to both repos (it auto-detects the WP vs
 // Drupal config accessor + widget path). Keeping it identical is itself part of
@@ -140,30 +146,39 @@ assert(
 );
 
 // ---------------------------------------------------------------------------
-// INVARIANT 2 (KEPT; sink changed) — the same-origin cit_ token broker is used.
-// The widget reads config.tokenEndpoint AND mints via getStreamToken(). Under
-// the new architecture the minted cit_ token feeds the BOOTSTRAP message (§4),
-// NOT a Bearer stream header — but the broker mint itself is unchanged and still
-// the ONLY sanctioned credential source.
+// INVARIANT 2 (FLIPPED by cinatra#2674) — THE SAME-ORIGIN TOKEN BROKER IS GONE.
+// The widget used to read `config.tokenEndpoint` and mint a `cit_` token through
+// `getStreamToken()`; a second pair of broker endpoints ran the per-user PKCE
+// handshake. All three are retired with the ceremony they served, so the gate now
+// BANS them: a reappearance would mean this site is obtaining a bearer again,
+// which is precisely what the protocol change ended. The config keys are named
+// individually so a partial reintroduction is caught too.
 // ---------------------------------------------------------------------------
+const BROKER_CONFIG_RE = /config\.(?:tokenEndpoint|authInitEndpoint|authTokenEndpoint|csrfToken|authInitCsrfToken|authTokenCsrfToken)/;
 assert(
-  "same-origin token broker referenced (config.tokenEndpoint read)",
-  /config\.tokenEndpoint/.test(code),
-  "config.tokenEndpoint is not read — the broker is the only sanctioned credential source",
+  "no same-origin credential-broker endpoint is read (tokenEndpoint / authInit / authToken)",
+  !BROKER_CONFIG_RE.test(code),
+  "the widget reads a broker endpoint from config — the site must not obtain a bearer at all; the frame mints its own",
 );
 assert(
-  "cit_ broker mint present (getStreamToken)",
-  /function\s+getStreamToken\b/.test(code) && /getStreamToken\s*\(/.test(code),
-  "getStreamToken() mint not found",
+  "no cit_ broker mint exists (getStreamToken is gone)",
+  !/\bgetStreamToken\b/.test(code),
+  "getStreamToken() reappeared — the short-lived site-token mint belongs to the frame now",
+);
+assert(
+  "no widget-auth path is composed anywhere in the widget",
+  !/['"]\/(?:api\/)?widget-auth/.test(code),
+  "the widget composes a /widget-auth path — the retired endpoints answer 410 Gone and must not be called, directly or through a relay",
 );
 
 // ---------------------------------------------------------------------------
 // INVARIANT 3 (REPLACES the old Bearer-stream invariant) — the §12 sandboxed
 // iframe trust boundary. The widget no longer streams; it frames the Cinatra
 // `/embed/assistant` surface and speaks the parent↔iframe bridge. Five checks:
-//   3a  a sandboxed iframe is created (allow-scripts + allow-same-origin ONLY;
-//       NO escalation flags: top-nav / forms / popups / modals / downloads /
-//       pointer-lock / popups-to-escape-sandbox).
+//   3a  a sandboxed iframe is created with EXACTLY the four flags the protocol
+//       needs — allow-scripts, allow-same-origin, and the two popup flags the
+//       frame-owned sign-in requires — and NO other escalation (no top-nav, no
+//       forms, no modals, no downloads, no pointer-lock).
 //   3b  its src targets the Cinatra `/embed/assistant` route built from
 //       config.cinatraUrl and carries the instanceId + assistant disambiguators.
 //   3c  every postMessage uses an EXPLICIT targetOrigin — NEVER "*".
@@ -174,7 +189,21 @@ assert(
 //       banned-Bearer invariant — the crux of the trust-boundary flip).
 // ---------------------------------------------------------------------------
 
-// 3a — sandbox attribute with the exact minimal grant, no escalation flags.
+// 3a — sandbox attribute with the exact grant the protocol needs, and no more.
+//
+// THE POPUP FLAGS ARE REQUIRED, NOT MERELY TOLERATED (cinatra#2674). At protocol
+// 1 both were correctly forbidden: the shell ran the sign-in, so a frame that
+// could open a window was pure escalation. At protocol 2 the FRAME runs the
+// sign-in, and it deliberately runs it in a TOP-LEVEL Cinatra window — the one
+// place a Cinatra session cookie is first-party, which is why it behaves
+// identically in browsers that block third-party cookies. A sandboxed frame
+// cannot open a window at all without `allow-popups`, and a window opened
+// without `allow-popups-to-escape-sandbox` inherits the frame's restrictions, so
+// the hosted sign-in could neither submit its form nor follow its own redirect
+// home. Withholding either flag does not harden anything; it makes the assistant
+// unusable. The escape applies to the OPENED WINDOW, never to the frame — the
+// frame still cannot navigate, submit or modal the host page, which is what the
+// remaining bans below enforce.
 const sandboxMatch = code.match(
   /setAttribute\(\s*['"]sandbox['"]\s*,\s*['"]([^'"]*)['"]\s*\)/,
 );
@@ -185,33 +214,29 @@ assert(
   "no `setAttribute('sandbox', '…')` on the embed iframe",
 );
 const sandboxTokens = sandboxVal ? sandboxVal.trim().split(/\s+/) : [];
-assert(
-  "iframe sandbox grants allow-scripts and allow-same-origin",
-  sandboxTokens.includes("allow-scripts") &&
-    sandboxTokens.includes("allow-same-origin"),
-  `sandbox='${sandboxVal ?? ""}' is missing allow-scripts / allow-same-origin`,
-);
-const FORBIDDEN_SANDBOX = [
-  "allow-top-navigation",
-  "allow-top-navigation-by-user-activation",
-  "allow-top-navigation-to-custom-protocols",
-  "allow-forms",
+const REQUIRED_SANDBOX = [
+  "allow-scripts",
+  "allow-same-origin",
+  // The frame-owned sign-in (cinatra#2674): without these the ceremony cannot
+  // open, or cannot complete once open.
   "allow-popups",
   "allow-popups-to-escape-sandbox",
-  "allow-modals",
-  "allow-downloads",
-  "allow-pointer-lock",
-  "allow-presentation",
-  "allow-orientation-lock",
 ];
-const grantedForbidden = sandboxTokens.filter((t) =>
-  FORBIDDEN_SANDBOX.includes(t),
-);
+// SET EQUALITY, not "the required ones are present plus a denylist" (codex
+// round 1). A denylist can only ever name the escalations someone thought of;
+// the sandbox vocabulary grows, and a future `allow-…` would sail through a
+// partial ban. The grant is a closed set: exactly these four, no more, no fewer.
+const missingRequired = REQUIRED_SANDBOX.filter((t) => !sandboxTokens.includes(t));
+const unexpectedGranted = sandboxTokens.filter((t) => !REQUIRED_SANDBOX.includes(t));
 assert(
-  "iframe sandbox grants NO escalation flags (no top-nav/forms/popups/modals/downloads)",
-  grantedForbidden.length === 0,
-  grantedForbidden.length
-    ? `sandbox grants forbidden flag(s): ${grantedForbidden.join(", ")}`
+  "iframe sandbox grants EXACTLY the four flags the protocol needs, and nothing else",
+  missingRequired.length === 0 && unexpectedGranted.length === 0,
+  missingRequired.length || unexpectedGranted.length
+    ? `sandbox='${sandboxVal ?? ""}'${
+        missingRequired.length ? ` is missing ${missingRequired.join(", ")} (the frame-owned sign-in cannot complete without the popup grant)` : ""
+      }${
+        unexpectedGranted.length ? ` grants unexpected flag(s): ${unexpectedGranted.join(", ")}` : ""
+      }`
     : undefined,
 );
 
@@ -235,7 +260,7 @@ assert(
 // targetOrigin — the origin-targeted READY transfer that delivered the port IS
 // the binding — so it is exempt from the origin-arg requirement, but NOT from the
 // "*" ban. We (i) ban a "*" arg on ANY post, (ii) require at least one post
-// (BOOTSTRAP is delivered over some transport), and (iii) require that EVERY
+// (the CONTEXT message is delivered over some transport), and (iii) require that EVERY
 // WINDOW `.postMessage(` targets `cinatraOrigin` (no post to any other/computed
 // origin). A rewrite that posts a window message elsewhere fails here.
 // Ban a "*" literal ANYWHERE in a postMessage argument list (not just
@@ -258,9 +283,9 @@ const postMessageCalls = [
   ...code.matchAll(/(\S*)\.postMessage\s*\(([^;)]*?)\)/g),
 ];
 assert(
-  "at least one postMessage to the frame exists (BOOTSTRAP is delivered)",
+  "at least one postMessage to the frame exists (the CONTEXT message is delivered)",
   postMessageCalls.length > 0,
-  "no postMessage call found — the bridge never bootstraps the frame",
+  "no postMessage call found — the bridge never gives the frame its context",
 );
 // A send is COMPLIANT iff it is EITHER a WINDOW send whose arg list ENDS with
 // `, cinatraOrigin` and nothing appended (this rejects a computed/short-circuit
@@ -301,7 +326,7 @@ assert(
 
 // 3e — THE FLIP: the widget must hold NO Authorization: Bearer fetch header. The
 // stream (and thus every Bearer-authenticated request) moved into the iframe;
-// tokens travel ONLY via the postMessage BOOTSTRAP now.
+// there is no token in this page at all now — the frame mints its own.
 const BEARER_HEADER_RE =
   /(?:^|[,{])\s*["']?authorization["']?\s*:\s*["']Bearer\b/gim;
 const bearerMatches = [...code.matchAll(BEARER_HEADER_RE)];
@@ -309,7 +334,7 @@ assert(
   "widget holds NO Authorization: Bearer fetch header (streaming moved into the iframe)",
   bearerMatches.length === 0,
   bearerMatches.length
-    ? "an `Authorization: Bearer` header is still present — the widget must not direct-stream-auth; tokens go via BOOTSTRAP"
+    ? "an `Authorization: Bearer` header is still present — the widget must not authenticate anything; the frame holds the only credential"
     : undefined,
 );
 
@@ -318,20 +343,29 @@ assert(
 // so a rename/version drift from the core `bridge-protocol.ts` is loud.
 // ---------------------------------------------------------------------------
 assert(
-  "bridge references the ready + bootstrap message types",
-  /cinatra\.embed\.ready/.test(code) && /cinatra\.embed\.bootstrap/.test(code),
-  "the 'cinatra.embed.ready' / 'cinatra.embed.bootstrap' message types are missing",
+  "bridge references the ready + context message types",
+  /cinatra\.embed\.ready/.test(code) && /cinatra\.embed\.context/.test(code),
+  "the 'cinatra.embed.ready' / 'cinatra.embed.context' message types are missing",
 );
 assert(
-  "bridge pins EMBED_PROTOCOL_VERSION = 1",
-  /EMBED_PROTOCOL_VERSION\s*=\s*1\b/.test(code),
-  "EMBED_PROTOCOL_VERSION is not pinned to 1",
+  "bridge pins EMBED_PROTOCOL_VERSION = 2",
+  /EMBED_PROTOCOL_VERSION\s*=\s*2\b/.test(code),
+  "EMBED_PROTOCOL_VERSION is not pinned to 2 — a protocol-1 parent cannot negotiate with a protocol-2 frame, and that break is the point",
 );
-// The BOOTSTRAP is the ONLY credential carrier: it relays both tokens.
+// THE FLIP. The credential-bearing envelope is retired: there is no `auth` block,
+// no `citToken`, no `cwuToken`, and the retired message TYPE cannot be reached by
+// name either. This is the invariant that used to REQUIRE the opposite.
 assert(
-  "BOOTSTRAP carries the cit_ + cwu_ tokens (citToken/cwuToken in auth)",
-  /citToken\s*:/.test(code) && /cwuToken\s*:/.test(code),
-  "the bootstrap auth object does not carry both citToken and cwuToken",
+  "the retired credential-bearing BOOTSTRAP envelope is GONE (no `cinatra.embed.bootstrap`)",
+  !/cinatra\.embed\.bootstrap/.test(code),
+  "the retired bootstrap message type reappeared — the frame refuses it and the site must not compose it",
+);
+assert(
+  "no credential FIELD is composed (no citToken / cwuToken / auth block)",
+  !/citToken\s*:/.test(code) &&
+    !/cwuToken\s*:/.test(code) &&
+    !/\bauth\s*:\s*\{/.test(code),
+  "a credential field reappeared in an outbound message — protocol 2 has no slot for one and the parent must never compose it",
 );
 
 // ---------------------------------------------------------------------------
@@ -339,43 +373,41 @@ assert(
 // marker so a rewrite that DROPS one is loud (the grep can't prove the runtime
 // behavior, but a missing marker means the control is almost certainly gone):
 //   * nonce echo (parent echoes the frame's READY nonce),
-//   * single bootstrap per frame (a guarded flag),
-//   * per-frame binding of the async bootstrap (frame generation),
+//   * one context message per frame (a guarded flag),
 //   * uplink correlationId binding (drop a message whose correlationId differs),
 //   * a monotonic inbound seq gate (drop a non-increasing seq).
 // ---------------------------------------------------------------------------
 assert(
   "bridge echoes the frame nonce (nonceEcho)",
   /nonceEcho\s*:/.test(code),
-  "no `nonceEcho:` in the bootstrap — the parent must echo the frame's READY nonce",
+  "no `nonceEcho:` in the context message — the parent must echo the frame's READY nonce",
 );
 assert(
-  "bridge enforces single-bootstrap-per-frame (a guarded `bootstrapped` flag)",
-  /\bbootstrapped\b/.test(code) && /if\s*\(\s*bootstrapped\b/.test(code),
-  "no `if (bootstrapped …` single-bootstrap guard found",
-);
-// The cit_ token is PRE-MINTED before the frame mounts so the READY->BOOTSTRAP
-// release is SYNCHRONOUS (no await between receiving READY and posting the
-// bootstrap). A same-origin frame navigation cannot interleave within one
-// synchronous task, so credentials can never reach a document that navigated in
-// mid-release. Two markers: (a) the pre-mint precedes the mount; (b) the release
-// reads the token from the synchronous cache, never an inline `await`.
-const enterConvMatch = code.match(
-  /function\s+enterConversation\b[\s\S]{0,600}?\n\s{0,4}\}/,
-);
-const enterConvBody = enterConvMatch ? enterConvMatch[0] : "";
-assert(
-  "cit_ is PRE-MINTED before the frame mounts (getStreamToken precedes mountBridgeIframe)",
-  /getStreamToken\s*\(/.test(enterConvBody) &&
-    /mountBridgeIframe\s*\(/.test(enterConvBody) &&
-    enterConvBody.indexOf("getStreamToken") < enterConvBody.indexOf("mountBridgeIframe"),
-  "enterConversation does not pre-mint cit_ (getStreamToken) BEFORE mounting the frame — the bootstrap release would not be synchronous",
+  "bridge guards re-entry with a `contextSent` latch",
+  /\bcontextSent\b/.test(code) && /if\s*\(\s*contextSent\b/.test(code),
+  "no `contextSent` latch found",
 );
 assert(
-  "BOOTSTRAP is released SYNCHRONOUSLY from the pre-minted cache (getCachedCitToken)",
-  /getCachedCitToken\s*\(/.test(code) &&
-    /bootstrapped\s*=\s*true\s*;\s*sendBootstrap\s*\(\s*buildBootstrap/.test(code),
-  "the READY handler does not release the bootstrap synchronously from getCachedCitToken() over the selected transport (sendBootstrap) — an async mint-then-post reopens the navigation-release gap",
+  "a REPLAYED READY (same nonce) is ignored",
+  /contextSent\s*&&\s*d\.nonce\s*===\s*frameNonce/.test(code),
+  "no same-nonce replay guard — a replayed READY must not draw a second context message",
+);
+// A frame reload replaces the DOCUMENT under the same element and announces
+// itself with a fresh nonce. Without an epoch reset the parent would ignore it
+// forever (the widget hangs at "waiting for the host") and leak the retained
+// port. The reset must come AFTER every validation, so a READY on its way to
+// being refused cannot tear down an established session.
+assert(
+  "a replacement document starts a new epoch (resetBridgeEpoch)",
+  /function\s+resetBridgeEpoch\b/.test(code) &&
+    /if\s*\(\s*contextSent\s*\)\s*\{\s*resetBridgeEpoch\s*\(\s*\)\s*;\s*\}/.test(code),
+  "no resetBridgeEpoch() epoch reset — a reloaded frame would never be served again and its port would leak",
+);
+assert(
+  "the epoch reset happens AFTER the transport checks (a refused READY costs nothing)",
+  code.indexOf("if (!transferredPort && requirePort) return;") <
+    code.indexOf("if (contextSent) { resetBridgeEpoch(); }"),
+  "resetBridgeEpoch() runs before the READY is fully validated — a malformed READY could tear down an established session",
 );
 assert(
   "bridge binds uplinks to the minted correlationId (drop on mismatch)",
@@ -398,25 +430,26 @@ const embedSrcBuild = code.match(
   /config\.cinatraUrl\s*\+\s*['"]\/embed\/assistant[\s\S]{0,400}?;/,
 );
 assert(
-  "embed iframe src carries NO token (tokens travel ONLY via BOOTSTRAP)",
-  !!embedSrcBuild && !/token|cit_|cwu_/i.test(embedSrcBuild[0]),
+  "embed iframe src carries NO credential (there is none in this page to put there)",
+  !!embedSrcBuild && !/token|cit_|cwu_|cnx_/i.test(embedSrcBuild[0]),
   embedSrcBuild
-    ? "the /embed/assistant src builder references a token — tokens must never be in the frame URL"
+    ? "the /embed/assistant src builder references a credential — nothing of the sort may be in the frame URL"
     : "could not locate the /embed/assistant src builder",
 );
 
 // ---------------------------------------------------------------------------
 // INVARIANT 3f-4 — §12b DOCUMENT-BOUND MESSAGEPORT TRANSPORT (cinatra#1965/#1970).
 // The iframe transfers ONE MessageChannel endpoint in the (origin+source-gated)
-// READY; the parent RETAINS it, sends the token-bearing BOOTSTRAP over that port,
-// and services uplinks on it — never a window postMessage — so a same-origin
-// REPLACEMENT of the frame (a fresh realm that never inherited the retained
-// endpoint) can never receive the credentials or the port-bound traffic. A legacy
-// WINDOW transport remains ONLY for the negotiated transition with an
-// as-yet-unmigrated instance whose READY carries no port; `requirePort` refuses
-// that downgrade. Structural markers so a regression that drops the port transport
-// (or the downgrade refusal) is loud. These identifiers are part of the
-// byte-identical §12 bridge core shared across both CMS widgets.
+// READY; the parent RETAINS it, sends the selector-only CONTEXT message over it,
+// and services uplinks on it. At protocol 2 this is no longer a credential wall —
+// there is no credential on this bridge to misdeliver — so it is kept for the
+// narrower property it still provides at no cost: the retained endpoint belongs
+// to the realm that ran the handshake, so a same-origin replacement document
+// cannot take over an established session's uplink channel. The origin-pinned
+// WINDOW transport remains for a frame whose READY carries no port; `requirePort`
+// refuses that. Structural markers so a regression that drops the port transport
+// (or its refusal) is loud. These identifiers are part of the byte-identical §12
+// bridge core shared across both CMS widgets.
 // ---------------------------------------------------------------------------
 assert(
   "bridge takes the transferred port from the origin-gated READY (event.ports)",
@@ -424,9 +457,9 @@ assert(
   "no `event.ports` read — the parent must take the transferred MessagePort the frame sent on READY",
 );
 assert(
-  "bridge sends the token-bearing BOOTSTRAP over the retained port (activePort.postMessage, no targetOrigin)",
+  "bridge sends the CONTEXT message over the retained port (activePort.postMessage, no targetOrigin)",
   /activePort\s*\.\s*postMessage\s*\(/.test(code),
-  "no `activePort.postMessage(` — in port mode the bootstrap must ride the retained document-bound port, not a window",
+  "no `activePort.postMessage(` — in port mode the context message must ride the retained document-bound port, not a window",
 );
 assert(
   "bridge services uplinks on the retained port (activePort message listener)",
@@ -434,30 +467,100 @@ assert(
   "no `activePort.addEventListener('message', …)` — steady-state uplinks must ride the retained port in port mode",
 );
 assert(
-  "bridge refuses the legacy downgrade under requirePort (a no-port READY sends NOTHING)",
+  "bridge refuses the unbound channel under requirePort (a no-port READY sends NOTHING)",
   /config\.requirePort\b/.test(code) &&
     /!\s*transferredPort\s*&&\s*requirePort/.test(code),
   "no `config.requirePort` toggle + `!transferredPort && requirePort` fail-closed guard — a downgrade could be forced by stripping the transferred port",
 );
 
 // ---------------------------------------------------------------------------
-// INVARIANT 3g — TOKEN NON-DISCLOSURE. The cit_/cwu_ tokens are relayed ONLY into
-// the BOOTSTRAP message: never persisted, never logged, never in a URL.
-//   * No web storage at all in the widget (nothing is persisted now — history
-//     moved into the iframe), so a token can never land in storage.
-//   * No token variable is passed to console.* (no log/telemetry disclosure).
+// INVARIANT 3g (REWRITTEN by cinatra#2674) — NO CREDENTIAL, AND NO CREDENTIAL
+// SHAPE. Protocol 1's version of this invariant was "the tokens the widget holds
+// are relayed only into the BOOTSTRAP". The widget holds no token now, so the
+// invariant is stronger and simpler: nothing credential-shaped may be composed,
+// and the outbound refusal that enforces it must exist.
+//   * no bearer PREFIX literal is composed anywhere in executable code, except
+//     inside the guard's own prefix list (which is how the guard knows them);
+//   * the recursive outbound guard is present and is consulted by the sender;
+//   * no web storage at all (nothing is persisted — the iframe owns persistence);
+//   * no credential identifier is passed to console.*.
 // ---------------------------------------------------------------------------
 assert(
-  "no web storage in the widget (localStorage/sessionStorage) — tokens cannot be persisted",
-  !/\b(?:local|session)Storage\b/.test(code),
-  "the widget references localStorage/sessionStorage — the iframe owns persistence; a token in storage is XSS-exfiltratable",
+  "the outbound credential-shape guard exists (containsCredentialShapedValue)",
+  /function\s+containsCredentialShapedValue\b/.test(code) &&
+    /containsCredentialShapedValue\s*\(/.test(code),
+  "no recursive containsCredentialShapedValue() guard — a bearer smuggled into an allowed selector field would travel",
 );
-const TOKEN_LOG_RE =
-  /console\s*\.\s*\w+\s*\([^)]*\b(?:citToken|cwuToken|userToken|cachedToken|getStreamToken)\b/;
 assert(
-  "no token value is passed to console.* (no log disclosure)",
-  !TOKEN_LOG_RE.test(code),
-  "a token identifier appears inside a console.* call",
+  "the sender REFUSES a credential-shaped message before either transport",
+  /function\s+sendContext\b[\s\S]{0,240}?containsCredentialShapedValue\s*\(/.test(code),
+  "sendContext() does not consult the credential-shape guard first — the refusal must happen before the message is handed to any transport",
+);
+// The frame URL is the OTHER outbound payload: it is composed from config and
+// then LEAVES THE PAGE as an HTTP request, where it also lands in history, in an
+// access log and in a referrer. The bridge guard cannot reach it, so the mount
+// runs the same check on the composed src and refuses to frame on a hit.
+assert(
+  "the iframe src is credential-scanned on its RAW components AND composed form",
+  /function\s+mountBridgeIframe\b[\s\S]{0,2400}?containsCredentialShapedValue\s*\(\s*rawParts\s*\)\s*\|\|\s*containsCredentialShapedValue\s*\(\s*src\s*\)/.test(code),
+  "mountBridgeIframe() does not scan the RAW url components before encoding — percent-encoding destroys the token boundary the guard matches on, so a composed-string-only scan is bypassable",
+);
+// PROTOCOL 2's promise rests on the frame being a different ORIGIN from the page.
+// A same-origin instance does not weaken it, it removes it: site script could
+// read straight into the frame's realm. The widget must refuse rather than claim
+// a protection it does not have.
+assert(
+  "the widget REFUSES to mount when the instance is on the page's own origin",
+  /cinatraOrigin\s*===\s*pageOrigin/.test(code) &&
+    /window\.location\s*&&\s*window\.location\.origin/.test(code),
+  "no same-origin refusal — protocol 2's credential guarantee does not exist when the frame shares the page's origin, and the widget must not pretend otherwise",
+);
+// The guard's bounds must fail CLOSED on the sending side: a structure too deep
+// to finish walking, or a container this walk cannot enumerate, is refused
+// rather than waved through.
+assert(
+  "the credential guard fails CLOSED at its depth bound and on non-plain containers",
+  /if\s*\(\s*d\s*>=\s*8\s*\)\s*\{\s*return true;/.test(code) &&
+    /\[object Object\]['"]\s*\)\s*\{\s*return true;/.test(code),
+  "the guard returns false on an unknown answer — on the SENDING side an unknown answer must mean refusal, or the guard is defeatable by nesting",
+);
+// The prefix list is the ONE sanctioned place a bearer prefix literal may appear.
+const guardListMatch = code.match(/CREDENTIAL_VALUE_PREFIXES\s*=\s*\[[^\]]*\]/);
+const codeOutsideGuard = guardListMatch
+  ? code.replace(guardListMatch[0], "")
+  : code;
+assert(
+  "no bearer prefix literal is composed outside the guard's own prefix list",
+  !/['"`]c(?:wu|it|nx)_/.test(codeOutsideGuard),
+  "a `cwu_`/`cit_`/`cnx_` literal appears in executable code outside the guard list — the widget must neither mint, match nor build a credential",
+);
+assert(
+  "no web storage in the widget (localStorage/sessionStorage) — nothing can be persisted",
+  !/\b(?:local|session)Storage\b/.test(code),
+  "the widget references localStorage/sessionStorage — the iframe owns persistence",
+);
+// EVERY console.* ARGUMENT IS A FIXED STRING LITERAL. The older form of this
+// check listed credential identifiers and banned those; that only ever caught
+// the names it happened to know, and it misfired on a fixed diagnostic that
+// merely says the WORD "credential". This shell has no diagnostic that needs a
+// runtime value, so the checkable rule is the stronger one: a console call that
+// starts with anything but a quote is passing a value, and a value is the thing
+// that could be a credential.
+const CONSOLE_NON_LITERAL_RE = /console\s*\.\s*\w+\s*\(\s*(?!['"`])/;
+assert(
+  "no console.* call passes a runtime value (every argument is a fixed string literal)",
+  !CONSOLE_NON_LITERAL_RE.test(code),
+  "a console.* call takes a non-literal first argument — this shell logs fixed diagnostics only, so a value there could be anything, credentials included",
+);
+const consoleLines = code
+  .split("\n")
+  .filter((line) => /console\s*\.\s*\w+\s*\(/.test(line));
+const CREDENTIAL_IDENTIFIER_RE =
+  /\b(?:citToken|cwuToken|userToken|cachedToken|getStreamToken|activePort|frameNonce)\b/;
+assert(
+  "no credential-adjacent identifier appears on a console.* line",
+  !consoleLines.some((line) => CREDENTIAL_IDENTIFIER_RE.test(line)),
+  "a credential-adjacent identifier appears on a console.* line",
 );
 
 // ---------------------------------------------------------------------------
@@ -636,25 +739,29 @@ assert(
 );
 
 // ---------------------------------------------------------------------------
-// INVARIANT 6 (UNCHANGED, now HARD) — login-required panel gate (#410). The gate
-// is present in BOTH copies, so it is enforced unconditionally. This is a
-// STATELESS source check (it sees only the current source), so durable protection
-// is the flag being true here.
+// INVARIANT 6 (FLIPPED by cinatra#2674) — THE SHELL RUNS NO LOGIN GATE.
+// #410 put a required-login window in the CMS-origin shell: it held the per-user
+// token, so it had to decide when a person was signed in. The frame holds the
+// credential now and renders its own sign-in card, so a login gate HERE would
+// mean the shell had gone back to knowing something about the person's session —
+// the exact coupling this change removes. The markers that used to be REQUIRED
+// are therefore BANNED, in executable code (the header may still name them to
+// explain their absence).
 // ---------------------------------------------------------------------------
-const LOGIN_GATE_REQUIRED = true; // #410 landed: the login gate is required.
-const LOGIN_GATE_RE = /panelMode|loginRequired|widget-auth|userToken/;
-const hasLoginGate = LOGIN_GATE_RE.test(code);
-if (LOGIN_GATE_REQUIRED || hasLoginGate) {
-  assert(
-    "login-required panel gate present (#410 marker; mirror across both CMSs)",
-    hasLoginGate,
-    "the #410 login gate marker is required/present-here but missing",
-  );
-} else {
-  console.log(
-    "  INFO  login-required panel gate (#410) not present (unexpected once #410 landed).",
-  );
-}
+const SHELL_LOGIN_STATE_RE = /\b(?:panelMode|loginRequired|userToken|userTokenValid|forceReLogin|redeemCode|codeVerifier|codeChallenge)\b/;
+const shellLoginMatch = code.match(SHELL_LOGIN_STATE_RE);
+assert(
+  "the shell runs NO login gate of its own (sign-in belongs to the frame)",
+  shellLoginMatch === null,
+  shellLoginMatch
+    ? `the shell still carries login state (\`${shellLoginMatch[0]}\`) — the per-user ceremony moved into the frame and must not be mirrored here`
+    : undefined,
+);
+assert(
+  "the shell does not listen for the hosted sign-in result",
+  !/cinatra-widget-auth/.test(code),
+  "the widget still listens for the hosted auth postMessage — the hosted return step posts to the CINATRA origin, so this page could not receive it and must not try",
+);
 
 // ---------------------------------------------------------------------------
 console.log("");

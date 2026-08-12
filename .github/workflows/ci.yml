@@ -43,6 +43,15 @@ jobs:
         # every pull request; the route-level integration lives in
         # tests/src/Functional/PreviewRouteTest.php.
         run: php tests/test-preview-auth.php
+      - name: Widget credential-surface contract (cinatra#2674)
+        # Standalone harness (no Drupal install): the PHP side of widget bootstrap
+        # protocol 2 is an ABSENCE — retired broker routes and controllers, no
+        # broker endpoint or CSRF token in drupalSettings, no credential-shaped
+        # value in shipped source. The module's Kernel/Functional tests assert the
+        # same properties against a real Drupal, but neither CI runs them today
+        # (SKIP_PHPUNIT there, no PHPUnit job here), and an absence that nothing
+        # executes is not a gate. This is what actually holds the line per PR.
+        run: php tests/test-widget-credential-surface.php
 
   js-tests:
     runs-on: ubuntu-latest

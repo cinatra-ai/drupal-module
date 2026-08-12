@@ -32,6 +32,23 @@ confirm the cause and verify the fix, and where to go if the fix does not work.
 - **Escalation:** If the permission is granted and the panel still does not
   appear, [contact support](https://docs.cinatra.ai/resources/support/).
 
+## The assistant panel does not appear, and the permission is granted
+
+- **Symptom:** The **"Use the Cinatra AI assistant"** permission is granted, but
+  the panel still does not open. The floating button shows "Cinatra is
+  unavailable".
+- **Cause:** Your Cinatra instance is on the same web address as this Drupal
+  site. Each editor signs in to Cinatra inside the assistant panel, and that
+  sign-in stays private only while the two are separate web addresses.
+- **Fix:** Give the Cinatra instance its own web address, then set that address
+  at **Configuration → Web services → Cinatra**
+  (`/admin/config/services/cinatra`) and save.
+- **Diagnostics:** Compare the Cinatra instance address with this site's
+  address. They must differ in scheme, host or port. The browser console shows a
+  message from `[cinatra]` naming this cause.
+- **Escalation:** If the two addresses already differ and the panel still does
+  not appear, [contact support](https://docs.cinatra.ai/resources/support/).
+
 ## "Connect with Cinatra" does not complete
 
 - **Symptom:** Clicking **Connect with Cinatra** does not finish, or returns to
