@@ -105,6 +105,17 @@ function carriesCredentialShape(value, depth = 0) {
 // postMessage sink (CONTEXT capture), and the Drupal in-place-refresh sink (a
 // document `cinatra:content-applied` CustomEvent — the apply refresh).
 // ---------------------------------------------------------------------------
+/** A Map-backed `localStorage`, enough for getItem/setItem/removeItem. */
+function makeStorageStub(seed) {
+  const map = new Map(Object.entries(seed || {}));
+  return {
+    getItem(k) { return map.has(k) ? map.get(k) : null; },
+    setItem(k, v) { map.set(k, String(v)); },
+    removeItem(k) { map.delete(k); },
+    _map: map,
+  };
+}
+
 function makeEnv(fetchImpl, sharedRoot, captured) {
   let attachShadowCount = 0;
   let randCalls = 0;
@@ -198,6 +209,9 @@ function makeEnv(fetchImpl, sharedRoot, captured) {
   const sandbox = {
     window: {
       drupalSettings: {
+        // Drupal publishes the signed-in user here (core's `user` library); the
+        // widget uses it ONLY as the user half of the thread-storage key.
+        user: { uid: "7" },
         cinatra: {
           cinatraUrl: INSTANCE_ORIGIN,
           instanceId: "i1",
@@ -210,6 +224,9 @@ function makeEnv(fetchImpl, sharedRoot, captured) {
       },
       innerWidth: 1280,
       innerHeight: 800,
+      // Web storage, present and Map-backed. The widget's ONE persistence channel
+      // (the remembered thread id) needs a real store to be measured on.
+      localStorage: makeStorageStub(),
       location: { href: "https://site.example/node/1", origin: "https://site.example", reload() {} },
       addEventListener(type, handler) { if (type === "message") { messageListeners.push(handler); } },
       removeEventListener(type, handler) {
@@ -318,7 +335,7 @@ function makePort() {
 // panel open, which is the launcher click. `cfgExtra` merges into
 // drupalSettings.cinatra (e.g. { requirePort: true }) BEFORE the widget
 // evaluates, so config toggles take effect.
-async function driveToMountedFrame(cfgExtra) {
+async function driveToMountedFrame(cfgExtra, windowOverrides) {
   const fetched = [];
   const fetchImpl = (url, opts) => {
     fetched.push({ url: String(url), method: (opts && opts.method) || "GET" });
@@ -327,6 +344,12 @@ async function driveToMountedFrame(cfgExtra) {
   const captured = newCaptured();
   const env = makeEnv(fetchImpl, undefined, captured);
   if (cfgExtra) { Object.assign(env.sandbox.window.drupalSettings.cinatra, cfgExtra); }
+  // DESCRIPTORS, not values: a check installs a THROWING `localStorage` getter to
+  // stand in for a private window / disabled storage, and copying by VALUE would
+  // invoke that getter here instead of leaving it for the widget to trip over.
+  if (windowOverrides) {
+    Object.defineProperties(env.sandbox.window, Object.getOwnPropertyDescriptors(windowOverrides));
+  }
   vm.runInNewContext(WIDGET_SRC, env.sandbox, { filename: "cinatra-widget.js" });
   await flush();
   // Open the panel (the launcher circle click) -> the frame mounts.
@@ -791,6 +814,183 @@ async function main() {
     // Negative control: the identical widget on a cross-origin instance mounts.
     const ok = await boot(() => jsonResponse(200, {}));
     check("origin boundary NEGATIVE CONTROL: a cross-origin instance still mounts", ok.mounted && ok.attachShadow);
+  }
+
+  // -------------------------------------------------------------------------
+  // THE CONVERSATION SURVIVES A RELOAD (cinatra#2683, epic #2564 S8f).
+  //
+  // The CONTEXT used to say `threadId: correlationId`, so every page load asked
+  // the instance to resume a thread that had never existed: the widget's history
+  // ended at every reload, and the instance's restore path could never be
+  // exercised. The thread id is now remembered per (site, user) — while the
+  // correlationId stays what it always was, a per-document security nonce.
+  //
+  // The CMS seam is the user: Drupal publishes `drupalSettings.user.uid`, where
+  // wp-admin publishes `userSettings.uid`. Everything else about this is shared
+  // with the WordPress harness, because the widget is one file.
+  // -------------------------------------------------------------------------
+  {
+    const store = makeStorageStub();
+    const first = await driveToMountedFrame(undefined, { localStorage: store });
+    first.deliverToBridge({ origin: INSTANCE_ORIGIN, source: first.frameWin, data: readyMsgV2("threadNonce01234567890a") });
+    await flush(30);
+    const firstMsg = first.captured.windowPosts[0] && first.captured.windowPosts[0].msg;
+
+    const firstStoredAt = JSON.parse(store.getItem([...store._map.keys()][0])).at;
+    const second = await driveToMountedFrame(undefined, { localStorage: store });
+    second.deliverToBridge({ origin: INSTANCE_ORIGIN, source: second.frameWin, data: readyMsgV2("threadNonce01234567890b") });
+    await flush(30);
+    const secondMsg = second.captured.windowPosts[0] && second.captured.windowPosts[0].msg;
+
+    check(
+      "reload -> the CONTEXT resumes the SAME thread (history survives the page load)",
+      !!firstMsg && !!secondMsg &&
+        ID_PATTERN.test(firstMsg.session.threadId) &&
+        secondMsg.session.threadId === firstMsg.session.threadId,
+    );
+    check(
+      "reload -> the correlationId is NOT the remembered id (a nonce, not a thread)",
+      !!firstMsg && !!secondMsg &&
+        firstMsg.correlationId !== firstMsg.session.threadId &&
+        secondMsg.correlationId !== secondMsg.session.threadId,
+    );
+    check(
+      "the ONE stored entry is a thread id and a timestamp — nothing else, and no credential",
+      store._map.size === 1 &&
+        (() => {
+          const [key, raw] = [...store._map.entries()][0];
+          const entry = JSON.parse(raw);
+          return key.indexOf("cinatra.widget.thread.v1|") === 0 &&
+            key.slice(-2) === "|7" &&
+            Object.keys(entry).sort().join(",") === "at,id" &&
+            entry.id === firstMsg.session.threadId &&
+            !/cwu_|cit_|cnx_/i.test(raw);
+        })(),
+    );
+
+    // A DIFFERENT Drupal user on the same browser profile must not resume the
+    // first person's conversation — the instance refuses every turn on a thread
+    // its reader does not own, which is a widget that simply does not work.
+    // USE DOES NOT RESTART THE CLOCK — the stored timestamp is the conversation's
+    // START, and the boot above resumed the thread without rewriting the entry.
+    check(
+      "resuming a remembered thread does NOT refresh its timestamp",
+      JSON.parse(store.getItem([...store._map.keys()][0])).at === firstStoredAt,
+    );
+
+    // Seeded with a distinct id because this harness's RNG is deterministic.
+    const SEVENS_THREAD = "SEVENSownTHREADid01234";
+    store.setItem([...store._map.keys()][0], JSON.stringify({ id: SEVENS_THREAD, at: Date.now() }));
+    const other = await driveToMountedFrame(undefined, {
+      localStorage: store,
+      drupalSettings: { user: { uid: "9" }, cinatra: { cinatraUrl: INSTANCE_ORIGIN, instanceId: "i1", nodeId: 5, nodeBundle: "article", nodeStatus: "draft" } },
+    });
+    other.deliverToBridge({ origin: INSTANCE_ORIGIN, source: other.frameWin, data: readyMsgV2("threadNonce01234567890c") });
+    await flush(30);
+    const otherMsg = other.captured.windowPosts[0] && other.captured.windowPosts[0].msg;
+    const keys = [...store._map.keys()];
+    check(
+      "a DIFFERENT Drupal user on the same profile does NOT resume the first person's thread",
+      !!otherMsg && otherMsg.session.threadId !== SEVENS_THREAD &&
+        keys.length === 2 && keys.some((k) => k.slice(-2) === "|7") && keys.some((k) => k.slice(-2) === "|9"),
+    );
+
+    // NO USER, NO PERSISTENCE — the pre-S8f behaviour rather than a bucket shared
+    // by everyone at that browser.
+    const anonStore = makeStorageStub();
+    const anon = await driveToMountedFrame(undefined, {
+      localStorage: anonStore,
+      drupalSettings: { cinatra: { cinatraUrl: INSTANCE_ORIGIN, instanceId: "i1", nodeId: 5, nodeBundle: "article", nodeStatus: "draft" } },
+    });
+    anon.deliverToBridge({ origin: INSTANCE_ORIGIN, source: anon.frameWin, data: readyMsgV2("anonNonce01234567890abc") });
+    await flush(30);
+    const anonMsg = anon.captured.windowPosts[0] && anon.captured.windowPosts[0].msg;
+    check(
+      "no Drupal user -> NOTHING is stored (each bootstrap keeps its own thread, as before S8f)",
+      !!anonMsg && anonStore._map.size === 0 && ID_PATTERN.test(anonMsg.session.threadId),
+    );
+
+    // STORAGE THAT REFUSES (a private window, disabled storage): the ACCESS itself
+    // throws, not just the call, and the widget must still send its CONTEXT.
+    const hostileWindow = {};
+    Object.defineProperty(hostileWindow, "localStorage", {
+      get() { throw new Error("storage is disabled"); },
+      enumerable: true,
+      configurable: true,
+    });
+    const hostile = await driveToMountedFrame(undefined, hostileWindow);
+    hostile.deliverToBridge({ origin: INSTANCE_ORIGIN, source: hostile.frameWin, data: readyMsgV2("hostileNonce0123456789a") });
+    await flush(30);
+    const hMsg = hostile.captured.windowPosts[0] && hostile.captured.windowPosts[0].msg;
+    check(
+      "storage that THROWS on access -> the CONTEXT is still sent, with a freshly minted thread",
+      !!hMsg && ID_PATTERN.test(hMsg.session.threadId),
+    );
+
+    // AN EXPIRED entry is not resumed: the clock runs from when the conversation
+    // STARTED, so an entry that cannot be used (a thread this reader does not own)
+    // ages out instead of following the machine forever. A FUTURE-DATED one is
+    // refused for the same reason — it would outlive every bound.
+    const agedStore = makeStorageStub();
+    const agedSeed = await driveToMountedFrame(undefined, { localStorage: agedStore });
+    agedSeed.deliverToBridge({ origin: INSTANCE_ORIGIN, source: agedSeed.frameWin, data: readyMsgV2("agedSeedNonce0123456789") });
+    await flush(30);
+    const agedKey = [...agedStore._map.keys()][0];
+    // A DISTINCT id, so "was it resumed?" is answerable — this harness's RNG is
+    // deterministic per boot, so a fresh mint would look identical to the seed.
+    const agedId = "AGEDthreadIDseed012345";
+    const EIGHT_DAYS = 8 * 24 * 60 * 60 * 1000;
+    agedStore.setItem(agedKey, JSON.stringify({ id: agedId, at: Date.now() - EIGHT_DAYS }));
+    const aged = await driveToMountedFrame(undefined, { localStorage: agedStore });
+    aged.deliverToBridge({ origin: INSTANCE_ORIGIN, source: aged.frameWin, data: readyMsgV2("agedNonce01234567890abc") });
+    await flush(30);
+    const agedMsg = aged.captured.windowPosts[0] && aged.captured.windowPosts[0].msg;
+    check(
+      "an entry older than the bound is NOT resumed (it ages out from when it started)",
+      !!agedMsg && agedMsg.session.threadId !== agedId && ID_PATTERN.test(agedMsg.session.threadId),
+    );
+    agedStore.setItem(agedKey, JSON.stringify({ id: agedId, at: Date.now() + EIGHT_DAYS }));
+    const future = await driveToMountedFrame(undefined, { localStorage: agedStore });
+    future.deliverToBridge({ origin: INSTANCE_ORIGIN, source: future.frameWin, data: readyMsgV2("futureNonce0123456789ab") });
+    await flush(30);
+    const futureMsg = future.captured.windowPosts[0] && future.captured.windowPosts[0].msg;
+    check(
+      "a FUTURE-dated entry is refused rather than trusted",
+      !!futureMsg && futureMsg.session.threadId !== agedId,
+    );
+
+    // ANONYMOUS IS NOT A PERSON. Both CMSes spell it uid 0, and one bucket shared
+    // by every signed-out visitor is the thing keying by user exists to prevent.
+    const zeroStore = makeStorageStub();
+    const zero = await driveToMountedFrame(undefined, {
+      localStorage: zeroStore,
+      drupalSettings: { user: { uid: "0" }, cinatra: { cinatraUrl: INSTANCE_ORIGIN, instanceId: "i1", nodeId: 5, nodeBundle: "article", nodeStatus: "draft" } },
+    });
+    zero.deliverToBridge({ origin: INSTANCE_ORIGIN, source: zero.frameWin, data: readyMsgV2("zeroNonce01234567890abc") });
+    await flush(30);
+    const zeroMsg = zero.captured.windowPosts[0] && zero.captured.windowPosts[0].msg;
+    check(
+      "uid 0 (anonymous) gets NO persistence",
+      !!zeroMsg && zeroStore._map.size === 0 && ID_PATTERN.test(zeroMsg.session.threadId),
+    );
+
+    // A CORRUPT / HAND-EDITED entry mints a fresh thread rather than posting a
+    // value the frame's strict schema would reject (which takes the session down).
+    const corruptStore = makeStorageStub();
+    const seed = await driveToMountedFrame(undefined, { localStorage: corruptStore });
+    seed.deliverToBridge({ origin: INSTANCE_ORIGIN, source: seed.frameWin, data: readyMsgV2("corruptSeedNonce0123456") });
+    await flush(30);
+    const seededKey = [...corruptStore._map.keys()][0];
+    corruptStore.setItem(seededKey, JSON.stringify({ id: "!! not an id !!", at: Date.now() }));
+    const afterCorrupt = await driveToMountedFrame(undefined, { localStorage: corruptStore });
+    afterCorrupt.deliverToBridge({ origin: INSTANCE_ORIGIN, source: afterCorrupt.frameWin, data: readyMsgV2("corruptNonce01234567890") });
+    await flush(30);
+    const cMsg = afterCorrupt.captured.windowPosts[0] && afterCorrupt.captured.windowPosts[0].msg;
+    check(
+      "a corrupt stored entry is IGNORED and replaced by a freshly minted thread",
+      !!cMsg && ID_PATTERN.test(cMsg.session.threadId) &&
+        JSON.parse(corruptStore.getItem(seededKey)).id === cMsg.session.threadId,
+    );
   }
 
   // -------------------------------------------------------------------------
