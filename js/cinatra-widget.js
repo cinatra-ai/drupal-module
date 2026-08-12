@@ -1,127 +1,241 @@
-/**
- * @file
- * Cinatra assistant widget — CANONICAL, locally-shipped widget (cinatra#411).
- * This is the Drupal MIRROR of the canonical source-of-truth widget; it is
- * hand-mirrored from cinatra-ai/wordpress-plugin/assets/cinatra-widget.js (the
- * copy authored first). It is NOT a re-vendor of any Cinatra host route — the
- * cinatra repo's src/app/api/drupal/bundle.js/route.ts is the DEPRECATED,
- * pre-Option-A artifact (nothing executes it; scheduled for removal). See the
- * contract: cinatra docs/widget-source-of-truth.md.
- *
- * ARCHITECTURE (S5 / cinatra#1221): the assistant conversation is NOT rendered by
- * this file. The Cinatra instance serves the AG-UI surface at `/embed/assistant`
- * and THIS widget mounts it in a sandboxed <iframe> as the SOLE session owner.
- * This shell keeps only the host-side concerns that MUST live on the CMS origin:
- * the launcher/panel chrome and the parent half of the §12 parent↔iframe
- * postMessage bridge.
- *
- * PROTOCOL 2 — THE SITE IS NOT A PARTY TO THE SIGN-IN (cinatra#2674).
- * Until protocol 1 this shell ran the whole per-user ceremony: it started the
- * hosted PKCE transaction through a same-origin PHP relay, received the opaque
- * `cwu_` user token back, minted a short-lived `cit_` site token through a second
- * relay, and handed BOTH into the iframe in a credential-bearing BOOTSTRAP
- * message. It worked, and it meant this site possessed proof of the person — a
- * credential that belongs to the user and to Cinatra and was never the site's
- * business.
- *
- * That is over. The iframe now mints its own PKCE verifier, starts the
- * transaction same-origin on the Cinatra origin, opens the hosted sign-in as a
- * TOP-LEVEL Cinatra popup, and redeems the code itself. Nothing about the
- * ceremony crosses this boundary. The one inbound message this shell sends is a
- * CONTEXT message carrying PUBLIC SELECTORS ONLY — which site, which assistant,
- * which node is on screen — and it composes no credential of any kind. The
- * retired `/api/widget-auth/{init,token}` endpoints answer 410 Gone; this module
- * calls neither them nor any local relay to them, so their retirement is silent
- * here rather than an error path.
- *
- * The module's remaining credential is the backend-only `cnx_` integration key
- * provisioned by "Connect with Cinatra". It stays server-side, is used only for
- * connect/webhook concerns, and never reaches the browser.
- *
- * TRUST BOUNDARY (§4/§6/§12):
- *   * THE INSTANCE MUST BE A DIFFERENT ORIGIN FROM THIS PAGE, and the widget
- *     refuses to mount when it is not. Everything below rests on that: the
- *     credential lives in the frame's memory, and "the site cannot read it" is
- *     an origin guarantee, not a code guarantee. An instance served under this
- *     site's own origin would leave the widget claiming a protection that does
- *     not exist there, which is worse than not running at all.
- *   * The iframe is `sandbox="allow-scripts allow-same-origin allow-popups
- *     allow-popups-to-escape-sandbox"` framing `/embed/assistant`. The two popup
- *     flags are what make the frame-owned sign-in possible AT ALL: the ceremony
- *     is a TOP-LEVEL Cinatra window (the only place a Cinatra session cookie is
- *     first-party), and a sandboxed frame cannot open one without `allow-popups`,
- *     nor let it act as a normal top-level document — following its own redirects
- *     and submitting its own form — without `allow-popups-to-escape-sandbox`.
- *     The escape applies to the OPENED WINDOW, never to the frame: the frame
- *     still has no top-navigation, no forms, no modals, no downloads and no
- *     pointer lock over this page.
- *   * §12b DOCUMENT-BOUND MESSAGEPORT TRANSPORT (cinatra#1965/#1970): the iframe
- *     transfers ONE MessageChannel endpoint in the (origin+source-gated) READY;
- *     the parent RETAINS it, sends the CONTEXT message over that port, and
- *     services uplinks on it. At protocol 2 this is no longer a credential wall
- *     (there is no credential to misdeliver) — it binds the channel to the realm
- *     that ran the handshake, so a same-origin replacement document cannot take
- *     over an established session's uplink channel. The origin-pinned WINDOW
- *     transport remains for a frame whose READY carries no transferred port;
- *     `requirePort` refuses that.
- *   * Every WINDOW postMessage to the frame uses an EXPLICIT targetOrigin (the
- *     Cinatra instance origin), NEVER "*"; a port-bound send needs no origin (the
- *     origin-targeted READY transfer that delivered the port IS the binding).
- *   * Inbound WINDOW frame messages (READY is one) are accepted ONLY when
- *     `event.origin === cinatraOrigin` AND `event.source === iframe.contentWindow`
- *     (origin + source-window binding); a port message's provenance IS that origin
- *     gate — the port was transferred ONLY to the Cinatra origin.
- *   * READY→CONTEXT: the parent mints a CSPRNG correlationId (≥128-bit), echoes
- *     the frame nonce, sends seq=0, and one context message per frame.
- *   * NO CREDENTIAL-SHAPED VALUE LEAVES THIS SHELL. Removing the credential field
- *     removes the credential slot; it does not remove the possibility of a
- *     credential VALUE in an allowed field (a node id that is really a `cwu_…`).
- *     So the composed CONTEXT message is scanned recursively for Cinatra's bearer
- *     prefixes before it is sent, and a message that carries one is NOT SENT AT
- *     ALL — a message that never leaves is strictly better than one the frame
- *     rejects on arrival. Mirrors the core `sendContextOverTransport` guard.
- *   * Two INDEPENDENT monotonic seq counters (one per direction) per correlationId.
- *   * apply_intent carries an UNTRUSTED SELECTOR only: the parent re-checks the
- *     current user may edit, uses its OWN canonical resource, dedups against a
- *     bounded LRU, and does an in-place draft refresh — NO direct JSON:API egress
- *     (#1214: field-apply happens server-side via the CMS MCP integration).
- *   * resize height is CLAMPED to the panel cap (clamp, never trust the value).
- *
- * Security-critical invariants (no apiKey and no bearer in the browser; no token
- * broker; no credential-shaped value on the bridge; sandbox iframe with the
- * popup grant and nothing more; explicit targetOrigin; source-window binding; no
- * apply-time egress) are gated by tools/widget-parity-check.mjs in CI (the SAME
- * gate shipped to both repos).
- *
- * Sync model: author a widget change in the WordPress copy first, then mirror it
- * here. The two copies now differ ONLY in the CMS-config accessor, the CMS
- * content-context accessor + in-place-refresh sink, the assistant identifier, and
- * the fully-local no-webfont policy. The broker CSRF idiom that used to be a
- * difference is gone from both — neither shell calls a broker any more. The §12
- * bridge core is byte-identical.
- *
- * SPDX-License-Identifier: Apache-2.0
- *
- * This vendored file is the Cinatra app frontend, licensed Apache-2.0, and is
- * distributed inside this GPL-2.0-or-later module. Apache-2.0 is GPL-compatible
- * (under GPLv3, which "GPL-2.0-or-later" reaches), so the module stays
- * distributable on Drupal.org. The module itself (everything outside this
- * vendored file) remains GPL-2.0-or-later.
- *
- *   Cinatra assistant widget bundle
- *   Copyright Cinatra
- *   Licensed under the Apache License, Version 2.0:
- *   https://www.apache.org/licenses/LICENSE-2.0
- */
+// SPDX-License-Identifier: Apache-2.0
+//
+// Cinatra CMS assistant widget — THE CANONICAL WIDGET (cinatra#411).
+//
+// ONE FILE, TWO REPOS, BYTE-IDENTICAL. This file is shipped verbatim as
+// cinatra-ai/wordpress-plugin `assets/cinatra-widget.js` and as
+// cinatra-ai/drupal-module `js/cinatra-widget.js`. It used to be authored in the
+// WordPress copy and hand-mirrored into the Drupal one; two independent protocol-2
+// lanes then hardened the two copies in DIFFERENT places, which is exactly the
+// failure mode a "hand-mirrored canonical file" invites. It is now ONE file
+// carrying the UNION of both lanes' protections, and the drift is a CI-visible
+// byte diff rather than a security asymmetry nobody notices.
+//
+// THERE IS NO BUILD STEP. The CMS difference is a RUNTIME SEAM: the file detects
+// which CMS settings broker published its config (`window.CinatraConfig` on
+// WordPress, `window.drupalSettings.cinatra` on Drupal) and branches at the four
+// places where the two hosts genuinely differ — the config broker, the assistant
+// handle, the canonical-resource accessor, and the edit-permission oracle plus its
+// in-place refresh sink. Every trust-boundary control below is CMS-INDEPENDENT and
+// runs identically on both.
+//
+// ARCHITECTURE (S5 / cinatra#1221; PROTOCOL 2 by cinatra#2674): the assistant
+// conversation is NOT rendered by this file. The Cinatra instance serves the AG-UI
+// surface at `/embed/assistant` and THIS widget mounts it in a sandboxed <iframe>
+// as the SOLE session owner. This shell keeps only the host-side concerns that
+// MUST live on the CMS origin: the launcher/panel chrome and the parent half of
+// the §12/§12b parent↔iframe bridge.
+//
+// WHAT PROTOCOL 2 CHANGED, AND WHY IT IS THE WHOLE POINT (cinatra#2674).
+// At protocol 1 this file was a party to the person's sign-in: it ran the hosted
+// PKCE handshake through same-origin CMS relays, received the `cwu_` per-user
+// bearer back, minted a `cit_` site transport token, and composed BOTH into a
+// postMessage BOOTSTRAP. That made the website a HOLDER of a credential that
+// belongs to the person and to Cinatra.
+//
+// That is over. This shell now:
+//   * initiates NO sign-in and redeems NO code — the frame runs the whole
+//     ceremony on the Cinatra origin, in a top-level Cinatra popup it opens
+//     itself, and the credential never leaves the frame;
+//   * composes and receives NO bearer — `cwu_` and `cit_` do not appear in CMS
+//     plugin/module code at all, and the retired token-broker relays are DELETED
+//     (the instance answers the old `/api/widget-auth/{init,token}` pair 410 Gone);
+//   * posts ONE inbound message, `cinatra.embed.context`, carrying PUBLIC,
+//     UNTRUSTED SELECTORS only (which site, which agent, which CMS resource is
+//     on screen) at protocol version literal 2.
+// The long-lived `cnx_` connect-site credential is UNCHANGED and stays exactly
+// what it was: a backend-only setup/integration credential, used server-to-server
+// from the CMS backend, never in the browser and never on this bridge.
+//
+// TRUST BOUNDARY (§4/§6/§12/§12b) — the UNION, control by control:
+//   * THE INSTANCE MUST BE A DIFFERENT ORIGIN FROM THIS PAGE, and the widget
+//     REFUSES TO MOUNT when it is not. Everything else rests on that: the
+//     credential lives in the frame's memory, and "the site cannot read it" is an
+//     ORIGIN guarantee, not a code guarantee. On a shared origin the guarantee is
+//     not weakened, it is ABSENT — and a widget that ran there would quietly claim
+//     a protection it does not have.
+//   * The iframe framing `/embed/assistant` is sandboxed with EXACTLY four
+//     tokens: `allow-scripts allow-same-origin allow-popups
+//     allow-popups-to-escape-sandbox`. The two popup grants are REQUIRED at
+//     protocol 2 and are not optional hardening to be tidied away later: the
+//     FRAME opens the hosted sign-in with `window.open`, which a sandbox without
+//     `allow-popups` blocks outright, and a popup that merely inherited this
+//     sandbox would have no forms and no top-level navigation, so the ceremony
+//     could not complete. The escape applies to the window the frame opens, NOT
+//     to the frame: no top-navigation, no forms, no modals, no downloads and no
+//     pointer-lock are granted here. THIS SHELL still opens no window itself.
+//   * The credential guard runs in BOTH directions, BEFORE any field of the
+//     envelope is read, and its bounds FAIL CLOSED. A payload carrying a
+//     bearer-shaped value is refused on the way out (through `sendToFrame`, the
+//     single outbound choke point) and dropped on the way in, on both transports.
+//     On the sending side an unknown answer must mean refusal, so a structure too
+//     deep to finish walking — or a container the walk cannot enumerate — is
+//     treated as carrying a credential.
+//     STATED, NOT HIDDEN: fail-closed INBOUND buys confidentiality with
+//     availability. The uplink set is closed and every uplink in it is flat
+//     primitives, so nothing legitimate is dropped today; a future uplink that
+//     nested past the depth bound, or carried a non-plain container, WOULD be
+//     dropped rather than read. That is the deliberate trade — the alternative is
+//     reading an envelope the walk could not clear, and the frame is the one party
+//     that actually holds a bearer.
+//   * THE FRAME URL IS AN OUTBOUND PAYLOAD TOO, and it is scanned on its RAW
+//     COMPONENTS BEFORE ENCODING. The bridge guard cannot reach the src: it leaves
+//     as an HTTP request and lands in history, an access log and a referrer. And
+//     `encodeURIComponent` destroys the token boundary the scan matches on, so a
+//     finished-string-only scan is bypassable.
+//   * PORT-BOUND TRANSPORT (§12b): the iframe creates a MessageChannel and
+//     transfers ONE endpoint in the origin/source-gated READY. The parent RETAINS
+//     that endpoint and sends the CONTEXT message (plus any later parent→iframe
+//     traffic) over it. At protocol 2 this is no longer a credential wall — there
+//     is no credential to misdeliver — but it is kept because the property still
+//     holds and costs nothing: a same-origin replacement of the frame is a fresh
+//     realm that never inherits the entangled endpoint, so it cannot silently
+//     take over an established session's channel. A READY transferring MORE than
+//     one port is refused outright rather than reduced to its first.
+//   * The WINDOW transport remains for a frame that transfers no port; when used
+//     it still posts to an EXPLICIT targetOrigin (the Cinatra instance origin),
+//     NEVER "*". A deployment hardens by setting `requirePort` in its CMS config,
+//     which refuses the port-less READY outright.
+//   * Inbound frame messages are accepted ONLY when `event.origin === cinatraOrigin`
+//     AND `event.source === iframe.contentWindow` (origin + source-window binding).
+//     Steady-state uplinks in PORT mode ride the entangled port (their provenance
+//     is the origin-targeted transfer that delivered it — a NARROWING).
+//   * READY→CONTEXT: the parent mints a CSPRNG correlationId (≥128-bit), echoes
+//     the frame nonce, sends seq=0, and ONE context per DOCUMENT. A refused send
+//     is NOT retried — the latch is set before the send and never cleared on
+//     failure, so there is no retry storm. A frame that RELOADS is a new document
+//     and announces itself with a FRESH nonce: that starts a new EPOCH (old port
+//     closed, every binding cleared) so a reloaded frame cannot hang forever with
+//     a leaked MessagePort. A REPLAY of the nonce already answered is still
+//     ignored. The two compose: exactly one attempt per document, and a new
+//     document is not a retry. The parent cannot VERIFY a reload, so the number of
+//     epochs is BOUNDED — a frame that manufactures fresh nonces without
+//     navigating cannot turn the recovery path into unbounded parent work.
+//   * The epoch reset runs AFTER every READY validation. A malformed READY must
+//     not be able to tear down an established session on its way to being
+//     refused — that would turn a rejected message into a denial of service.
+//   * Two INDEPENDENT monotonic seq counters (one per direction) per correlationId,
+//     and the CLOSED uplink type set is checked BEFORE the seq gate commits: a
+//     message that will be dropped anyway must not spend from a scarce, one-way
+//     resource.
+//   * Every selector is NORMALIZED TO A STRING ONCE, in one place, and then
+//     BOUND-CHECKED in UTF-16 code units against the frame's strict schema. An
+//     out-of-bounds OPTIONAL selector is OMITTED (never truncated — a truncated id
+//     is a different id); an out-of-bounds REQUIRED instance id means no frame at
+//     all rather than a frame that would reject its own context.
+//   * apply_intent carries an UNTRUSTED SELECTOR only: the parent re-checks the
+//     current user may edit, uses its OWN canonical resource, dedups against a
+//     bounded LRU, and does an in-place draft refresh — NO direct content-API
+//     egress (#1214: field-apply happens server-side via the CMS MCP integration).
+//   * resize height is CLAMPED to the panel cap (clamp, never trust the value).
+//
+// Security-critical invariants (no apiKey and no bearer of any shape in the
+// browser; no token-broker call; no sign-in ceremony on the CMS origin; the
+// same-origin refusal; the exact four-token sandbox; explicit targetOrigin;
+// source-window binding; the credential-shaped value guard on every send and both
+// inbound transports; the raw-component URL scan; the epoch reset ordering; the
+// selector bounds; no apply-time egress) are gated by tools/widget-parity-check.mjs
+// in CI — the SAME gate, also shipped verbatim to both repos.
+//
+// ---------------------------------------------------------------------------
+// NOTICE (Apache License 2.0)
+//
+//   Cinatra
+//   Copyright (c) Cinatra
+//
+//   This product includes software developed by Cinatra (https://cinatra.ai).
+//   Portions of this file are derived from the Cinatra project
+//   (cinatra-ai/cinatra), licensed under the Apache License, Version 2.0.
+//   You may obtain a copy of the License at:
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+//   Unless required by applicable law or agreed to in writing, software
+//   distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+//   WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+//   License for the specific language governing permissions and limitations
+//   under the License.
+//
+// Both host projects (the WordPress plugin and the Drupal module) are licensed
+// GPL-2.0-or-later as a whole; this vendored file is incorporated under the
+// Apache-2.0 grant above, which is GPL-compatible (under GPLv3, which
+// "GPL-2.0-or-later" reaches), so both stay distributable on their own directory.
+// ---------------------------------------------------------------------------
 (function () {
   // ---------------------------------------------------------------------------
-  // Config guard. The browser holds NO credential of any kind — not the
-  // long-lived key, and (since protocol 2) not a short-lived bearer either. All
-  // this shell needs is the instance URL it frames.
+  // CMS SEAM 1 of 4 — THE CONFIG BROKER, and the only CMS detection in the file.
+  //
+  // The browser holds NO credential of any kind — no long-lived key, no broker
+  // endpoint, no bearer. All it needs is the instance URL to frame, plus the
+  // public selectors it will hand the frame. Each CMS publishes that through its
+  // own settings broker, and only its own: WordPress localizes a
+  // `window.CinatraConfig` object, Drupal writes `drupalSettings.cinatra`. A page
+  // carries one or the other, never both, so the presence of a broker IS the CMS
+  // detection — there is nothing to configure and nothing to build.
   // ---------------------------------------------------------------------------
-  var config = (window.drupalSettings && window.drupalSettings.cinatra) || {};
-  if (!config.cinatraUrl) {
-    console.warn('[cinatra] Missing drupalSettings.cinatra (cinatraUrl required)');
+  // Each read is GUARDED, because one of the two globals belongs to the OTHER
+  // host and is therefore something else's property on this page. A stray
+  // `drupalSettings` planted by an unrelated WordPress plugin — or a hostile
+  // getter on it — must not be able to throw this whole IIFE away before the
+  // widget mounts.
+  function readBroker(read) {
+    try {
+      var value = read();
+      return value && typeof value === 'object' ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  // The usability probe is guarded TOO, not just the global read. Reaching a
+  // foreign object's property is reaching a foreign
+  // getter: `wordpressConfig.cinatraUrl` on a Drupal page runs code somebody else
+  // wrote, and an exception there would abort this IIFE and take a perfectly valid
+  // Drupal widget down with it.
+  function brokerUrl(broker) {
+    try {
+      var url = broker && broker.cinatraUrl;
+      return typeof url === 'string' && url ? url : '';
+    } catch (_) {
+      return '';
+    }
+  }
+  // USABILITY decides, not precedence. A page carries one broker in practice, but
+  // "whichever is truthy first" would let an empty `CinatraConfig` left behind by
+  // something else on a Drupal page select the WordPress branch and then refuse to
+  // mount for want of a cinatraUrl — the widget disabled by a foreign global. The
+  // broker that actually carries the instance URL is the one this page was
+  // configured with.
+  //
+  // And the OTHER host's global is only touched if this one's is unusable: on
+  // WordPress — the common case — `drupalSettings` is never read at all. A guard
+  // contains a throw; it cannot contain a side effect or a getter that never
+  // returns, so the cheapest protection is not to look.
+  var wordpressConfig = readBroker(function () { return window.CinatraConfig; });
+  var wordpressUrl = brokerUrl(wordpressConfig);
+  var drupalConfig = null;
+  var drupalUrl = '';
+  if (!wordpressUrl) {
+    drupalConfig = readBroker(function () { return window.drupalSettings && window.drupalSettings.cinatra; });
+    drupalUrl = brokerUrl(drupalConfig);
+  }
+  var CMS = null;
+  var config = null;
+  // The instance URL is CAPTURED ONCE, here, and every later use reads this
+  // capture rather than the broker again. Re-reading a mutable config object at
+  // each use is the same class of defect as re-reading the instance id was: the
+  // origin the widget validated must be the origin it frames.
+  var cinatraUrl = '';
+  if (wordpressUrl) {
+    CMS = 'wordpress';
+    config = wordpressConfig;
+    cinatraUrl = wordpressUrl;
+  } else if (drupalUrl) {
+    CMS = 'drupal';
+    config = drupalConfig;
+    cinatraUrl = drupalUrl;
+  }
+  if (!CMS) {
+    console.warn('[cinatra] no CMS settings broker carries a cinatraUrl (CinatraConfig | drupalSettings.cinatra); widget not mounted');
     return;
   }
   var rootEl = document.getElementById('cinatra-root');
@@ -132,23 +246,28 @@
   // unconditionally at boot; a throw mid-mount still leaves the fallback chrome
   // visible (the marker that hides it is set LAST).
 
-  // §4: the `?assistant` value — a PUBLIC HANDLE, never an agent slug. The
-  // Cinatra server maps it to the agent through its own closed table, so this
-  // shell names no agent and could not name another one if it tried. MUST equal
-  // the embed page's `session.assistant` agreement check.
-  var EMBED_ASSISTANT = 'drupal';
+  // ---------------------------------------------------------------------------
+  // CMS SEAM 2 of 4 — the `?assistant` value, which is exactly the CMS name.
+  //
+  // §4: the agent identifier this parent may name. It is a SELECTOR, never an
+  // assertion: the instance re-derives the authoritative agent from its own closed
+  // host-side table and denies on any mismatch, so naming another site's agent
+  // yields a refusal, not that agent. MUST equal the embed page's
+  // `session.assistant` agreement check.
+  // ---------------------------------------------------------------------------
+  var EMBED_ASSISTANT = CMS;
 
   // ---------------------------------------------------------------------------
-  // §12 bridge protocol constants (the byte-level contract both halves pin).
+  // §12/§12b bridge protocol constants (the byte-level contract both halves pin).
   // Mirror of cinatra-ai/cinatra src/lib/embed/bridge-protocol.ts — kept in sync
   // by review + the parity gate. There is NO arbitrary-tool channel: the message
   // type set is CLOSED.
   //
-  // PROTOCOL 2 (cinatra#2674) is deliberately BREAKING: the credential-bearing
-  // `cinatra.embed.bootstrap` envelope is RETIRED, and the version literal moved
-  // from 1 to 2 so a protocol-1 parent and a protocol-2 frame cannot negotiate at
-  // all. That is what makes "the site can no longer deliver a credential" true
-  // rather than merely intended — there is no silent fallback to the old flow.
+  // VERSION 2 (cinatra#2674) is deliberately BREAKING. A protocol-1 parent and a
+  // protocol-2 frame cannot negotiate at all, which is what makes "the parent can
+  // no longer deliver a credential" TRUE rather than merely intended: there is no
+  // silent fallback to the retired credential-bearing bootstrap, and the retired
+  // inbound type is not even named here, so it cannot be reached by name.
   // ---------------------------------------------------------------------------
   var EMBED_PROTOCOL_VERSION = 2;
   var MSG = {
@@ -167,28 +286,76 @@
   var APPLY_LRU_MAX = 64;                         // §6f bounded seen-id LRU
 
   // ---------------------------------------------------------------------------
+  // SELECTOR NORMALIZATION, then the protocol-2 SELECTOR BOUNDS. Both halves are
+  // needed and they run in this order.
+  //
+  // NORMALIZE FIRST, ONCE, IN ONE PLACE. The frame's schema is strict about TYPES
+  // as well as keys, so a numeric resource id or a boolean status arriving from a
+  // hand-edited settings array would make the whole message unparseable on the
+  // other side — a silent dead widget rather than a visible error. Normalizing
+  // here is also what lets the credential guard reason simply: after this, every
+  // selector is a plain string, so no non-plain container can reach a composed
+  // message at all.
+  //
+  // THEN BOUND-CHECK, IN UTF-16 CODE UNITS. The frame's schema is `.strict()`, so
+  // ONE over-long display field rejects the WHOLE message and the session never
+  // starts — the frame just sits in its neutral "waiting for host" state forever,
+  // with nothing to tell the site owner why. An OPTIONAL selector that would
+  // exceed its bound is therefore OMITTED rather than sent: it is a disambiguator,
+  // and losing a disambiguator costs far less than losing the session. It is never
+  // TRUNCATED — a truncated id is a different id, and a selector that quietly
+  // names something else is worse than one that is absent. `String.length` in
+  // JavaScript already counts UTF-16 code units, which is exactly the unit the
+  // core schema bounds, so a valid non-ASCII selector is not blanked by a byte
+  // bound.
+  // ---------------------------------------------------------------------------
+  var SELECTOR_MAX = {
+    siteId: 200,        // site.siteId
+    instanceId: 200,    // cms.instanceId (REQUIRED, min 1)
+    resourceId: 200,    // cms.resourceId
+    resourceType: 200,  // cms.resourceType
+    status: 64,         // cms.status
+  };
+  /** A string, normalized from the CMS's own value; '' when it is not a selector. */
+  function asSelector(value) {
+    if (value === null || value === undefined) { return ''; }
+    if (typeof value === 'string') { return value; }
+    // A number or boolean is normalized; anything else (an object, an array) is
+    // not a selector and is dropped rather than stringified into nonsense.
+    if (typeof value === 'number' || typeof value === 'boolean') { return String(value); }
+    return '';
+  }
+  /** The value when it is a non-empty string within its bound, else null. */
+  function boundedSelector(value, max) {
+    if (typeof value !== 'string') return null;
+    if (value.length === 0 || value.length > max) return null;
+    return value;
+  }
+
+  // ---------------------------------------------------------------------------
   // CREDENTIAL-SHAPED VALUE GUARD (cinatra#2674) — the second half of "no
-  // credential crosses this boundary", mirrored from the core bridge protocol.
+  // credential crosses this boundary", mirrored from the core
+  // `containsCredentialShapedValue`.
   //
-  // Retiring the BOOTSTRAP removed the credential FIELD. It did not remove the
-  // possibility of a credential VALUE: every field this shell still sends is a
-  // string the site chooses, so a node id or bundle name that happens to be (or
-  // is made to be) a `cwu_…` would put a bearer back on the bridge — the exact
-  // thing this protocol exists to end.
+  // The context schema has no `auth`, so there is no credential FIELD. Every
+  // remaining field is still a string THIS FILE chooses from CMS state, so a
+  // bearer could in principle be smuggled into `cms.resourceId` or a site id by a
+  // misconfiguration or a compromised option. Every outbound payload is therefore
+  // scanned before it is sent and the send is REFUSED on a hit.
   //
-  // So the composed message is scanned recursively for Cinatra's bearer prefixes
-  // (`cwu_` per-user token, `cit_` site transport token, `cnx_` connect-site
-  // credential) at any token boundary, case-insensitively, in keys as well as
-  // values — and a message that carries one is NOT SENT. This is a CONTAINMENT
-  // control, not a secret detector: it cannot recognise a credential with no
-  // prefix and is not asked to. It over-matches a hypothetical node value that
-  // merely begins with one of those prefixes; that is deliberate and fails closed.
+  // This is a CONTAINMENT control, not a secret detector: it cannot recognise a
+  // credential that carries no prefix, and it is not asked to. What it guarantees
+  // — and what the credential-egress harness pins with synthetic sentinels — is
+  // that nothing this shell puts on the bridge (or in the frame URL) can be shaped
+  // like one of our bearers, at any depth, in a value or a key.
   // ---------------------------------------------------------------------------
   var CREDENTIAL_VALUE_PREFIXES = ['cwu_', 'cit_', 'cnx_'];
-  // A prefix ANYWHERE in the string at a token boundary: `"Error: cwu_…"` and
-  // `"https://x/?t=cwu_…"` are credentials on the wire too, and an error string
-  // or a URL is exactly how one arrives there by accident. The boundary class
-  // keeps it from firing on a word that merely ENDS in those letters.
+  // A bearer prefix ANYWHERE in the string, at a token boundary — a prefix-only
+  // test would let `'Error: cwu_…'` and `'https://x/?t=cit_…'` through, and an
+  // error string or a URL is exactly how one arrives there by accident. The
+  // boundary class keeps it from firing on a word that merely ENDS in the letters
+  // (a fictional 'abccwu_'). Case-insensitive: a value that differs from a
+  // credential only by case is a credential someone is trying to sneak past.
   var CREDENTIAL_TOKEN_RE = new RegExp(
     '(?:^|[^A-Za-z0-9])(?:' +
       CREDENTIAL_VALUE_PREFIXES.map(function (p) { return p.slice(0, -1); }).join('|') +
@@ -198,17 +365,35 @@
   function isCredentialShapedValue(value) {
     return typeof value === 'string' && CREDENTIAL_TOKEN_RE.test(value);
   }
-  // EVERY UNKNOWN ANSWER IS "YES" (codex round 0, finding 1). This is the
-  // SENDER's guard, so its bounds must fail CLOSED: a structure too deep to
-  // finish walking, a container this walk cannot enumerate (a Map, a Set, a
-  // cyclic graph), or anything else it cannot positively clear is treated as
-  // carrying a credential and the message is refused. The alternative — the
-  // receiver-side habit of returning false on "I could not tell" — would make
-  // the guard defeatable by nesting, which is exactly the hole it exists to
-  // close. Nothing this shell legitimately composes nests more than three deep
-  // or holds a non-plain object, so failing closed costs a real message nothing.
-  function containsCredentialShapedValue(value, depth) {
+  // EVERY UNKNOWN ANSWER IS "YES". This is the SENDER's guard, so its bounds must
+  // fail CLOSED: a structure too deep to finish walking, a container this walk
+  // cannot enumerate (a Map, a Set, a cyclic graph), or anything else it cannot
+  // positively clear is treated as carrying a credential and the message is
+  // refused. The alternative — the receiver-side habit of returning false on "I
+  // could not tell" — would make the guard defeatable by nesting, which is exactly
+  // the hole it exists to close. Nothing this shell legitimately composes nests
+  // more than three deep or holds a non-plain object, so failing closed costs a
+  // real message nothing.
+  //
+  // The same fail-closed answer is the SAFE one inbound as well: an envelope the
+  // walk cannot clear is DROPPED rather than read, and dropping an unreadable
+  // uplink costs a resize hint, while reading one could put a bearer in this
+  // page's DOM.
+  // THE WALK IS BOUNDED IN TOTAL WORK, not only in depth. Depth 8 bounds how
+  // DEEP it goes; it says nothing about how WIDE.
+  // Inbound this guard is the FIRST thing that touches an envelope the frame
+  // sent, so an origin-and-source-valid message carrying a sparse array with an
+  // enormous `length` would spin the walk through every hole before anything
+  // rejected the message — a stall in the CMS admin page, reachable by the one
+  // party on the other side of this bridge. A node budget makes every possible
+  // input cost the same bounded amount, and exhausting it is another unknown
+  // answer, so it fails CLOSED like the rest.
+  var CREDENTIAL_SCAN_MAX_NODES = 4096;
+  function containsCredentialShapedValue(value, depth, budget) {
     var d = depth || 0;
+    var b = budget || { left: CREDENTIAL_SCAN_MAX_NODES };
+    if (b.left <= 0) { return true; }
+    b.left--;
     if (isCredentialShapedValue(value)) { return true; }
     if (value === null || typeof value !== 'object') { return false; }
     if (d >= 8) { return true; }
@@ -216,7 +401,7 @@
     var tag = Object.prototype.toString.call(value);
     if (tag === '[object Array]') {
       for (i = 0; i < value.length; i++) {
-        if (containsCredentialShapedValue(value[i], d + 1)) { return true; }
+        if (containsCredentialShapedValue(value[i], d + 1, b)) { return true; }
       }
       return false;
     }
@@ -224,43 +409,63 @@
     // else (Map, Set, Date, a cross-realm object, a Proxy) may hold values this
     // walk would never see, so it is refused rather than waved through.
     if (tag !== '[object Object]') { return true; }
-    var keys = Object.keys(value);
-    for (i = 0; i < keys.length; i++) {
+    // ENUMERATED LAZILY, and the budget is consulted INSIDE the loop.
+    // `Object.keys()` would materialize every own key BEFORE the budget could
+    // stop anything, so an envelope with a pathological number of properties
+    // would cost a full enumeration and allocation before the first check ran —
+    // the budget bounding the walk but not the thing that precedes it. `for…in`
+    // + hasOwnProperty covers the same key set
+    // (own enumerable string keys — symbols and non-enumerables are invisible to
+    // both, which is why a non-plain container is refused above) and stops the
+    // moment the budget is spent.
+    //
+    // RESIDUAL, STATED RATHER THAN CLAIMED AWAY:
+    // this bounds the work THIS WALK does — comparisons, recursion, allocations
+    // of ours. It cannot bound the engine's own preparation of an enumeration for
+    // a pathological object, and no JavaScript-level guard can, short of refusing
+    // to look at inbound messages at all. What keeps that bounded in practice is
+    // that the frame must first serialize such an object through structured
+    // clone, so the cost is at worst matched, never amplified.
+    for (var key in value) {
+      // The budget is spent BEFORE the ownership test, so a prototype carrying a
+      // vast number of enumerable properties cannot run this loop for free.
+      if (b.left <= 0) { return true; }
+      b.left--;
+      if (!Object.prototype.hasOwnProperty.call(value, key)) { continue; }
       // A key is as visible to a logger as a value.
-      if (isCredentialShapedValue(keys[i])) { return true; }
-      if (containsCredentialShapedValue(value[keys[i]], d + 1)) { return true; }
+      if (isCredentialShapedValue(key)) { return true; }
+      if (containsCredentialShapedValue(value[key], d + 1, b)) { return true; }
     }
     return false;
   }
 
-  // The Cinatra instance origin — the ONLY origin the bridge posts CONTEXT to
-  // and the ONLY origin/source it accepts uplinks from. Resolved ONCE, strictly.
+  // The Cinatra instance origin — the ONLY origin the bridge posts to and the
+  // ONLY origin/source it accepts uplinks from. Resolved ONCE, strictly.
   var cinatraOrigin = null;
-  try { cinatraOrigin = new URL(config.cinatraUrl).origin; } catch (_) { cinatraOrigin = null; }
+  try { cinatraOrigin = new URL(cinatraUrl).origin; } catch (_) { cinatraOrigin = null; }
   if (!cinatraOrigin) {
     console.warn('[cinatra] cinatraUrl is not a valid origin; widget not mounted');
     return;
   }
 
-  // PROTOCOL 2 REQUIRES A REAL ORIGIN BOUNDARY (codex round 1). The promise this
-  // protocol makes is that the SITE cannot come to possess the person's Cinatra
-  // credential: the credential is minted by the frame, held in the frame's
-  // memory, and never crosses the postMessage boundary. That promise rests
-  // entirely on the frame being a DIFFERENT ORIGIN from the page around it. If
-  // an instance is deployed on this site's own origin — a reverse proxy serving
-  // Cinatra under the Drupal host — then site JavaScript can reach straight into
-  // the frame's realm and read what it holds, and the guarantee is not weakened,
-  // it is simply absent.
+  // PROTOCOL 2 REQUIRES A REAL ORIGIN BOUNDARY. The promise this protocol makes is
+  // that the SITE cannot come to possess the person's Cinatra credential: the
+  // credential is minted by the frame, held in the frame's memory, and never
+  // crosses the postMessage boundary. That promise rests entirely on the frame
+  // being a DIFFERENT ORIGIN from the page around it. If an instance is deployed
+  // on this site's own origin — a reverse proxy serving Cinatra under the CMS host
+  // — then site JavaScript can reach straight into the frame's realm and read what
+  // it holds, and the guarantee is not weakened, it is simply absent.
   //
   // Under protocol 1 that arrangement cost nothing new, because the site
   // legitimately held the credential anyway. Under protocol 2 it would make the
   // widget quietly claim a protection it does not have, which is worse than not
-  // running. So a same-origin instance is REFUSED here: the fallback chrome
-  // stays visible and the operator gets a diagnostic naming the reason.
+  // running. So a same-origin instance is REFUSED here: the fallback chrome stays
+  // visible and the operator gets a diagnostic naming the reason.
   var pageOrigin = null;
   try { pageOrigin = window.location && window.location.origin ? window.location.origin : null; } catch (_) { pageOrigin = null; }
   if (pageOrigin && cinatraOrigin === pageOrigin) {
-    console.warn('[cinatra] the Cinatra instance is on this site\'s own origin; the assistant needs a separate origin to keep each editor\'s sign-in private, so it was not mounted');
+    console.warn('[cinatra] the Cinatra instance is on this site\'s own origin; the assistant needs a separate origin to keep each person\'s sign-in private, so it was not mounted');
     return;
   }
 
@@ -271,10 +476,14 @@
   // unified broker surface, and (since protocol 2) so does the sign-in. There is
   // no shell pre-flight and no shell login gate left to condition the mount on.
   //
-  // The frame itself is mounted LAZILY, on the first panel open: framing an
-  // authenticated surface on every node page a permitted editor merely LOOKS at
-  // would be a request nobody asked for. Until then this page makes no request to
-  // the instance at all.
+  // THERE IS NO LOGIN GATE HERE ANY MORE (cinatra#2674). Sign-in is not this
+  // shell's business: the frame decides whether the person is signed in and, if
+  // not, shows its own sign-in inside the frame and runs the whole ceremony on the
+  // Cinatra origin. So the panel has exactly one body — the frame — and the frame
+  // is mounted LAZILY on the first panel open (a plain user gesture). Framing an
+  // authenticated Cinatra surface on every admin page a permitted editor merely
+  // LOOKS at would be a request nobody asked for; until the panel is opened this
+  // page makes no request to the instance at all.
   // ---------------------------------------------------------------------------
   function mountWidget() {
   // Idempotency guard: a second copy of this IIFE (a double script include) could
@@ -323,7 +532,7 @@
     '  z-index: 3;',
     '}',
 
-    /* Panel: fills the widget; header on top, body (login | iframe) below. */
+    /* Panel: fills the widget; header on top, the embed iframe below. */
     '.cw-panel {',
     '  position: absolute; top: 0; left: 0; right: 0; bottom: 0;',
     '  box-sizing: border-box;',
@@ -363,16 +572,31 @@
     '  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;',
     '  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;',
     '}',
-    /* The sign-in card is rendered INSIDE the frame now (cinatra#2674), so this
-       shell ships no login chrome and no credential-facing DOM at all. */
+
+    /* There is deliberately NO login chrome here (cinatra#2674). The sign-in
+       affordance — and every message about it — belongs to the Cinatra frame,
+       which owns the ceremony. This CMS page renders no auth UI, no auth error,
+       and no credential input of any kind. */
   ].join('\n');
   shadow.appendChild(style);
 
-  // Local-only widget: do NOT inject a remote webfont. The original embed bundle
-  // pulled Archivo from fonts.googleapis.com, but that is an undisclosed
-  // third-party browser request and breaks the "fully local" guarantee required
-  // on Drupal.org. The wordmark/headers fall back to the system-ui stack already
-  // declared in the CSS font-family (Archivo, system-ui, sans-serif).
+  // WEBFONT POLICY — a CMS-directory rule, not a design choice, and the one place
+  // the two hosts disagree about a resource rather than an accessor. Drupal.org
+  // requires a module to be FULLY LOCAL: an undisclosed third-party browser
+  // request to fonts.googleapis.com would breach it, so the Drupal copy has always
+  // fallen back to the system-ui stack already declared in the CSS font-family
+  // (Archivo, system-ui, sans-serif). WordPress.org has no such rule and the
+  // WordPress copy has always injected the font into the document head (fonts must
+  // be in document scope to work inside a shadow root). Both remain true here.
+  if (CMS === 'wordpress') {
+    var FONT_URL = 'https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,400;0,500;0,600;1,800&display=swap';
+    if (!document.querySelector('link[href="' + FONT_URL + '"]')) {
+      var fontLink = document.createElement('link');
+      fontLink.rel = 'stylesheet';
+      fontLink.href = FONT_URL;
+      document.head.appendChild(fontLink);
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // SVG builders
@@ -502,8 +726,9 @@
   panel.appendChild(a11yLive);
 
   // Conversation body host — the sandboxed embed iframe is mounted here on the
-  // first panel open. There is no login window in front of it any more: the frame
-  // renders its own sign-in card and runs the whole ceremony itself.
+  // first open. It is the panel's ONLY body: whatever the person needs to see
+  // before they are signed in (including the sign-in itself) is drawn by the
+  // frame, on the Cinatra origin.
   var frameHost = document.createElement('div');
   frameHost.className = 'cw-frame-host';
   panel.appendChild(frameHost);
@@ -512,54 +737,71 @@
   // State
   //
   // Note what is NOT here since protocol 2 (cinatra#2674): no `userToken`, no
-  // `pkce` handshake, no popup watcher, no panel mode. This shell holds no
+  // PKCE handshake, no popup watcher, no panel mode. This shell holds no
   // credential and no authentication state, so there is none to lose, expire or
   // leak — the frame owns all of it.
   // ---------------------------------------------------------------------------
   var isOpen = false;
 
   // ---------------------------------------------------------------------------
-  // Content context (the `cms` selectors of the CONTEXT message and the parent's
-  // OWN canonical resource for apply_intent — NOT a stream input).
+  // CMS SEAM 3 of 4 — the CANONICAL RESOURCE ACCESSOR.
   //
-  // CMS seam: Drupal node edit forms are server-rendered, so the canonical
-  // resource is provided by the module in drupalSettings.cinatra (nodeId /
-  // nodeBundle / nodeStatus) rather than read from a client editor store as the
-  // WordPress copy reads wp.data. The field names differ from the WP copy by
-  // design; buildContext() maps them into the shared §12 `cms` shape.
+  // These are the PUBLIC selectors for the `cms` block of the CONTEXT message,
+  // and the parent's OWN canonical resource for apply_intent. Nothing here is
+  // authority and nothing here is secret: the instance re-derives the
+  // authoritative site, org, origin, agent and canonical instance from its own
+  // rows and denies on any mismatch.
   //
-  // EVERY SELECTOR IS NORMALIZED TO A STRING HERE, ONCE (codex round 0, finding
-  // 5). The frame's schema is strict about types as well as keys, so a numeric
-  // nodeId or a boolean status arriving from a hand-edited drupalSettings would
-  // make the whole message unparseable on the other side — a silent dead widget
-  // rather than a visible error. This is also the single place the credential
-  // guard has to reason about: after this function every selector is a plain
-  // string, so no non-plain container can reach the composed message at all.
+  // The two hosts answer "what is on screen" in genuinely different ways, and
+  // that is the whole seam. WordPress edits in a CLIENT editor store, so the
+  // selectors are read live from `wp.data` (with the classic-editor DOM as the
+  // fallback). Drupal node edit forms are SERVER-rendered, so the module hands the
+  // selectors down through its settings broker. Both are mapped here onto the ONE
+  // shared shape the rest of the file uses, and every value is normalized to a
+  // string exactly once, right here.
   // ---------------------------------------------------------------------------
-  function asSelector(value) {
-    if (value === null || value === undefined) { return ''; }
-    if (typeof value === 'string') { return value; }
-    // A number or boolean is normalized; anything else (an object, an array) is
-    // not a selector and is dropped rather than stringified into nonsense.
-    if (typeof value === 'number' || typeof value === 'boolean') { return String(value); }
-    return '';
-  }
   function buildContentContext() {
+    if (CMS === 'wordpress') {
+      var postId =
+        (window.wp && window.wp.data &&
+          window.wp.data.select('core/editor') &&
+          window.wp.data.select('core/editor').getCurrentPostId &&
+          window.wp.data.select('core/editor').getCurrentPostId()) ||
+        (document.querySelector('#post_ID') && document.querySelector('#post_ID').value) ||
+        '';
+
+      var postStatus =
+        (window.wp && window.wp.data &&
+          window.wp.data.select('core/editor') &&
+          window.wp.data.select('core/editor').getEditedPostAttribute &&
+          window.wp.data.select('core/editor').getEditedPostAttribute('status')) ||
+        (document.querySelector('#post-status-display') &&
+          document.querySelector('#post-status-display').textContent.trim().toLowerCase()) ||
+        '';
+
+      return {
+        instanceId:   asSelector(config.instanceId),
+        siteId:       asSelector(config.siteId),
+        resourceId:   asSelector(postId),
+        resourceType: asSelector(typeof window.typenow !== 'undefined' ? window.typenow : ''),
+        status:       asSelector(postStatus),
+      };
+    }
     return {
-      instanceId: asSelector(config.instanceId),
-      nodeId:     asSelector(config.nodeId),
-      nodeBundle: asSelector(config.nodeBundle),
-      nodeStatus: asSelector(config.nodeStatus),
+      instanceId:   asSelector(config.instanceId),
+      siteId:       asSelector(config.siteId),
+      resourceId:   asSelector(config.nodeId),
+      resourceType: asSelector(config.nodeBundle),
+      status:       asSelector(config.nodeStatus),
     };
   }
 
   // ---------------------------------------------------------------------------
-  // CSPRNG id helper. The ONLY random value this shell still mints is the
-  // per-frame correlationId (§6b) — the PKCE verifier, challenge and `state` are
-  // gone with the ceremony they belonged to, and they now live in the frame.
+  // CSPRNG id minting. base64url(no padding) of a random byte array — the ONLY
+  // cryptographic thing left in this file now that the sign-in ceremony belongs to
+  // the frame. It mints the bridge correlationId; it mints no PKCE verifier,
+  // because this shell starts no PKCE transaction.
   // ---------------------------------------------------------------------------
-
-  // base64url (no padding) of a byte array.
   function b64url(bytes) {
     var s = '';
     for (var i = 0; i < bytes.length; i++) { s += String.fromCharCode(bytes[i]); }
@@ -572,45 +814,48 @@
   }
 
   // ---------------------------------------------------------------------------
-  // §12 PARENT-SIDE BRIDGE — the host half of the parent↔iframe embed protocol.
+  // §12/§12b PARENT-SIDE BRIDGE — the host half of the parent↔iframe embed
+  // protocol.
   //
-  // The iframe (`/embed/assistant`) is the SOLE session owner AND, since protocol
-  // 2, the sole holder of the credential. This shell sends ONE selector-only
-  // CONTEXT message and services the closed set of iframe→parent uplinks. Every
-  // trust-boundary control is enforced here: origin + source-window binding (on
-  // the READY window message), schema/protocolVersion/nonce agreement, dual
-  // monotonic seq, one context message per frame, the outbound credential-shape
-  // refusal, apply_intent untrusted-selector permission checks + bounded LRU
-  // dedup, and the resize clamp.
+  // The iframe (`/embed/assistant`) is the SOLE session owner AND the sole holder
+  // of the person's credential. This shell delivers ONE selector-only CONTEXT
+  // message per frame document and services the closed set of iframe→parent
+  // uplinks. Every trust-boundary control is enforced here: origin + source-window
+  // binding, schema/protocolVersion/nonce agreement, dual monotonic seq behind a
+  // closed type set, one context per document with an epoch reset on replacement,
+  // the credential-shaped value refusal on every send and both inbound transports,
+  // apply_intent untrusted-selector permission checks + bounded LRU dedup, and the
+  // resize clamp.
   //
-  // §12b DOCUMENT-BOUND MESSAGEPORT TRANSPORT (cinatra#1965/#1970): the iframe
-  // transfers ONE MessageChannel endpoint in the (origin+source-gated) READY; the
-  // parent RETAINS it, sends the CONTEXT message over it, and services uplinks on
-  // it. At protocol 1 this transport existed to protect a credential from a
-  // same-origin REPLACEMENT of the frame. There is no credential to misdeliver
-  // now, so it is kept for the narrower property it still provides at no cost:
-  // the retained endpoint belongs to the realm that ran the handshake, so a
-  // replacement document cannot take over an established session's uplink
-  // channel. The origin-pinned WINDOW transport remains for a frame whose READY
-  // carries no transferred port; `requirePort` refuses that.
+  // TRANSPORT (§12b): the iframe transfers one MessageChannel endpoint in READY;
+  // the parent RETAINS it and sends the CONTEXT message over that port. Steady-
+  // state uplinks then ride the same entangled port. The WINDOW transport remains
+  // for a frame that transfers no port (unless the deployment sets `requirePort`)
+  // and is origin-pinned when used. At protocol 2 the port is DEFENCE IN DEPTH,
+  // not the credential wall — the credential wall is that no credential exists
+  // here at all.
   // ---------------------------------------------------------------------------
-  var iframeEl = null;          // the mounted embed iframe (null until the panel opens)
+  var iframeEl = null;          // the mounted embed iframe (null until first open)
   var frameWindow = null;       // iframeEl.contentWindow captured at load
   var frameNonce = null;        // the READY nonce the frame minted (echoed in context)
   var correlationId = null;     // parent-minted CSPRNG id, echoed by every uplink
-  var contextSent = false;      // one CONTEXT message per frame
+  var contextSent = false;      // one CONTEXT per frame DOCUMENT (a reload starts an epoch)
   var inboundSeqLast = null;    // iframe->parent monotonic gate (READY seeds it)
   var outboundSeqLast = null;   // parent->iframe monotonic counter (context = 0)
   var appliedLru = [];          // §6f bounded seen apply-id LRU for this correlationId
-  // §12b transport state — chosen at READY (see onBridgeMessage).
-  var activePort = null;        // the retained transferred MessagePort (port mode) or null
-  var activeTransport = null;   // 'port' | 'legacy' | null — chosen at READY
-  // Channel binding: when true, a READY that transfers NO port is REFUSED, so the
-  // window transport cannot be selected merely by stripping the transferred port.
-  // Defaults FALSE (a frame that transfers no port still works). At protocol 2
-  // this is a channel-binding knob, not a credential control — the message
-  // carries no credential either way. A deployment hardens by setting
-  // drupalSettings.cinatra.requirePort = true.
+  var activePort = null;        // §12b the MessagePort the iframe transferred in READY (null in window mode)
+  var activeTransport = null;   // 'port' | 'window' — chosen at READY
+  var frameRefused = false;     // one-shot: the frame cannot be framed (see mountBridgeIframe)
+  var bridgeEpochs = 0;         // retired epochs on this frame (bounded — see MAX_BRIDGE_EPOCHS)
+  var MAX_BRIDGE_EPOCHS = 64;   // a real reload needs a handful; this is the ceiling on manufactured ones
+
+  // §12b CHANNEL BINDING: when true, a READY that transfers NO port is REFUSED, so
+  // the window transport cannot be selected merely by stripping the transferred
+  // port. Defaults FALSE (a frame that transfers no port still works). At protocol
+  // 2 this is a channel-binding knob, not a credential control — the message
+  // carries no credential either way, and the worst a misdelivered CONTEXT can do
+  // is tell a replacement document which resource is on screen. A deployment
+  // hardens by setting `requirePort` in its CMS settings broker.
   var requirePort = (config.requirePort === true);
 
   // A CSPRNG base64url correlationId carrying >=128 bits (24 base64url chars ==
@@ -633,31 +878,42 @@
     return next;
   }
 
-  // ALWAYS an explicit origin, NEVER "*" (§6a outbound). Posts to the frame window.
+  // WINDOW transport (§12b): ALWAYS an explicit origin, NEVER "*" (§6a outbound).
+  // Posts to the frame window. Used only when the iframe transferred no port and
+  // `requirePort` is off. cinatraOrigin is resolved once and is a real origin
+  // (never "*"/empty — the mount aborts otherwise), so the "never '*'" invariant
+  // holds structurally.
   function postToFrame(message) {
-    if (!frameWindow) return;
+    if (!frameWindow) return false;
     frameWindow.postMessage(message, cinatraOrigin);
+    return true;
   }
 
-  // §12b send the CONTEXT message over the SELECTED transport. In PORT mode it
-  // rides ONLY the retained entangled port — never a window postMessage; in
-  // WINDOW mode it posts to the origin-pinned frame window (postToFrame: explicit
-  // origin, never "*"). Mirrors the core sendContextOverTransport (§12b).
+  // Send a parent->iframe message over the transport chosen at READY.
   //
-  // THE OUTBOUND REFUSAL LIVES HERE, before either transport. The message is
-  // re-validated for a credential-shaped value at any depth, and a message that
-  // carries one is NOT SENT — the frame would refuse it on arrival, but a
-  // credential that never leaves this page is strictly better than one that is
-  // rejected after travelling. Returns whether the message was sent.
-  function sendContext(message) {
-    if (containsCredentialShapedValue(message)) { return false; }
-    if (activeTransport === 'port') {
+  // THE OUTBOUND GUARD RUNS HERE, ON EVERY PATH (cinatra#2674). Whatever the
+  // caller composed, a payload carrying a credential-shaped value AT ANY DEPTH is
+  // REFUSED rather than transmitted: the parity gate proves the guard exists, and
+  // this function is the single choke point that proves it always runs. A message
+  // that never leaves is strictly better than one the frame rejects on arrival.
+  // Returns whether the message was actually sent, so the caller can fail closed
+  // instead of assuming delivery.
+  function sendToFrame(message) {
+    // A composer that REFUSED to build a message returns null (see
+    // buildEmbedContext). Posting that null would be an empty envelope on the
+    // wire; the refusal must be a non-send.
+    if (!message || typeof message !== 'object') { return false; }
+    if (containsCredentialShapedValue(message)) {
+      // Deliberately says nothing about WHAT matched: a refusal must not become a
+      // place where a credential is echoed into a console.
+      console.warn('[cinatra] refusing to post a credential-shaped value to the assistant frame');
+      return false;
+    }
+    if (activeTransport === 'port' && activePort) {
       activePort.postMessage(message);
       return true;
     }
-    if (!frameWindow) { return false; }
-    postToFrame(message);
-    return true;
+    return postToFrame(message);
   }
 
   // §3a READY validator (pre-context; the ONLY message without a correlationId).
@@ -673,10 +929,10 @@
       Math.floor(d.seq) === d.seq && d.seq >= 0;
   }
 
-  // The CLOSED uplink type set. Checked BEFORE the seq gate commits, so a
-  // message the parent will drop anyway cannot first consume a sequence number
-  // (codex round 0, finding 7). The gate is a scarce, one-way resource: nothing
-  // that is not going to be dispatched may spend from it.
+  // The CLOSED uplink type set. Checked BEFORE the seq gate commits, so a message
+  // the parent will drop anyway cannot first consume a sequence number. The gate
+  // is a scarce, one-way resource: nothing that is not going to be dispatched may
+  // spend from it.
   function isKnownUplinkType(type) {
     return type === MSG.resize || type === MSG.focus ||
       type === MSG.a11y || type === MSG.applyIntent;
@@ -693,31 +949,64 @@
     return true;
   }
 
-  // §4: build the ONE CONTEXT message — mint the correlationId, echo the frame
-  // nonce, seq=0. EVERY FIELD IS A PUBLIC SELECTOR, NOT AN ASSERTION and NOT A
-  // CREDENTIAL: it names which assistant handle, which instance and which node is
-  // on screen. The Cinatra server re-derives the authoritative site, org, origin,
-  // agent and canonical instance from its own rows and denies on any mismatch, so
-  // naming something this site does not own returns a denial, not that thing.
+  // §4: build the ONE inbound CONTEXT message — mint the correlationId, echo the
+  // frame nonce, seq=0, and carry PUBLIC SELECTORS ONLY. There is no `auth` block
+  // and there is nothing to await: this shell holds no credential, so the message
+  // is composed and released synchronously in the same task as the READY that
+  // triggered it.
   //
-  // There is no `auth` block, and there is no field a credential could occupy:
-  // the schema on the other side is strict, so an added one would be rejected
-  // rather than ignored. The optional `site` selector is omitted — this module
-  // holds no public connect-site handle, and a disambiguator that is not needed
-  // must not be invented.
-  function buildContext(nonce) {
+  // EVERY FIELD IS A SELECTOR, NOT AN ASSERTION. `site.siteId`, `cms.instanceId`
+  // and `session.assistant` name things the INSTANCE already knows about; it
+  // re-derives the authoritative site, org, origin, agent and canonical instance
+  // from its own rows and denies on any mismatch. `site.siteId` is the connect-site
+  // handle issued at Connect — a public id whose paired `cnx_` credential stays on
+  // the CMS server and never enters the browser. It is OMITTED when this site has
+  // none (a disambiguator that is not needed must not be invented, and an empty
+  // string would fail the frame's strict schema and take the session down over a
+  // field the frame does not need).
+  //
+  // The page URL is deliberately NOT sent: the protocol allows an optional
+  // `cms.href` display selector, and the frame does not need one to name the
+  // resource.
+  //
+  // THE NONCE IS RECORDED BEFORE THE COMPOSE CAN REFUSE, and that order is
+  // deliberate; the alternative is considered and rejected below.
+  // Mutating only after a successful compose would leave `frameNonce` holding
+  // whatever it held before — null on the first document and null again after an
+  // epoch reset — while the latch is already set, so the refused document's own
+  // retry (a replay of the very nonce just refused) would no longer look like a
+  // replay, would fall through to the epoch branch, and would spend an epoch every
+  // time. Recording it first makes a replay free and leaves
+  // only a genuinely new nonce costing an epoch. On refusal the state is: latched,
+  // nonce recorded, a fresh correlationId minted that NEVER LEFT THE PARENT (so no
+  // uplink can satisfy the correlation binding), no outbound seq consumed, and the
+  // frame left in its own neutral pre-context state.
+  function buildEmbedContext(nonce) {
     frameNonce = nonce;
     correlationId = mintCorrelationId();
     var ctx = buildContentContext();
     // The cms block is built ONLY from the normalized context — never re-read
     // from raw config, which would reintroduce the untyped value the
-    // normalization just removed (codex round 0, finding 5).
-    var cms = { instanceId: ctx.instanceId };
-    // CMS seam: map Drupal's node-native context onto the shared §12 `cms` shape.
-    if (ctx.nodeId) { cms.resourceId = ctx.nodeId; }
-    if (ctx.nodeBundle) { cms.resourceType = ctx.nodeBundle; }
-    if (ctx.nodeStatus) { cms.status = ctx.nodeStatus; }
-    return {
+    // normalization just removed.
+    //
+    // THE REQUIRED SELECTOR IS RE-BOUNDED HERE, not merely at mount. The mount
+    // bound-checked the value it FRAMED; this reads the CMS
+    // config again, one task later, and a page script that changed it in between
+    // would put an empty or over-long id into a `.strict()` envelope — which the
+    // frame rejects WHOLE, stranding the session in "waiting for host" with
+    // nothing to say why. That is precisely the failure the bound exists to
+    // prevent, so an unbounded required id means NO MESSAGE rather than a message
+    // that cannot be accepted.
+    var instanceId = boundedSelector(ctx.instanceId, SELECTOR_MAX.instanceId);
+    if (!instanceId) { return null; }
+    var cms = { instanceId: instanceId };
+    var resourceId = boundedSelector(ctx.resourceId, SELECTOR_MAX.resourceId);
+    var resourceType = boundedSelector(ctx.resourceType, SELECTOR_MAX.resourceType);
+    var status = boundedSelector(ctx.status, SELECTOR_MAX.status);
+    if (resourceId) { cms.resourceId = resourceId; }
+    if (resourceType) { cms.resourceType = resourceType; }
+    if (status) { cms.status = status; }
+    var message = {
       type: MSG.context,
       protocolVersion: EMBED_PROTOCOL_VERSION,
       correlationId: correlationId,
@@ -725,10 +1014,13 @@
       seq: nextOutboundSeq(),              // parent->iframe counter starts at 0
       session: {
         threadId: correlationId,           // one thread per framed session
-        assistant: EMBED_ASSISTANT,        // == ?assistant (a public handle)
+        assistant: EMBED_ASSISTANT,        // == ?assistant (a selector, not authority)
       },
       cms: cms,
     };
+    var siteId = boundedSelector(ctx.siteId, SELECTOR_MAX.siteId);
+    if (siteId) { message.site = { siteId: siteId }; }
+    return message;
   }
 
   // §5/§B9 resize: CLAMP the reported content height to the panel cap (clamp,
@@ -760,41 +1052,80 @@
     a11yLive.textContent = liveRegion;
   }
 
+  // ---------------------------------------------------------------------------
+  // CMS SEAM 4 of 4 — the EDIT-PERMISSION ORACLE and the IN-PLACE REFRESH SINK.
+  //
   // Best-effort re-check that the current user may edit the canonical resource
-  // (§6f step 1). CMS seam: Drupal exposes NO synchronous client-side capability
-  // oracle equivalent to WordPress core-data `canUser`. The field WRITE was
-  // already performed AND permission-checked SERVER-SIDE by the CMS MCP
-  // integration (#1214); this client gate only guards an in-place refresh of the
-  // user's OWN already-open node edit form. Mirroring the WP rule (deny ONLY on an
-  // explicit `false`, defer to the server on anything unresolved), we honor an
-  // explicit per-node deny if the module ever advertises one
-  // (config.currentUserMayEditNode === false) and otherwise defer to the server-
-  // side authorization — an absent/unresolved oracle is NOT a hard client deny.
+  // (§6f step 1), then a refresh of the CMS's OWN view of it. The RULE is shared
+  // and CMS-independent: deny ONLY on an explicit `false`, and defer to the
+  // SERVER-side authorization on anything unresolved — the field WRITE was already
+  // performed AND permission-checked server-side by the CMS MCP integration
+  // (#1214), and this client gate only guards a refresh of the person's OWN
+  // already-open resource. Treating "unknown" as a deny would make the
+  // (non-mutating) refresh never fire on first use.
+  //
+  // Only the ORACLE differs. WordPress has a synchronous-ish client capability
+  // oracle in core-data `canUser`; Drupal exposes no equivalent, so an explicit
+  // per-node deny may be advertised through the settings broker instead.
+  // ---------------------------------------------------------------------------
   function currentUserMayEdit(ctx) {
     try {
+      if (CMS === 'wordpress') {
+        if (window.wp && window.wp.data && window.wp.data.select && ctx.resourceType && ctx.resourceId) {
+          var coreSel = window.wp.data.select('core');
+          if (coreSel && typeof coreSel.canUser === 'function') {
+            // WordPress core-data `canUser` object-entity form (kind/name/id) — the
+            // 4-positional `('update','postType',type,id)` form is NOT a valid
+            // signature (it would silently return undefined, making the deny branch
+            // dead). `canUser` is a TRI-STATE that resolves ASYNCHRONOUSLY: the
+            // first synchronous read is `undefined` while it resolves. So deny ONLY
+            // on an explicit `false`; on `true` OR still-resolving `undefined`,
+            // defer to the SERVER-side write authorization.
+            var can = coreSel.canUser('update', {
+              kind: 'postType',
+              name: ctx.resourceType,
+              id: ctx.resourceId,
+            });
+            if (can === false) return false;
+          }
+        }
+        return true;
+      }
       if (config.currentUserMayEditNode === false) { return false; }
     } catch (_) {}
     return true;
   }
 
-  // In-place draft refresh (#1214: NO widget-constructed JSON:API egress and NO
-  // page reload). CMS seam: Drupal node edit forms are server-rendered, so there
-  // is no client entity store to invalidate the way the WordPress copy calls
-  // wp.data invalidateResolution. Instead we dispatch a same-document CustomEvent
-  // that the module's (optional) edit-form integration listens for to re-render
-  // the applied field in place; if nothing is listening it is a harmless no-op.
-  // The event carries ONLY the non-secret resource disambiguators — never a
-  // token, never content — and never triggers a reload or a network request. The
-  // field WRITE itself already happened server-side via the CMS MCP integration.
+  // In-place draft refresh — NO widget-constructed content-API egress and NO page
+  // reload (#1214: the field-apply already happened server-side through the CMS
+  // MCP integration; this only refreshes the editor's view of the canonical
+  // resource so the applied draft shows).
+  //
+  // WordPress has a client entity store, so the refresh is an invalidation in the
+  // CMS's OWN data layer. Drupal node edit forms are server-rendered and have no
+  // such store, so the refresh is a same-document CustomEvent the module's
+  // (optional) edit-form integration listens for; if nothing is listening it is a
+  // harmless no-op. The event carries ONLY the non-secret resource disambiguators
+  // — never a token, never content — and never triggers a reload or a request.
   function refreshCurrentDraft(ctx) {
     try {
+      if (CMS === 'wordpress') {
+        if (window.wp && window.wp.data && window.wp.data.dispatch && ctx.resourceType && ctx.resourceId) {
+          var coreDispatch = window.wp.data.dispatch('core');
+          if (coreDispatch && typeof coreDispatch.invalidateResolution === 'function') {
+            coreDispatch.invalidateResolution('getEntityRecord', ['postType', ctx.resourceType, ctx.resourceId]);
+            return true;
+          }
+        }
+        return false;
+      }
       if (typeof CustomEvent === 'function' &&
           document && typeof document.dispatchEvent === 'function') {
         document.dispatchEvent(new CustomEvent('cinatra:content-applied', {
           detail: {
             instanceId:   ctx.instanceId || '',
-            resourceId:   ctx.nodeId || '',
-            resourceType: ctx.nodeBundle || '',
+            resourceId:   ctx.resourceId || '',
+            resourceType: ctx.resourceType || '',
           },
         }));
         return true;
@@ -807,7 +1138,7 @@
   // proposalId/changeSetId) + a fixed viewType. NO content, NO tool call. The
   // parent (1) re-checks edit permission, (2) uses its OWN canonical resource,
   // (3) the correlationId binding already proves the signal belongs to this
-  // framed thread/instance, (4) dedups against a bounded LRU, THEN does the
+  // established thread/instance, (4) dedups against a bounded LRU, THEN does the
   // in-place draft refresh. The selector id is used ONLY as the LRU key — never as
   // a fetch selector, never egressed (#1214).
   function handleApplyIntent(d) {
@@ -838,10 +1169,13 @@
     a11yLive.textContent = 'The assistant applied changes to this content.';
   }
 
-  // Dispatch a validated post-context uplink to its handler (the closed set).
-  // Shared by the WINDOW path (onBridgeMessage) and the PORT path
-  // (onPortMessage) so both transports service the identical uplink set.
+  // Post-context uplink dispatch (§5): require an established correlationId + a
+  // monotonic seq for the iframe->parent direction, then route the closed set.
+  // Shared by BOTH transports so a port-delivered and a window-delivered uplink
+  // pass the identical envelope gate and dispatch.
   function dispatchUplink(d) {
+    if (!contextSent) return;
+    if (!validUplinkEnvelope(d)) return;
     if (d.type === MSG.resize) { handleResize(d.height); return; }
     if (d.type === MSG.focus) { handleFocus(d.focus); return; }
     if (d.type === MSG.a11y) { handleA11y(d.liveRegion, d.politeness); return; }
@@ -849,24 +1183,45 @@
     // Unknown type: dropped (the set is closed).
   }
 
-  // §12b PORT uplink path — in PORT mode steady-state iframe->parent uplinks ride
-  // the retained entangled port. No origin/source check is needed: the port was
-  // transferred ONLY to the Cinatra origin by the origin-targeted READY, so its
-  // provenance IS the origin gate (a NARROWING, never a loosening), and it is
-  // document-bound. Envelope validation (correlationId binding + monotonic seq)
-  // is identical to the window path.
+  // THE GUARD RUNS INBOUND TOO (cinatra#2674).
+  //
+  // "No credential crosses this boundary" is a claim about BOTH directions, and
+  // the inbound half is not hypothetical: the FRAME is the one party that holds a
+  // `cwu_`/`cit_`, and an uplink is a place a bug could put one — an
+  // `a11y.liveRegion` string, say, which this parent writes straight into the CMS
+  // page's live region. That would leave a person's bearer sitting in the CMS DOM,
+  // which is the exact possession this slice exists to remove.
+  //
+  // So every inbound envelope is scanned before any field of it is read, on both
+  // transports, and BEFORE the seq gate can be spent on it. A match is DROPPED
+  // SILENTLY. Silently on purpose: a warning that named or echoed the offending
+  // message would copy the credential into a console and from there into a support
+  // paste, turning a containment control into a disclosure.
+  function inboundIsClean(d) {
+    return !containsCredentialShapedValue(d);
+  }
+
+  // §12b PORT path — steady-state uplinks over the entangled port. NO origin/
+  // source recheck: the port was transferred to us on the origin+source-gated
+  // READY and is document-bound (a same-origin replacement frame is a fresh realm
+  // that never inherits the entangled endpoint), so its provenance IS the origin
+  // guarantee — a NARROWING, not a loosening. READY never arrives on the port (it
+  // is the window message that CARRIED this port), so only uplinks are handled.
   function onPortMessage(event) {
     if (!contextSent || activeTransport !== 'port') return;
     var d = event.data;
+    // BEFORE the shape check, not after it. "Before any field is read" has to be
+    // literal or it is not a boundary: reading `d.type` first is still a read of
+    // the envelope, and the guard's whole job is to be the first thing that
+    // touches it.
+    if (!inboundIsClean(d)) return;
     if (!d || typeof d !== 'object' || typeof d.type !== 'string') return;
-    if (!validUplinkEnvelope(d)) return;
     dispatchUplink(d);
   }
 
-  // The inbound WINDOW bridge listener — origin + source-window bound. It carries
-  // the pre-context READY (which transfers the §12b port) and, in WINDOW mode
-  // only, the post-context uplinks. Attached when the iframe mounts, detached on
-  // teardown.
+  // The single inbound WINDOW bridge listener — origin + source-window bound.
+  // Attached when the iframe mounts. It carries the READY (which transfers the
+  // §12b port) and, in WINDOW mode only, the post-context uplinks.
   function onBridgeMessage(event) {
     // (§6a) strict origin, BEFORE schema.
     if (event.origin !== cinatraOrigin) return;
@@ -875,13 +1230,19 @@
     if (!frameWindow || event.source !== frameWindow) return;
 
     var d = event.data;
+    // Inbound credential guard, before ANY field is read — including READY's, so
+    // a nonce carrying a bearer shape never reaches the echo that would put it
+    // back on the wire. It runs BEFORE the shape check for the same reason: a
+    // `typeof d.type` test is itself a read of the envelope, and "before any
+    // field is read" has to be literal to be a boundary.
+    if (!inboundIsClean(d)) return;
     if (!d || typeof d !== 'object' || typeof d.type !== 'string') return;
 
     if (d.type === MSG.ready) {
-      // §4 READY → CONTEXT. The release stays synchronous with the READY task —
+      // §4 READY → CONTEXT, released synchronously in this same message task —
       // not because a credential could be misdelivered any more (there is none),
-      // but because a message with no await in front of it has no interleaving
-      // to reason about at all.
+      // but because a message with no await in front of it has no interleaving to
+      // reason about at all.
       if (!isValidReady(d)) return;
       // A READY on an already-served frame that REPLAYS the nonce we answered is
       // ignored outright — that is the property the single-context latch was
@@ -894,77 +1255,99 @@
       // stripping the transferred port. NO port without `requirePort` -> WINDOW
       // MODE: the origin-pinned window transport.
       //
-      // The protocol transfers EXACTLY ONE endpoint. A READY carrying more is
-      // not a frame speaking this protocol, so it is refused rather than
-      // silently reduced to its first port (codex round 0, finding 6).
+      // The protocol transfers EXACTLY ONE endpoint. A READY carrying more is not
+      // a frame speaking this protocol, so it is refused rather than silently
+      // reduced to its first port.
       var ports = event.ports;
       if (ports && ports.length > 1) return;
       var transferredPort = (ports && ports.length === 1) ? ports[0] : null;
       if (!transferredPort && requirePort) return;
+      // THE EPOCH COUNT IS BOUNDED. The epoch reset below
+      // treats a NEW nonce as a replacement document, and the parent cannot
+      // verify that claim: an iframe that simply keeps minting fresh nonces
+      // without ever navigating would be handed a fresh context every time,
+      // turning the reload-recovery path into unbounded parent work driven by the
+      // frame. The recovery a real reload needs is a handful of epochs over a page
+      // lifetime, so a generous ceiling closes the manufactured-reload case at a
+      // cost a genuine frame is very unlikely to meet. STATED PRECISELY, because
+      // "costs a genuine frame nothing" would be too strong: the ceiling counts
+      // REAL replacement documents too, so a frame that legitimately reloaded 64
+      // times on one long-lived CMS page would find the 65th ignored. That is a
+      // bounded availability trade, and the remedy is the page reload that was the
+      // only remedy before the epoch reset existed at all. A same-nonce replay
+      // costs nothing — it is refused before it reaches here.
+      if (contextSent && bridgeEpochs >= MAX_BRIDGE_EPOCHS) return;
       // EVERY CHECK ON THIS READY HAS NOW PASSED, so it is safe to retire the
       // previous epoch. The order matters and is the whole point: a malformed
-      // READY (bad version, bad nonce, two ports, no port under requirePort)
-      // must NOT be able to tear down an established session on its way to being
-      // refused — that would turn a rejected message into a denial of service.
-      // `isValidReady` has already proven `seq` is a non-negative integer, and
-      // the reset clears the gate, so the acceptance below cannot fail after it.
+      // READY (bad version, bad nonce, bad seq, two ports, no port under
+      // requirePort) must NOT be able to tear down an established session on its
+      // way to being refused — that would turn a rejected message into a denial
+      // of service. `isValidReady` has already proven `seq` is a non-negative
+      // integer, and the reset clears the gate, so the acceptance below cannot
+      // fail after it.
       if (contextSent) { resetBridgeEpoch(); }
       // Seed the iframe->parent monotonic gate with READY's seq (§6c); post-
       // context uplinks must strictly increase from it (whichever transport they
       // then ride).
       if (!acceptInboundSeq(d.seq)) return;
-      // Bind the chosen transport, then set the single-context latch BEFORE
-      // posting so a re-entrant delivery cannot double-send. In WINDOW mode
-      // event.source === frameWindow was already verified above, so the post
-      // targets the exact document that sent READY.
+      // Bind the chosen transport. In PORT mode the context rides ONLY the
+      // retained port; in WINDOW mode event.source === frameWindow was verified
+      // above, so it posts to the exact document that sent READY.
       if (transferredPort) {
         activePort = transferredPort;
         activeTransport = 'port';
         activePort.addEventListener('message', onPortMessage);
         activePort.start();
       } else {
-        activeTransport = 'legacy';
+        activeTransport = 'window';
       }
+      // Set the one-context latch BEFORE posting so a re-entrant delivery cannot
+      // double-send.
+      //
+      // A REFUSED SEND IS NOT RETRIED, and that is the point. `sendToFrame`
+      // refuses a payload carrying a credential-shaped value; retrying would
+      // recompose the same selectors from the same page and refuse again, forever.
+      // The latch therefore STAYS SET on a refusal: exactly one attempt per frame
+      // DOCUMENT, no storm. The frame keeps drawing its own neutral pre-context
+      // state, and the person is never shown a CMS-side error about it. A frame
+      // that RELOADS is a different document and gets its own single attempt
+      // through the epoch reset above — a new document is not a retry.
       contextSent = true;
-      // A refusal (a credential-shaped value anywhere in the composed message)
-      // sends NOTHING and stays latched: retrying would compose the same refused
-      // message. The frame simply keeps waiting for a host that never speaks —
-      // quiet and fail-closed, with nothing on the wire.
-      sendContext(buildContext(d.nonce));
+      if (!sendToFrame(buildEmbedContext(d.nonce))) {
+        console.warn('[cinatra] the assistant frame was not given its context; reload the page to try again');
+      }
       return;
     }
 
-    // All other WINDOW messages are WINDOW-mode post-context uplinks. In PORT
-    // mode the uplinks ride the retained port (onPortMessage), never the window —
-    // so a stray/spoofed window uplink is dropped here WITHOUT touching the seq
-    // gate. Each window uplink still requires the established correlationId + a
-    // monotonic seq for the iframe->parent direction.
-    if (!contextSent || activeTransport !== 'legacy') return;
-    if (!validUplinkEnvelope(d)) return;
+    // Post-context uplinks. In PORT mode they ride the entangled port
+    // (onPortMessage); a window-delivered uplink is IGNORED so the transport
+    // cannot be split/downgraded afterwards — and it is dropped here WITHOUT
+    // touching the seq gate.
+    if (!contextSent || activeTransport !== 'window') return;
     dispatchUplink(d);
   }
 
   // TEST-ONLY render-parity seam carrier (cinatra#1998 (c), epic #1216 S6). The
-  // Cinatra render-parity E2E frames THIS module's `/embed/assistant` iframe and
+  // Cinatra render-parity E2E frames THIS widget's `/embed/assistant` iframe and
   // needs the deterministic corpus-render seam params (`parityThread` /
-  // `parityTheme`, cinatra#1998 (b)) to ride the iframe src the module builds —
-  // the harness cannot reach into the module's fixed src otherwise. This reads a
-  // NAMESPACED signal the test stages on the host admin page — a
-  // `window.__cinatraParitySeam` global (STORAGE-FREE: the widget persists
-  // nothing — the iframe owns storage — so this trips no web-storage invariant),
-  // with a same-named query param as a fallback. PRODUCTION never stages it, so
-  // the returned suffix is '' and the src is BYTE-IDENTICAL to before. It is
-  // doubly inert in prod: even a forged signal is a no-op because the Cinatra
-  // server IGNORES `parityThread` unless its server-only `EMBED_PARITY_SEAM` gate
-  // is on (off in prod) — the seam is server-gated, so this can NEVER inject
-  // content or bypass auth in production. Carries NO token (only the two
-  // non-secret render-parity disambiguators), exactly like instanceId/assistant.
+  // `parityTheme`, cinatra#1998 (b)) to ride the iframe src the CMS builds — the
+  // harness cannot reach into the fixed src otherwise. This reads a NAMESPACED
+  // signal the test stages on the host admin page — a `window.__cinatraParitySeam`
+  // global (STORAGE-FREE: the widget persists nothing — the iframe owns storage —
+  // so this trips no web-storage invariant), with a same-named query param as a
+  // fallback. PRODUCTION never stages it, so nothing is appended and the src is
+  // BYTE-IDENTICAL to before. It is doubly inert in prod: even a forged signal is
+  // a no-op because the Cinatra server IGNORES `parityThread` unless its
+  // server-only `EMBED_PARITY_SEAM` gate is on (off in prod) — the seam is
+  // server-gated, so this can NEVER inject content or bypass auth in production.
+  // Carries NO credential (only the two non-secret render-parity disambiguators),
+  // exactly like instanceId/assistant.
   //
-  // Returns the RAW values, not an encoded suffix (codex round 1): percent-
-  // encoding a value destroys the token boundary the credential guard looks for
-  // (`"x cnx_…"` becomes `"x%20cnx_…"`, whose preceding character is a digit),
-  // so every component must be scanned BEFORE it is encoded. The caller composes
-  // and encodes; this function only reads.
+  // Returns the RAW values, not an encoded suffix: percent-encoding a value
+  // destroys the token boundary the credential guard looks for (`"x cnx_…"`
+  // becomes `"x%20cnx_…"`, whose preceding character is a digit), so every
+  // component must be scanned BEFORE it is encoded. The caller composes and
+  // encodes; this function only reads.
   function embedParitySeamValues() {
     var seam = { thread: '', theme: '' };
     try {
@@ -992,64 +1375,88 @@
 
   // Build the sandboxed embed iframe and attach the bridge listener. The src is
   // the Cinatra-served `/embed/assistant` route carrying only the NON-SECRET
-  // disambiguators (instanceId, assistant). No credential is ever in the URL, and
-  // since protocol 2 there is no credential in this page to put there.
+  // disambiguators (instanceId, assistant). There is no credential to keep out of
+  // this URL any more — this shell holds none — and none is put there.
   //
-  // THE SANDBOX GRANT, AND WHY THE POPUP FLAGS ARE PART OF THE PROTOCOL.
-  // `allow-scripts allow-same-origin` is what the frame needs to be a Cinatra
-  // document at all. The two popup flags are what the FRAME-OWNED SIGN-IN needs,
-  // and they are not optional: the ceremony deliberately runs in a TOP-LEVEL
-  // Cinatra window, because that is the one place a Cinatra session cookie is
-  // first-party and therefore works identically in browsers that block
-  // third-party cookies. A sandboxed frame cannot open a window at all without
-  // `allow-popups`; and a window opened WITHOUT `allow-popups-to-escape-sandbox`
-  // inherits this frame's restrictions, so the hosted sign-in could neither
-  // submit its form nor follow its own redirect back. Without both flags the
-  // sign-in cannot complete and the assistant is unusable.
+  // THE SANDBOX GREW BY EXACTLY TWO TOKENS AT PROTOCOL 2, AND IT HAD TO
+  // (cinatra#2674). The sign-in is now the FRAME's: it calls `window.open()` on
+  // the hosted sign-in URL. A sandboxed frame without `allow-popups` cannot open a
+  // window at all — `window.open` returns null, the frame reports `popup_blocked`,
+  // and NOBODY CAN EVER SIGN IN. And a popup that merely inherits this sandbox is
+  // equally dead: it would carry no `allow-forms` and no top-level navigation, so
+  // the hosted sign-in could neither take input nor complete its redirect. Hence
+  // BOTH tokens:
+  //   * allow-popups                     — the frame may open the window;
+  //   * allow-popups-to-escape-sandbox   — that window is an ORDINARY top-level
+  //     Cinatra document, which is the entire point: its session cookie is
+  //     FIRST-PARTY there, so the ceremony works in browsers that block
+  //     third-party cookies outright.
   //
-  // The escape applies to the OPENED WINDOW, never to the frame. The frame still
-  // has no top-navigation of this page, no forms, no modals, no downloads and no
-  // pointer lock; what it gained is the ability to open a normal Cinatra window,
-  // which is exactly the capability the protocol moved here from this shell.
+  // WHAT THIS DOES NOT GRANT, and why the widening is narrow. The frame itself
+  // still gets NO top-navigation, NO forms, NO modals, NO downloads and NO
+  // pointer-lock. The escape applies to the window the frame opens, not to the
+  // frame. And the marginal capability is small: this document is Cinatra's own,
+  // served from the configured instance origin, and it ALREADY holds
+  // `allow-same-origin` + `allow-scripts` — it can already run its own code
+  // against its own origin. What it gains is the ability to open a top-level
+  // window, which browsers render with a visible address bar, on a user gesture.
+  // The parity gate requires these two as a SET EQUALITY, so both a silent removal
+  // (which would break sign-in) and a silent widening are red.
   function mountBridgeIframe() {
-    if (iframeEl) return;
-    // THE FRAME URL IS AN OUTBOUND PAYLOAD TOO (codex round 0, finding 2). The
-    // bridge guard covers the postMessage; it cannot cover this, because the src
-    // is composed from config and from the render-parity seam and then LEAVES
-    // THE PAGE AS AN HTTP REQUEST — where it also lands in history, in an access
-    // log and in a referrer.
+    if (iframeEl || frameRefused) return;
+    var ctx = buildContentContext();
+    // `cms.instanceId` is REQUIRED, non-empty and <= 200 UTF-16 code units in the
+    // protocol-2 schema, and it must agree with the `?instanceId` this shell puts
+    // in the frame URL. Out of range, the frame would be pointed at nothing and
+    // would reject the context on arrival, so refuse to frame it at all — once —
+    // and say so in one actionable line rather than framing a surface that cannot
+    // work. The launcher chrome stays; the site owner fixes the setting and
+    // reloads.
+    var instanceId = boundedSelector(ctx.instanceId, SELECTOR_MAX.instanceId);
+    if (!instanceId) {
+      frameRefused = true;
+      console.warn('[cinatra] the agent instance id is missing or out of range; the assistant was not started');
+      return;
+    }
+    // THE FRAME URL IS AN OUTBOUND PAYLOAD TOO. The bridge guard covers the
+    // postMessage; it cannot cover this, because the src is composed from config
+    // and from the render-parity seam and then LEAVES THE PAGE AS AN HTTP REQUEST
+    // — where it also lands in history, in an access log and in a referrer.
     //
-    // THE SCAN RUNS ON THE RAW COMPONENTS, BEFORE ENCODING (codex round 1).
-    // Scanning only the finished URL is not enough: encodeURIComponent destroys
-    // the very token boundary the guard matches on, so `"x cnx_…"` arrives as
-    // `"x%20cnx_…"` — preceded by a digit — and slips past. The composed string
-    // is scanned as well, but the raw components are the check that counts.
+    // THE SCAN RUNS ON THE RAW COMPONENTS, BEFORE ENCODING. Scanning only the
+    // finished URL is not enough: encodeURIComponent destroys the very token
+    // boundary the guard matches on, so `"x cnx_…"` arrives as `"x%20cnx_…"` —
+    // preceded by a digit — and slips past. The composed string is scanned as
+    // well, but the raw components are the check that counts.
     var seam = embedParitySeamValues();
     var rawParts = [
-      config.cinatraUrl,
-      buildContentContext().instanceId,
+      cinatraUrl,
+      instanceId,
       EMBED_ASSISTANT,
       seam.thread,
       seam.theme,
     ];
-    var src = config.cinatraUrl + '/embed/assistant' +
-      '?instanceId=' + encodeURIComponent(rawParts[1]) +
+    var src = cinatraUrl + '/embed/assistant' +
+      '?instanceId=' + encodeURIComponent(instanceId) +
       '&assistant=' + encodeURIComponent(EMBED_ASSISTANT) +
       (seam.thread ? '&parityThread=' + encodeURIComponent(seam.thread) : '') +
       (seam.thread && seam.theme ? '&parityTheme=' + encodeURIComponent(seam.theme) : '');
-    // A URL that fails either check means the frame is NOT MOUNTED at all,
-    // rather than a request going out with a bearer in the query string. The
-    // fallback chrome stays visible, which is the honest outcome: something is
+    // A URL that fails either check means the frame is NOT MOUNTED at all, rather
+    // than a request going out with a bearer in the query string. The fallback
+    // chrome stays visible, which is the honest outcome: something is
     // misconfigured badly enough that the assistant must not start.
     if (containsCredentialShapedValue(rawParts) || containsCredentialShapedValue(src)) {
+      frameRefused = true;
       console.warn('[cinatra] refusing to frame the assistant: the embed URL carries a credential-shaped value');
-      iframeEl = null;
       return;
     }
     iframeEl = document.createElement('iframe');
     iframeEl.className = 'cw-frame';
     iframeEl.setAttribute('title', 'Cinatra assistant');
-    iframeEl.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox');
+    iframeEl.setAttribute(
+      'sandbox',
+      'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox'
+    );
     iframeEl.setAttribute('referrerpolicy', 'no-referrer');
     iframeEl.setAttribute('allow', '');
     // Keep the captured frame window current across loads (source-window binding +
@@ -1072,24 +1479,24 @@
   // session is now its own: it re-authenticates in place, and the parent has no
   // authentication event to react to. One mounted frame per page, for the life of
   // the page.
-
-  // …but the frame's DOCUMENT can still be replaced under that one element — the
-  // frame reloads itself, and the PR that defines protocol 2 says a reload runs
-  // the ceremony again. The replacement document announces itself with a FRESH
-  // READY carrying a FRESH nonce, and under a plain single-context latch the
-  // parent would ignore it forever: the widget would sit at "waiting for the
-  // host" until the whole page was reloaded, and the old entangled port would
-  // leak (codex round 0, finding 4).
   //
-  // So a READY whose nonce differs from the one already served starts a NEW
-  // EPOCH: the previous port is closed, every per-document binding is cleared,
-  // and the new document gets its own correlationId and context message. A
-  // REPLAY of the same nonce is still ignored — that is the property the latch
-  // was really protecting, and it is the one an attacker could try. Re-serving a
-  // context message is safe in a way re-serving a bootstrap never was: it
-  // carries no credential, and the frame burns its own single-use nonce gate, so
-  // a second context on the SAME document is refused at the far end anyway.
+  // …but the frame's DOCUMENT can still be replaced under that one element — the
+  // frame reloads itself, and at protocol 2 a reload runs the ceremony again. The
+  // replacement document announces itself with a FRESH READY carrying a FRESH
+  // nonce, and under a plain single-context latch the parent would ignore it
+  // forever: the widget would sit at "waiting for the host" until the whole page
+  // was reloaded, and the old entangled port would leak.
+  //
+  // So a READY whose nonce differs from the one already served starts a NEW EPOCH:
+  // the previous port is closed, every per-document binding is cleared, and the
+  // new document gets its own correlationId and context message. A REPLAY of the
+  // same nonce is still ignored — that is the property the latch was really
+  // protecting, and it is the one an attacker could try. Re-serving a context
+  // message is safe in a way re-serving a bootstrap never was: it carries no
+  // credential, and the frame burns its own single-use nonce gate, so a second
+  // context on the SAME document is refused at the far end anyway.
   function resetBridgeEpoch() {
+    bridgeEpochs++;
     if (activePort) {
       try { activePort.removeEventListener('message', onPortMessage); } catch (_) {}
       try { activePort.close(); } catch (_) {}
@@ -1106,17 +1513,17 @@
 
   // ---------------------------------------------------------------------------
   // Open / collapse — circle↔widget swap
+  //
+  // The frame is mounted LAZILY, on the first open. That keeps a third-party
+  // iframe off every admin page load while still tying the mount to a plain user
+  // gesture; from then on the frame persists across open/collapse so the
+  // conversation (and the person's frame-held session) survives closing the panel.
   // ---------------------------------------------------------------------------
   function openWidget() {
     isOpen = true;
     circle.style.zIndex = '9999990';
     setWidgetSize();
     cwWidget.style.display = 'block';
-    // Mount the frame on the FIRST open and never again for this page: framing an
-    // authenticated Cinatra surface on every node page a permitted editor merely
-    // looks at would be a request nobody asked for. The frame handles everything
-    // after that — including asking the person to sign in, which is its business
-    // now and not this shell's.
     mountBridgeIframe();
   }
 
@@ -1135,11 +1542,13 @@
   });
   closeBtn.addEventListener('click', function() { collapseWidget(); });
 
-  // NOTE: there is no auth-popup listener here any more (cinatra#2674). The
-  // hosted sign-in posts its result to `window.location.origin` — the CINATRA
-  // origin, inside the frame — so this page could not receive it whatever it
-  // listened for. That one line in the hosted return step is the load-bearing
-  // control, and it is the browser's, not ours.
+  // NOTE (cinatra#2674): there is deliberately NO second window 'message'
+  // listener here. Protocol 1 kept one for the hosted sign-in popup, because the
+  // popup posted the authorization code back to THIS page and this page redeemed
+  // it. The frame now opens that popup itself and the return step posts to
+  // `window.location.origin` — the frame's own origin — so a CMS page listening
+  // for it receives nothing, whatever it claims. The only inbound listener this
+  // shell installs is `onBridgeMessage`, bound to the frame.
 
   document.addEventListener('click', function(e) {
     if (!isOpen) return;
@@ -1205,12 +1614,12 @@
   } // end mountWidget()
 
   // ---------------------------------------------------------------------------
-  // Boot: mount UNCONDITIONALLY. Both handshakes this shell used to run are gone
-  // — the AG-UI capability negotiation moved into the /embed/assistant iframe,
-  // and so did the sign-in (cinatra#2674) — so there is nothing left to gate the
-  // mount on. The always-visible fallback button remains until
-  // data-cinatra-mounted is set at the end of synchronous mount construction, and
-  // the frame itself is not mounted until the panel is first opened.
+  // Boot: mount UNCONDITIONALLY. Both handshakes this shell used to run are gone —
+  // the AG-UI capability negotiation moved into the /embed/assistant iframe, and
+  // so did the sign-in (cinatra#2674) — so there is nothing left to gate the mount
+  // on. The always-visible fallback button remains until data-cinatra-mounted is
+  // set at the end of synchronous mount construction, and the frame itself is not
+  // mounted until the panel is first opened.
   // ---------------------------------------------------------------------------
   mountWidget();
 
