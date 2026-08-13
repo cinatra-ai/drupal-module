@@ -13,8 +13,10 @@ cinatra.settings:
       # Long-lived integration key (credential). Drupal has no native "secret"
       # scalar type, so this is documented as a credential here and rendered as
       # a password-style field in SettingsForm. It is held server-side only and
-      # is never exposed to the browser — the browser receives only short-lived
-      # tokens minted by the cinatra.token broker route.
+      # is never exposed to the browser. Since the widget bootstrap moved to
+      # protocol 2 (cinatra#2674) it is not exchanged for a browser token
+      # either: this key serves the connect and node-publish paths only, and the
+      # assistant's per-user sign-in happens inside the Cinatra iframe.
       type: string
       label: 'Cinatra API key (credential — held server-side, never sent to the browser)'
     webhook_secret:

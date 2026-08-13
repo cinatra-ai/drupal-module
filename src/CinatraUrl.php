@@ -8,7 +8,7 @@ namespace Drupal\cinatra;
  * Shared validation + normalization for the configured Cinatra origin.
  *
  * The Cinatra URL is the origin the module talks to server-to-server (the
- * TokenController broker, the Connect handshake) and that the browser fetches
+ * Connect handshake, the node-publish webhook) and that the browser fetches
  * the local widget's runtime from. An attacker who can set it to an arbitrary
  * scheme/host turns the module into an SSRF / credential-exfiltration vector
  * (the long-lived API key is sent as a Bearer header to {URL}/api/...). So the

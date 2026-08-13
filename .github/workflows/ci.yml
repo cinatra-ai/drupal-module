@@ -43,6 +43,15 @@ jobs:
         # every pull request; the route-level integration lives in
         # tests/src/Functional/PreviewRouteTest.php.
         run: php tests/test-preview-auth.php
+      - name: Widget credential-surface contract (cinatra#2674)
+        # Standalone harness (no Drupal install): the PHP side of widget bootstrap
+        # protocol 2 is an ABSENCE — retired broker routes and controllers, no
+        # broker endpoint or CSRF token in drupalSettings, no credential-shaped
+        # value in shipped source. The module's Kernel/Functional tests assert the
+        # same properties against a real Drupal, but neither CI runs them today
+        # (SKIP_PHPUNIT there, no PHPUnit job here), and an absence that nothing
+        # executes is not a gate. This is what actually holds the line per PR.
+        run: php tests/test-widget-credential-surface.php
 
   js-tests:
     runs-on: ubuntu-latest
@@ -64,6 +73,23 @@ jobs:
         # Identical to the wordpress-plugin gate (cross-repo lockstep). See
         # cinatra docs/widget-source-of-truth.md.
         run: node tools/widget-parity-check.mjs
+      - name: Lexer probes for the parity gate's comment/regex stripper (cinatra#411)
+        # Direct unit probes of stripComments() against the counterexamples that
+        # motivated replacing the old per-line comment heuristic with a real
+        # scanner: a banned token hidden behind a regex literal, a comment inside
+        # a template expression, and regex-vs-division disambiguation after
+        # `return` / a control-condition `)` / a keyword-named member. Reads the
+        # function straight out of tools/widget-parity-check.mjs, so a change to
+        # the real stripper is probed as written, not as remembered. Byte-
+        # identical to the sibling repo's copy (cross-repo lockstep).
+        run: node tools/lexer-probe.mjs
+      - name: Mutation coverage of the parity gate's invariants (cinatra#411)
+        # Negative controls: 37 mutations, each removing exactly one protection
+        # from the canonical vendored widget, must turn the gate above RED. An
+        # assertion that stays green under its own mutation is hollow — this is
+        # what keeps the gate itself honest as the widget evolves. Byte-identical
+        # to the sibling repo's copy (cross-repo lockstep).
+        run: node tools/mutate-check.mjs
 
   yaml-lint:
     runs-on: ubuntu-latest

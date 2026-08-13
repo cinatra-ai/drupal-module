@@ -219,10 +219,9 @@ final class ConnectController extends ControllerBase {
     // Resolve the base this EXCHANGE reaches the instance at server-to-server
     // through the shared validated CINATRA_BASE_URL container-topology
     // override — the same resolution every other server-to-server call in
-    // this module applies (TokenController::serverBaseUrl() and
-    // PublishWebhook via ServerBase::resolve(); WidgetAuthController via its
-    // identical-contract private resolver). Without it a containerized
-    // Drupal dials the
+    // this module applies (PublishWebhook via ServerBase::resolve(); the
+    // retired widget brokers used it too, until cinatra#2674 removed them).
+    // Without it a containerized Drupal dials the
     // browser-facing origin (its own loopback) and the connect flow dies with
     // a transport error, so the webhook pair is never minted. With the env
     // unset (production) the resolver returns $base verbatim — unchanged.

@@ -32,7 +32,7 @@ final class Ssrf {
    * Development hosts that are always permitted (loopback / docker host).
    *
    * Exactly the hosts the module already treats as dev-safe: CinatraUrl's
-   * loopback set plus the TokenController container-host override allowlist.
+   * loopback set plus the ServerBase container-host override allowlist.
    * They resolve to loopback / host-gateway addresses the private-range filter
    * would otherwise block, so the supported local/container topology (a
    * cinatra_url of http://localhost:3000, http://host.docker.internal:3000,
