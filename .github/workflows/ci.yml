@@ -37,21 +37,237 @@ jobs:
       - name: Authenticated-preview auth + region-anchor contract (cinatra#2046)
         # Standalone harness (no Drupal install): the Standard-Webhooks preview
         # verification matrix, id binding, the freshness window, the owned-region
-        # vocabulary, the anchor markup, and the render-flag inertness. The
-        # drupal.org PHPUnit runner is currently skipped (see .gitlab-ci.yml
-        # SKIP_PHPUNIT), so this is what actually gates the security boundary on
-        # every pull request; the route-level integration lives in
-        # tests/src/Functional/PreviewRouteTest.php.
+        # vocabulary, the anchor markup, and the render-flag inertness. It runs
+        # in seconds with no fixture, which is why it stays even though the
+        # kernel-tests job below now boots a real Drupal. The route-level
+        # integration lives in tests/src/Functional/PreviewRouteTest.php, which
+        # nothing executes yet — the Functional layer is not wired here and is
+        # skipped on drupal.org (see .gitlab-ci.yml SKIP_PHPUNIT).
         run: php tests/test-preview-auth.php
       - name: Widget credential-surface contract (cinatra#2674)
         # Standalone harness (no Drupal install): the PHP side of widget bootstrap
         # protocol 2 is an ABSENCE — retired broker routes and controllers, no
         # broker endpoint or CSRF token in drupalSettings, no credential-shaped
-        # value in shipped source. The module's Kernel/Functional tests assert the
-        # same properties against a real Drupal, but neither CI runs them today
-        # (SKIP_PHPUNIT there, no PHPUnit job here), and an absence that nothing
-        # executes is not a gate. This is what actually holds the line per PR.
+        # value in shipped source. The module's Kernel tests assert the same
+        # properties against a real Drupal and run in kernel-tests below; this
+        # harness keeps holding the line on every PR without a fixture, and it
+        # reads the shipped source directly, which no booted-Drupal test does.
         run: php tests/test-widget-credential-surface.php
+
+  kernel-tests:
+    name: PHPUnit Kernel (Drupal ${{ matrix.core_label }}, PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The integration layer. php-tests above runs standalone harnesses that
+    # boot no Drupal at all, so everything that only exists once Drupal is
+    # booted — config schema, the compiled router, hook dispatch, the entity
+    # layer — was untested until this job existed. The module's Kernel classes
+    # were in the tree and executed by nothing: drupal.org's runner skips
+    # PHPUnit for this project layout (see .gitlab-ci.yml SKIP_PHPUNIT), and
+    # this workflow had no PHPUnit job.
+    #
+    # The suite needs a real Drupal to run inside, so the job assembles a
+    # throwaway one: drupal/core-recommended (the pinned dependency set) plus
+    # drupal/core-dev (which brings PHPUnit and Drupal's test base classes),
+    # with SQLite as the database — a Kernel test creates its own tables per
+    # test, so no database service is needed.
+    #
+    # RUNTIME, measured on a CI-parity container with a cleared Composer cache
+    # (61 Kernel tests, 180 assertions):
+    #   core 10.6.15 / PHP 8.1 — fixture 38 s, Kernel suite 31 s, Unit suite <1 s
+    #   core 11.4.5  / PHP 8.3 — Kernel suite 38 s
+    # So one matrix row costs roughly a minute and a half of runner time, and
+    # the rows run in parallel.
+    #
+    # FUNCTIONAL is deliberately not in this job. BrowserTestBase needs the
+    # fixture SERVED (a web server plus a prepared settings.php) and installs a
+    # fresh child site per test class. Two attempts at that docroot both died
+    # inside BrowserTestBase's own child-site setup — all 21 Functional tests
+    # failed before a single module assertion ran — so wiring it is its own
+    # piece of work with its own unknowns. Folding it in half-done would make
+    # this gate red for reasons that have nothing to do with the module.
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the module's declared support, explicitly. composer.json
+        # requires "drupal/core: ^10.3 || ^11 || ^12" and "php: >=8.1", and
+        # cinatra.info.yml declares core_version_requirement ^10.3 || ^11 || ^12.
+        #
+        # There is no ^12 row: Drupal 12 has no release yet, so
+        # drupal/core-recommended:^12 does not resolve and a row for it could
+        # only ever be a permanently red or permanently skipped entry. Add the
+        # row when core 12 ships; the declared support range needs no change.
+        #
+        # The floor row pins the oldest declared PHP against the oldest
+        # declared major, but NOT against 10.3 itself: Composer refuses to
+        # install a package with a known security advisory, and every 10.3.x
+        # release carries several (the branch is end-of-life). Installing an
+        # advisory-bearing core to satisfy a matrix label would be the wrong
+        # trade. "^10" resolves to the newest security-supported 10.x, which
+        # still runs on PHP 8.1, so the floor of the PHP range is covered.
+        include:
+          - core: "^10"
+            core_label: "10 latest"
+            php: "8.1"
+          - core: "^11"
+            core_label: "11 latest"
+            php: "8.3"
+          # Newest PHP any supported core runs on — catches a deprecation that
+          # only bites on the newer runtime.
+          - core: "^11"
+            core_label: "11 latest"
+            php: "8.4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ matrix.php }}
+          # Drupal core's own composer requirements, plus the SQLite driver the
+          # test database uses. gd is a hard requirement of drupal/core, so the
+          # fixture install fails without it.
+          extensions: mbstring, gd, dom, xml, simplexml, tokenizer, fileinfo, curl, pdo_sqlite, sqlite3
+          coverage: none
+          tools: composer
+
+      - name: Assemble the Drupal fixture (core-recommended + core-dev, SQLite)
+        run: |
+          set -euo pipefail
+          echo "FIXTURE=$RUNNER_TEMP/drupal-fixture" >> "$GITHUB_ENV"
+          FIXTURE="$RUNNER_TEMP/drupal-fixture"
+          mkdir -p "$FIXTURE"
+          cd "$FIXTURE"
+          # The fixture lives OUTSIDE the checkout: the module is copied into
+          # it below, and a fixture inside the workspace would copy itself.
+          #
+          # symfony/runtime is pinned to false the way the module's own
+          # composer.json pins it: it is a Composer plugin, and an unlisted
+          # plugin aborts the install outright.
+          cat > composer.json <<'JSON'
+          {
+              "name": "cinatra/kernel-test-fixture",
+              "description": "Throwaway Drupal site that exists only to run this module's PHPUnit suites.",
+              "type": "project",
+              "license": "GPL-2.0-or-later",
+              "repositories": {
+                  "drupal": { "type": "composer", "url": "https://packages.drupal.org/8" }
+              },
+              "require": {
+                  "composer/installers": "^2",
+                  "drupal/core-composer-scaffold": "${{ matrix.core }}",
+                  "drupal/core-recommended": "${{ matrix.core }}"
+              },
+              "require-dev": {
+                  "drupal/core-dev": "${{ matrix.core }}"
+              },
+              "config": {
+                  "allow-plugins": {
+                      "composer/installers": true,
+                      "drupal/core-composer-scaffold": true,
+                      "dealerdirect/phpcodesniffer-composer-installer": true,
+                      "phpstan/extension-installer": true,
+                      "php-http/discovery": true,
+                      "tbachert/spi": true,
+                      "symfony/runtime": false
+                  }
+              },
+              "extra": {
+                  "drupal-scaffold": { "locations": { "web-root": "web/" } },
+                  "installer-paths": {
+                      "web/core": ["type:drupal-core"],
+                      "web/modules/contrib/{$name}": ["type:drupal-module"],
+                      "web/themes/contrib/{$name}": ["type:drupal-theme"],
+                      "web/profiles/contrib/{$name}": ["type:drupal-profile"]
+                  }
+              }
+          }
+          JSON
+          composer install --no-interaction --no-progress --prefer-dist
+          mkdir -p web/sites/default/files web/sites/simpletest/browser_output
+          composer show drupal/core | grep -E '^versions'
+
+      - name: Place the module under test in the fixture
+        run: |
+          set -euo pipefail
+          # COPIED, not installed as a Composer path package. .gitattributes
+          # export-ignores /tests so the release tarball stays lean, and
+          # Composer's path installer honors export-ignore — requiring the
+          # module as a path package installs it WITHOUT its test directory,
+          # and the job would then run zero tests and pass. Verified: a
+          # path-repo fixture lands the module with no tests/ at all.
+          mkdir -p "$FIXTURE/web/modules/custom"
+          rsync -a --exclude '.git' "$GITHUB_WORKSPACE/" "$FIXTURE/web/modules/custom/cinatra/"
+          test -d "$FIXTURE/web/modules/custom/cinatra/tests/src/Kernel"
+
+      - name: PHPUnit — Kernel suite
+        env:
+          # Kernel tests build their own schema per test, so a file-backed
+          # SQLite database with no server is enough. The path is relative to
+          # the Drupal root (web/).
+          SIMPLETEST_DB: sqlite://localhost/sites/default/files/.ht.kernel.sqlite
+          SIMPLETEST_BASE_URL: http://localhost:8888
+          # Core's own deprecations must not turn this gate red; a real failure
+          # does. Drupal 11.3 deprecates Kernel classes that do not declare
+          # #[RunTestsInSeparateProcesses], so without this every class in the
+          # suite reports a deprecation on core 11.
+          SYMFONY_DEPRECATIONS_HELPER: weak
+        run: |
+          set -euo pipefail
+          cd "$FIXTURE"
+          export BROWSERTEST_OUTPUT_DIRECTORY="$FIXTURE/web/sites/simpletest/browser_output"
+          # ABSOLUTE paths, deliberately. Drupal 10 runs each Kernel test in a
+          # CHILD process, and the child re-reads the configuration file from a
+          # different working directory: with a relative -c every test in the
+          # suite dies with "Could not read web/core/phpunit.xml.dist".
+          php vendor/bin/phpunit -c "$FIXTURE/web/core/phpunit.xml.dist" \
+            --log-junit "$FIXTURE/kernel-junit.xml" \
+            "$FIXTURE/web/modules/custom/cinatra/tests/src/Kernel"
+
+      - name: The Kernel run executed every test class it should have
+        run: |
+          set -euo pipefail
+          # A green PHPUnit run that discovered nothing is not a gate. This
+          # compares the classes PHPUnit actually reported against the test
+          # files present in the fixture, so a placement or discovery failure
+          # is a red job instead of a silent pass.
+          #
+          # Written as `php -r`, not as an embedded script: phpcs sniffs .yml
+          # files in this repo, and a literal PHP open tag inside this workflow
+          # makes it tokenize the whole file as PHP.
+          php -r '
+          $fixture = getenv("FIXTURE");
+          $xml = simplexml_load_file($fixture . "/kernel-junit.xml");
+          $suites = $xml === FALSE ? [] : $xml->xpath("//testsuite[@file]");
+          $files = glob($fixture . "/web/modules/custom/cinatra/tests/src/Kernel/*Test.php");
+          $tests = 0;
+          $assertions = 0;
+          foreach ($suites as $suite) {
+            $tests += (int) $suite["tests"];
+            $assertions += (int) $suite["assertions"];
+          }
+          printf("Kernel suite: %d classes, %d tests, %d assertions\n", count($suites), $tests, $assertions);
+          if (count($suites) !== count($files)) {
+            fwrite(STDERR, sprintf("Executed %d test classes but %d are present.\n", count($suites), count($files)));
+            exit(1);
+          }
+          if ($tests < 1) {
+            fwrite(STDERR, "No tests executed.\n");
+            exit(1);
+          }
+          '
+
+      - name: PHPUnit — Unit suite
+        env:
+          SYMFONY_DEPRECATIONS_HELPER: weak
+        run: |
+          set -euo pipefail
+          # tests/src/Unit needs no database, but it needs PHPUnit and Drupal's
+          # test base classes — which only exist once the fixture above is
+          # assembled, which is why it runs here and not in php-tests. It was
+          # as unexecuted as the Kernel suite before this job.
+          cd "$FIXTURE"
+          php vendor/bin/phpunit -c "$FIXTURE/web/core/phpunit.xml.dist" \
+            "$FIXTURE/web/modules/custom/cinatra/tests/src/Unit"
 
   js-tests:
     runs-on: ubuntu-latest
