@@ -51,6 +51,11 @@ final class SsrfTest extends UnitTestCase {
       'IPv6 ULA' => ['https://[fd00::1]'],
       'IPv6 link-local' => ['https://[fe80::1]'],
       'IPv4-mapped IPv6 metadata' => ['https://[::ffff:169.254.169.254]'],
+      'IPv4-mapped IPv6 loopback' => ['https://[::ffff:127.0.0.1]'],
+      'IPv4-mapped IPv6 private 10/8' => ['https://[::ffff:10.0.0.5]'],
+      'IPv4-compatible IPv6 metadata' => ['https://[::169.254.169.254]'],
+      'NAT64-translated metadata' => ['https://[64:ff9b::169.254.169.254]'],
+      'local-use NAT64-translated metadata' => ['https://[64:ff9b:1::a9fe:a9fe]'],
       'non-http scheme' => ['ftp://8.8.8.8'],
       'embedded userinfo' => ['https://someuser@8.8.8.8'],
       'no host' => ['https:///api'],
@@ -107,6 +112,25 @@ final class SsrfTest extends UnitTestCase {
     $this->assertFalse(Ssrf::isPublicIp('192.168.1.1'));
     $this->assertFalse(Ssrf::isPublicIp('::1'));
     $this->assertFalse(Ssrf::isPublicIp('fe80::1'));
+    // IPv6 forms that EMBED an IPv4 address. PHP's own reserved-range table
+    // classifies these differently per version, so the guard must reject them
+    // on its own — see Ssrf::isPublicIp.
+    $this->assertFalse(Ssrf::isPublicIp('::ffff:169.254.169.254'));
+    $this->assertFalse(Ssrf::isPublicIp('::ffff:127.0.0.1'));
+    $this->assertFalse(Ssrf::isPublicIp('::ffff:10.0.0.5'));
+    $this->assertFalse(Ssrf::isPublicIp('::ffff:8.8.8.8'));
+    $this->assertFalse(Ssrf::isPublicIp('::169.254.169.254'));
+    $this->assertFalse(Ssrf::isPublicIp('64:ff9b::169.254.169.254'));
+    $this->assertFalse(Ssrf::isPublicIp('64:ff9b:1::a9fe:a9fe'));
+    // Notation is irrelevant: the match is on the packed address, so a
+    // hexadecimal and a fully expanded spelling of the same mapped address
+    // are refused exactly like the dotted-quad spelling above.
+    $this->assertFalse(Ssrf::isPublicIp('::ffff:a9fe:a9fe'));
+    $this->assertFalse(Ssrf::isPublicIp('0000:0000:0000:0000:0000:ffff:169.254.169.254'));
+    // Boundary control: addresses just OUTSIDE the NAT64 prefixes must stay
+    // public, proving neither the /96 nor the /48 comparison overruns.
+    $this->assertTrue(Ssrf::isPublicIp('64:ff9b:0:ffff::1'));
+    $this->assertTrue(Ssrf::isPublicIp('64:ff9b:2::1'));
     // Not an IP at all.
     $this->assertFalse(Ssrf::isPublicIp('not-an-ip'));
   }
