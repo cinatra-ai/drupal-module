@@ -120,13 +120,71 @@ final class Ssrf {
    * reserved (loopback 127/8 + ::1, link-local 169.254/16 incl. the cloud
    * metadata IP + fe80::/10, 0.0.0.0/8, multicast, IPv4-mapped-IPv6 forms of
    * all the above, …) ranges. Anything else is treated as public.
+   *
+   * The IPv4-embedding IPv6 forms are classified HERE rather than left to
+   * FILTER_FLAG_NO_RES_RANGE, because that flag's range table is
+   * runtime-dependent: PHP 8.1 and 8.2 do not recognize them at all, so
+   * ::ffff:169.254.169.254 — the cloud metadata address written as an
+   * IPv4-mapped literal — passes as public there, while PHP 8.3 and later
+   * reject it. The module supports PHP 8.1 upwards, so a guard that inherited
+   * that table would admit the metadata endpoint on the oldest supported
+   * runtime. See isIpv4EmbeddingIpv6 for the prefixes and the ranges each one
+   * covers; the check only ever ADDS a rejection to the filter below.
    */
   public static function isPublicIp(string $ip): bool {
+    if (self::isIpv4EmbeddingIpv6($ip)) {
+      return FALSE;
+    }
     return filter_var(
       $ip,
       FILTER_VALIDATE_IP,
       FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE,
     ) !== FALSE;
+  }
+
+  /**
+   * Whether an address is an IPv6 literal that embeds an IPv4 address.
+   *
+   * These are never a valid public destination on their own: each one is a
+   * different spelling of, or a translation gateway onto, an IPv4 address, so
+   * an internal IPv4 target can be smuggled past an IPv6-unaware range check
+   * by writing it in one of these forms. All of them are refused.
+   *
+   * Matched on the PACKED 16-byte address (inet_pton), never on the text: the
+   * same address has many textual spellings, and a substring match on "::ffff:"
+   * would both miss a compressed form and hit an unrelated address.
+   *
+   * @param string $ip
+   *   The candidate address.
+   *
+   * @return bool
+   *   TRUE when the address falls in one of the IPv4-embedding IPv6 prefixes.
+   */
+  private static function isIpv4EmbeddingIpv6(string $ip): bool {
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === FALSE) {
+      return FALSE;
+    }
+    $packed = @inet_pton($ip);
+    if (!is_string($packed) || strlen($packed) !== 16) {
+      return FALSE;
+    }
+    $prefixes = [
+      // ::/96 — IPv4-compatible IPv6 (RFC 4291, deprecated). Also covers the
+      // unspecified address and ::1, which the range filter already refuses.
+      str_repeat("\x00", 12),
+      // ::ffff:0:0/96 — IPv4-mapped IPv6 (RFC 4291): ::ffff:169.254.169.254.
+      str_repeat("\x00", 10) . "\xff\xff",
+      // 64:ff9b::/96 — the well-known NAT64 prefix (RFC 6052).
+      "\x00\x64\xff\x9b" . str_repeat("\x00", 8),
+      // 64:ff9b:1::/48 — the local-use NAT64 prefix (RFC 8215).
+      "\x00\x64\xff\x9b\x00\x01",
+    ];
+    foreach ($prefixes as $prefix) {
+      if (strncmp($packed, $prefix, strlen($prefix)) === 0) {
+        return TRUE;
+      }
+    }
+    return FALSE;
   }
 
   /**
