@@ -53,6 +53,16 @@ jobs:
         # harness keeps holding the line on every PR without a fixture, and it
         # reads the shipped source directly, which no booted-Drupal test does.
         run: php tests/test-widget-credential-surface.php
+      - name: Protected draft contract and tool-policy checks
+        # Native guards run without a Drupal fixture. The real SQL, moderation,
+        # translation and rollback tests run in kernel-tests below.
+        run: |
+          set -eu
+          php tests/test-protected-draft-service.php
+          php tests/test-protected-draft-configuration.php
+          php tests/test-protected-draft-field-definitions.php
+          php tests/test-protected-draft-tool-policy.php
+          php tests/test-protected-draft-field-scope.php
 
   kernel-tests:
     name: PHPUnit Kernel (Drupal ${{ matrix.core_label }}, PHP ${{ matrix.php }})

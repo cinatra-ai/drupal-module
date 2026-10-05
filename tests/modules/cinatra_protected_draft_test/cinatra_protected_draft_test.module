@@ -1,0 +1,46 @@
+<?php
+
+declare(strict_types=1);
+
+use Drupal\cinatra_protected_draft_test\ProtectedDraftProbe;
+use Drupal\Core\Access\AccessResult;
+use Drupal\Core\Field\FieldDefinitionInterface;
+use Drupal\Core\Field\FieldItemListInterface;
+use Drupal\Core\Session\AccountInterface;
+use Drupal\node\NodeInterface;
+
+/**
+ * Implements hook_node_presave().
+ */
+function cinatra_protected_draft_test_node_presave(NodeInterface $node): void {
+  ProtectedDraftProbe::beforeSave($node);
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function cinatra_protected_draft_test_node_update(NodeInterface $node): void {
+  ProtectedDraftProbe::afterSave($node);
+}
+
+/**
+ * Implements hook_node_access().
+ */
+function cinatra_protected_draft_test_node_access(NodeInterface $node, $operation, AccountInterface $account) {
+  if (ProtectedDraftProbe::$mode === 'deny_stored_update'
+    && ProtectedDraftProbe::$storedRevision === (int) $node->getRevisionId()
+    && $operation === 'update') {
+    return AccessResult::forbidden()->setCacheMaxAge(0);
+  }
+  return AccessResult::neutral()->setCacheMaxAge(0);
+}
+
+/**
+ * Implements hook_entity_field_access().
+ */
+function cinatra_protected_draft_test_entity_field_access($operation, FieldDefinitionInterface $field_definition, AccountInterface $account, ?FieldItemListInterface $items = NULL) {
+  if ($operation === 'edit' && $field_definition->getName() === ProtectedDraftProbe::$deniedField) {
+    return AccessResult::forbidden()->setCacheMaxAge(0);
+  }
+  return AccessResult::neutral()->setCacheMaxAge(0);
+}
