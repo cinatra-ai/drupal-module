@@ -12,9 +12,15 @@ parameters:
     - cinatra.module
     - cinatra.install
   excludePaths:
-    # Marked optional with (?) so PHPStan does not error when the path is absent
-    # (e.g. a checkout with no node_modules, or vendor placed elsewhere).
-    - vendor (?)
-    - node_modules (?)
+    # Third-party sources still supply symbols; exclude only their analysis.
+    # A flat exclusion also removes the optional scanDirectories below.
+    analyse:
+      - vendor (?)
+      - node_modules (?)
+  # Optional Tool/MCP integrations remain optional for sites. Install their
+  # real development packages and discover their classes for static analysis.
+  scanDirectories:
+    - vendor/drupal/tool/src
+    - vendor/drupal/mcp_tools/src
   # The vendored widget bundle is JavaScript, not PHP — nothing to analyse.
   ignoreErrors: []

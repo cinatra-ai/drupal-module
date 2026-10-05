@@ -1,4 +1,21 @@
 services:
+  cinatra.protected_draft_storage:
+    class: Drupal\cinatra\ProtectedDraft\DrupalProtectedDraftStorage
+    arguments:
+      - '@database'
+      - '@entity_type.manager'
+      - '@current_user'
+      - '@config.factory'
+      - '@config.storage.active'
+      - '@module_handler'
+      - '@entity_field.manager'
+      - '@entity_type.bundle.info'
+      - '@datetime.time'
+
+  cinatra.protected_draft:
+    class: Drupal\cinatra\ProtectedDraft\ProtectedDraftService
+    arguments: ['@cinatra.protected_draft_storage']
+
   # Scoped strictly to the authenticated-preview route (cinatra#2046): turns
   # that route's access denial into a bare 401 instead of the site's themed 403
   # page (a credential failure, mirroring the WordPress adapter's REST status),

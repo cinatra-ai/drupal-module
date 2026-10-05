@@ -1,0 +1,9 @@
+name: 'Cinatra protected draft test'
+type: module
+description: 'Save-hook and access-policy fixtures for protected revision tests.'
+package: Testing
+hidden: true
+core_version_requirement: ^10.3 || ^11 || ^12
+dependencies:
+  - cinatra:cinatra
+  - drupal:content_moderation
