@@ -89,6 +89,19 @@ namespace {
   class_alias(CinatraNativeSiteServices::class, 'Drupal');
 
   /**
+   * Supplies native PDO error metadata without opening a database.
+   */
+  final class CinatraNativeSqliteError extends PDOException {
+
+    public function __construct(?array $error_info, string $sqlstate = 'HY000') {
+      parent::__construct('Native SQLite protocol double.');
+      $this->errorInfo = $error_info;
+      $this->code = $sqlstate;
+    }
+
+  }
+
+  /**
    * Provides the native cinatra native field storage dependency double.
    */
   final class CinatraNativeFieldStorage {
@@ -477,6 +490,72 @@ namespace {
     }
     $passed++;
     echo "PASS $name refuses\n";
+  }
+  // These callbacks model native exec outcomes only. The actual Core client,
+  // transaction ownership and SQL execution still require the Kernel suite.
+  $probe = new ReflectionMethod(DrupalProtectedDraftStorage::class, 'probeLegacySqliteTransaction');
+  $nested = ['HY000', 1, 'cannot start a transaction within a transaction'];
+  $probe_cases = [
+    ['exact native nesting error means active', new CinatraNativeSqliteError($nested), 0, TRUE, ['BEGIN']],
+    ['wrong exception SQLSTATE refuses', new CinatraNativeSqliteError($nested, '42000'), 0, 'REFUSE', ['BEGIN']],
+    [
+      'wrong error-info SQLSTATE refuses',
+      new CinatraNativeSqliteError(['42000', 1, $nested[2]]),
+      0, 'REFUSE', ['BEGIN'],
+    ],
+    [
+      'busy database does not prove an owned root',
+      new CinatraNativeSqliteError(['HY000', 5, 'database is locked']),
+      0, 'REFUSE', ['BEGIN'],
+    ],
+    [
+      'unrelated SQLite error refuses',
+      new CinatraNativeSqliteError(['HY000', 1, 'no such table']),
+      0, 'REFUSE', ['BEGIN'],
+    ],
+    ['missing native error metadata refuses', new CinatraNativeSqliteError(NULL), 0, 'REFUSE', ['BEGIN']],
+    [
+      'message-only metadata impostor refuses',
+      new CinatraNativeSqliteError(['HY000', '1', $nested[2]]),
+      0, 'REFUSE', ['BEGIN'],
+    ],
+    ['zero-row BEGIN is cleaned and reports inactive', 0, 0, FALSE, ['BEGIN', 'ROLLBACK']],
+    ['successful BEGIN is never adopted as the old root', 1, 0, FALSE, ['BEGIN', 'ROLLBACK']],
+    ['failed BEGIN return refuses', FALSE, 0, 'REFUSE', ['BEGIN']],
+    ['non-native BEGIN error refuses', new RuntimeException('Unknown client error.'), 0, 'REFUSE', ['BEGIN']],
+    ['failed cleanup return refuses', 0, FALSE, 'REFUSE', ['BEGIN', 'ROLLBACK']],
+    ['cleanup exception refuses', 0, new RuntimeException('Cleanup failed.'), 'REFUSE', ['BEGIN', 'ROLLBACK']],
+    ['invalid BEGIN result refuses', TRUE, 0, 'REFUSE', ['BEGIN']],
+    ['invalid cleanup result refuses', 0, TRUE, 'REFUSE', ['BEGIN', 'ROLLBACK']],
+  ];
+  foreach ($probe_cases as [$name, $begin_outcome, $rollback_outcome, $expected, $expected_calls]) {
+    $calls = [];
+    $begin = static function () use (&$calls, $begin_outcome) {
+      $calls[] = 'BEGIN';
+      if ($begin_outcome instanceof Throwable) {
+        throw $begin_outcome;
+      }
+      return $begin_outcome;
+    };
+    $rollback = static function () use (&$calls, $rollback_outcome) {
+      $calls[] = 'ROLLBACK';
+      if ($rollback_outcome instanceof Throwable) {
+        throw $rollback_outcome;
+      }
+      return $rollback_outcome;
+    };
+    try {
+      $actual = $probe->invoke(NULL, $begin, $rollback);
+      $assert($name, $actual === $expected, TRUE);
+    }
+    catch (ProtectedDraftRefusal $refusal) {
+      if ($expected !== 'REFUSE' || !str_contains($refusal->getMessage(), 'SQLite transaction')) {
+        throw new RuntimeException('An unrelated refusal satisfied the native transaction boundary.', 0, $refusal);
+      }
+    }
+    $assert($name . ' invokes only its owned cleanup', $calls === $expected_calls, TRUE);
+    $passed++;
+    echo "PASS $name\n";
   }
   echo "$passed passed, 0 failed, 0 skipped\n";
 }

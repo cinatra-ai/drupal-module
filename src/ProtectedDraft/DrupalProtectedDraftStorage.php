@@ -72,6 +72,18 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
    * @var string|null
    */
   private ?string $ownedTransactionId = NULL;
+  /**
+   * Native transaction manager bound before the owned root starts.
+   *
+   * @var TransactionManagerBase|null
+   */
+  private ?TransactionManagerBase $ownedTransactionManager = NULL;
+  /**
+   * Native client bound before the owned root starts.
+   *
+   * @var \PDO|null
+   */
+  private ?\PDO $ownedClient = NULL;
 
   public function __construct(
     private readonly Connection $database,
@@ -129,9 +141,15 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       }
     }
 
+    $client = $this->database->getClientConnection();
+    if (!$client instanceof \PDO) {
+      throw new ProtectedDraftRefusal('The native database client cannot provide protected transaction checks.');
+    }
     $transaction = $this->database->startTransaction();
     $this->ownedTransaction = $transaction;
     $this->ownedTransactionId = (new \ReflectionProperty(Transaction::class, 'id'))->getValue($transaction);
+    $this->ownedTransactionManager = $manager;
+    $this->ownedClient = $client;
     try {
       $this->assertActiveTransaction();
       if ($driver === 'pgsql') {
@@ -204,7 +222,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       if ($this->transactionState() !== ClientConnectionTransactionState::Committed
         || $manager->stackDepth() !== 0
         || $this->database->inTransaction()
-        || $this->database->getClientConnection()->inTransaction()) {
+        || $this->database->transactionManager() !== $this->ownedTransactionManager
+        || $this->database->getClientConnection() !== $this->ownedClient
+        || $this->clientTransactionActive(TRUE)) {
         throw new ProtectedDraftRefusal('The protected transaction did not finish its root commit.');
       }
       return $result;
@@ -231,6 +251,8 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $this->configuration = [];
         $this->ownedTransaction = NULL;
         $this->ownedTransactionId = NULL;
+        $this->ownedTransactionManager = NULL;
+        $this->ownedClient = NULL;
       }
     }
   }
@@ -750,15 +772,95 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
    * Requires the original root transaction and native database connection.
    */
   private function assertActiveTransaction(): void {
-    $stack = (new \ReflectionProperty(TransactionManagerBase::class, 'stack'))->getValue($this->database->transactionManager());
+    $this->assertOwnedActiveRoot();
+    if (!$this->clientTransactionActive()) {
+      throw new ProtectedDraftRefusal('The protected root transaction is no longer active; inspect the page before retrying.');
+    }
+    // An accepted physical-state probe cannot replace the original manager,
+    // native client or root entry that was bound before the transaction began.
+    $this->assertOwnedActiveRoot();
+  }
+
+  /**
+   * Requires the exact original manager, client and active root stack entry.
+   */
+  private function assertOwnedActiveRoot(): void {
+    $manager = $this->database->transactionManager();
+    if ($this->ownedTransactionManager === NULL || $manager !== $this->ownedTransactionManager
+      || $this->ownedClient === NULL || $this->database->getClientConnection() !== $this->ownedClient) {
+      throw new ProtectedDraftRefusal('The protected root transaction is no longer active; inspect the page before retrying.');
+    }
+    $stack = (new \ReflectionProperty(TransactionManagerBase::class, 'stack'))->getValue($manager);
     if ($this->transactionState() !== ClientConnectionTransactionState::Active
-      || !$this->database->getClientConnection()->inTransaction()
-      || $this->database->transactionManager()->stackDepth() !== 1
+      || $manager->stackDepth() !== 1
       || $this->ownedTransaction === NULL || $this->ownedTransactionId === NULL
       || !isset($stack[$this->ownedTransactionId])
       || $stack[$this->ownedTransactionId]->name !== $this->ownedTransaction->name()) {
       throw new ProtectedDraftRefusal('The protected root transaction is no longer active; inspect the page before retrying.');
     }
+  }
+
+  /**
+   * Reads physical state, including Core's SQL-opened legacy SQLite root.
+   */
+  private function clientTransactionActive(bool $after_commit = FALSE): bool {
+    $client = $this->ownedClient;
+    if ($client === NULL || $this->database->getClientConnection() !== $client) {
+      throw new ProtectedDraftRefusal('The native database client changed during the protected edit.');
+    }
+    if ($client->inTransaction()) {
+      return TRUE;
+    }
+    if ($this->database->driver() !== 'sqlite'
+      || get_class($client) !== 'Drupal\sqlite\Driver\Database\sqlite\PDOConnection') {
+      return FALSE;
+    }
+    // Core's legacy PDOConnection opens its IMMEDIATE root with raw SQL. PDO
+    // may report FALSE for that root. Only the canonical, native exception
+    // protocol can supply physical state; an arbitrary query error cannot.
+    if ((new \ReflectionMethod($client, 'exec'))->getDeclaringClass()->getName() !== \PDO::class
+      || (new \ReflectionMethod($client, 'inTransaction'))->getDeclaringClass()->getName() !== \PDO::class
+      || $client->getAttribute(\PDO::ATTR_ERRMODE) !== \PDO::ERRMODE_EXCEPTION) {
+      throw new ProtectedDraftRefusal('The SQLite transaction state cannot be verified with this client.');
+    }
+    $begin = $after_commit ? 'BEGIN DEFERRED TRANSACTION' : 'BEGIN IMMEDIATE TRANSACTION';
+    // A DEFERRED empty probe after commit takes no new writer lock. Its
+    // success proves absence, the inverse of the expected precommit error.
+    return self::probeLegacySqliteTransaction(
+      static fn() => $client->exec($begin),
+      static fn() => $client->exec('ROLLBACK'),
+    );
+  }
+
+  /**
+   * Interprets only the native nesting error and cleans an empty probe.
+   */
+  private static function probeLegacySqliteTransaction(callable $begin, callable $rollback): bool {
+    try {
+      $started = $begin();
+    }
+    catch (\Throwable $error) {
+      if ($error instanceof \PDOException && $error->getCode() === 'HY000'
+        && $error->errorInfo === ['HY000', 1, 'cannot start a transaction within a transaction']) {
+        return TRUE;
+      }
+      throw new ProtectedDraftRefusal('The SQLite transaction state cannot be verified.', 0, $error);
+    }
+    if (!is_int($started) || $started < 0) {
+      throw new ProtectedDraftRefusal('The SQLite transaction probe did not start reliably.');
+    }
+    // A native exec result of integer zero is success, not FALSE. This is an
+    // EMPTY probe, never the original owned root; clean it before returning.
+    try {
+      $finished = $rollback();
+    }
+    catch (\Throwable $error) {
+      throw new ProtectedDraftRefusal('The SQLite transaction probe could not be cleaned up.', 0, $error);
+    }
+    if (!is_int($finished) || $finished < 0) {
+      throw new ProtectedDraftRefusal('The SQLite transaction probe could not be cleaned up.');
+    }
+    return FALSE;
   }
 
   /**

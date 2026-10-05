@@ -8,6 +8,8 @@ use Drupal\cinatra\ProtectedDraft\DrupalProtectedDraftStorage;
 use Drupal\cinatra\ProtectedDraft\ProtectedDraftRefusal;
 use Drupal\cinatra\ProtectedDraft\ProtectedDraftService;
 use Drupal\cinatra_protected_draft_test\ProtectedDraftProbe;
+use Drupal\Core\Database\Transaction;
+use Drupal\Core\Database\Transaction\TransactionManagerBase;
 use Drupal\Core\DependencyInjection\ContainerBuilder;
 use Drupal\Core\Entity\ContentEntityStorageBase;
 use Drupal\Core\Entity\EntityStorageBase;
@@ -92,14 +94,21 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->installEntitySchema('content_moderation_state');
     ConfigurableLanguage::createFromLangcode('fr')->save();
     NodeType::create(['type' => 'page', 'name' => 'Page', 'new_revision' => TRUE])->save();
-    FieldStorageConfig::create([
+    // Drupal 10 adds the body field when the node type is created; newer
+    // versions may leave its creation to the caller. Reuse the real field.
+    $body_storage = FieldStorageConfig::loadByName('node', 'body') ?? FieldStorageConfig::create([
       'entity_type' => 'node', 'field_name' => 'body', 'type' => 'text_with_summary',
       'revisionable' => TRUE, 'translatable' => TRUE,
-    ])->save();
-    FieldConfig::create([
+    ]);
+    $body_storage->setTranslatable(TRUE)->save();
+    $this->assertSame('text_with_summary', $body_storage->getType());
+    $this->assertTrue($body_storage->isRevisionable());
+    $body_field = FieldConfig::loadByName('node', 'page', 'body') ?? FieldConfig::create([
       'entity_type' => 'node', 'bundle' => 'page', 'field_name' => 'body',
       'label' => 'Body', 'translatable' => TRUE,
-    ])->save();
+    ]);
+    $body_field->setTranslatable(TRUE)->save();
+    $this->assertTrue($body_field->isTranslatable());
     FieldStorageConfig::create([
       'entity_type' => 'node', 'field_name' => 'field_shared_note', 'type' => 'string',
       'revisionable' => TRUE, 'translatable' => FALSE,
@@ -346,6 +355,7 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $before = $this->snapshot();
     $database = $this->container->get('database');
     $outer = $database->startTransaction();
+    $outer_id = (new \ReflectionProperty(Transaction::class, 'id'))->getValue($outer);
     try {
       try {
         $this->prepareTitle();
@@ -353,7 +363,11 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
       }
       catch (ProtectedDraftRefusal $expected) {
         $this->assertStringContainsString('requires its own root transaction', $expected->getMessage());
-        $this->assertTrue($database->getClientConnection()->inTransaction());
+        $this->assertTrue($database->inTransaction());
+        $this->assertSame(1, $database->transactionManager()->stackDepth());
+        $stack = (new \ReflectionProperty(TransactionManagerBase::class, 'stack'))->getValue($database->transactionManager());
+        $this->assertArrayHasKey($outer_id, $stack);
+        $this->assertSame($outer->name(), $stack[$outer_id]->name);
       }
     }
     finally {
@@ -720,6 +734,14 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertFalse($database->inTransaction());
     $this->assertFalse($database->getClientConnection()->inTransaction());
     $this->assertSame(0, $database->transactionManager()->stackDepth());
+    if ($database->driver() === 'sqlite') {
+      // Legacy PDO reports FALSE even inside Core's SQL-opened transaction.
+      // BEGIN must actually succeed here; a nesting error fails this test.
+      // DEFERRED acquires no writer lock for this empty absence check.
+      $client = $database->getClientConnection();
+      $this->assertNotFalse($client->exec('BEGIN DEFERRED TRANSACTION'));
+      $this->assertNotFalse($client->exec('ROLLBACK'));
+    }
   }
 
 }
