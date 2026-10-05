@@ -37,7 +37,16 @@ final class ProtectedDraftService {
    * Creates a draft only while the complete protected preimage still holds.
    */
   public function write(array $request): array {
-    $allowed = ['nid', 'language', 'draft_state', 'expected_default_revision_id', 'expected_latest_revision_id', 'workflow_fingerprint', 'preimage_fingerprint', 'updates'];
+    $allowed = [
+      'nid',
+      'language',
+      'draft_state',
+      'expected_default_revision_id',
+      'expected_latest_revision_id',
+      'workflow_fingerprint',
+      'preimage_fingerprint',
+      'updates',
+    ];
     if (array_diff(array_keys($request), $allowed)
       || !is_int($request['nid'] ?? NULL)
       || !is_string($request['language'] ?? NULL)
@@ -105,7 +114,8 @@ final class ProtectedDraftService {
       }
 
       // The adapter validates typed field values and entity constraints before
-      // its single save. It uses canonical definitions, never an alias resolver.
+      // its single save. It uses canonical definitions, never an alias
+      // resolver.
       $revision_id = $this->storage->saveDraft($nid, $language, $request['draft_state'], $request['updates']);
       if ($revision_id < 1 || $revision_id === $before['default_revision_id']) {
         throw new ProtectedDraftRefusal('A new non-default draft revision was not stored.');
@@ -145,6 +155,9 @@ final class ProtectedDraftService {
     });
   }
 
+  /**
+   * Validates the node, exact language and requested field names.
+   */
   private function validateIdentity(int $nid, string $language, array $fields): void {
     if ($nid < 1 || $language === '' || !preg_match('/\A[a-zA-Z0-9_-]+\z/', $language)
       || !$fields || !array_is_list($fields)) {
@@ -160,6 +173,9 @@ final class ProtectedDraftService {
     }
   }
 
+  /**
+   * Requires a complete preimage for the exact node and translation.
+   */
   private function assertReadableIdentity(array $snapshot, int $nid, string $language): void {
     if (($snapshot['can_read'] ?? NULL) !== TRUE
       || ($snapshot['node_id'] ?? NULL) !== $nid
@@ -170,6 +186,12 @@ final class ProtectedDraftService {
     }
   }
 
+  /**
+   * Checks the returned stored revision identity.
+   *
+   * Requires the exact returned revision, translation and requested stored
+   * values.
+   */
   private function assertStoredIdentity(array $stored, int $nid, int $revision, string $language, array $fields): void {
     if (($stored['node_id'] ?? NULL) !== $nid
       || ($stored['revision_id'] ?? NULL) !== $revision

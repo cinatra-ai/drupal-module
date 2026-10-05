@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * @file
+ * Standalone protected-draft service checks without a Drupal installation.
+ */
+
+// phpcs:disable Squiz.Classes.ClassFileName.NoMatch
+
+
 declare(strict_types=1);
 
 /**
@@ -20,15 +28,58 @@ use Drupal\cinatra\ProtectedDraft\ProtectedDraftRefusal;
 use Drupal\cinatra\ProtectedDraft\ProtectedDraftService;
 use Drupal\cinatra\ProtectedDraft\ProtectedDraftStorageInterface;
 
-final class MemoryProtectedDraftStorage implements ProtectedDraftStorageInterface {
+/**
+ * Provides the native cinatra memory protected draft storage dependency double.
+ */
+final class CinatraMemoryProtectedDraftStorage implements ProtectedDraftStorageInterface {
 
+  /**
+   * Native fixture snapshot.
+   *
+   * @var array
+   */
   public array $snapshot;
+  /**
+   * Native fixture stored.
+   *
+   * @var array
+   */
   public array $stored;
+  /**
+   * Native fixture after.
+   *
+   * @var array
+   */
   public array $after;
+  /**
+   * Native fixture saves.
+   *
+   * @var int
+   */
   public int $saves = 0;
+  /**
+   * Native fixture committed.
+   *
+   * @var bool
+   */
   public bool $committed = FALSE;
+  /**
+   * Native fixture rolled back.
+   *
+   * @var bool
+   */
   public bool $rolledBack = FALSE;
+  /**
+   * Native fixture locked.
+   *
+   * @var bool
+   */
   public bool $locked = FALSE;
+  /**
+   * Native fixture save arguments.
+   *
+   * @var array
+   */
   public array $saveArguments = [];
 
   public function __construct() {
@@ -43,8 +94,36 @@ final class MemoryProtectedDraftStorage implements ProtectedDraftStorageInterfac
       'draft_states' => ['draft' => ['published' => FALSE, 'default_revision' => FALSE]],
       'allowed_draft_states' => ['draft'],
       'field_access' => ['title' => TRUE, 'body' => TRUE],
-      'fields' => ['title' => [['value' => 'Live']], 'body' => [['value' => 'Live body', 'format' => 'basic_html', 'summary' => 'Live summary']]],
-      'published_values' => ['de' => ['title' => [['value' => 'Live']], 'body' => [['value' => 'Live body', 'format' => 'basic_html', 'summary' => 'Live summary']]]],
+      'fields' => [
+        'title' => [
+          [
+            'value' => 'Live',
+          ],
+        ],
+        'body' => [
+          [
+            'value' => 'Live body',
+            'format' => 'basic_html',
+            'summary' => 'Live summary',
+          ],
+        ],
+      ],
+      'published_values' => [
+        'de' => [
+          'title' => [
+            [
+              'value' => 'Live',
+            ],
+          ],
+          'body' => [
+            [
+              'value' => 'Live body',
+              'format' => 'basic_html',
+              'summary' => 'Live summary',
+            ],
+          ],
+        ],
+      ],
     ];
     $this->after = $this->snapshot;
     $this->stored = [
@@ -52,10 +131,26 @@ final class MemoryProtectedDraftStorage implements ProtectedDraftStorageInterfac
       'revision_id' => 41, 'default_revision_id' => 40,
       'is_default_revision' => FALSE, 'is_published' => FALSE,
       'moderation_state' => 'draft',
-      'fields' => ['title' => [['value' => 'Stored draft']], 'body' => [['value' => '<p>Stored</p>', 'format' => 'basic_html', 'summary' => 'Stored summary']]],
+      'fields' => [
+        'title' => [
+          [
+            'value' => 'Stored draft',
+          ],
+        ],
+        'body' => [
+          [
+            'value' => '<p>Stored</p>',
+            'format' => 'basic_html',
+            'summary' => 'Stored summary',
+          ],
+        ],
+      ],
     ];
   }
 
+  /**
+   * Exercises with locked node.
+   */
   public function withLockedNode(int $nid, callable $operation): array {
     $this->locked = TRUE;
     try {
@@ -72,6 +167,9 @@ final class MemoryProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
   }
 
+  /**
+   * Exercises read default.
+   */
   public function readDefault(int $nid, string $language, array $fields): array {
     if (!$this->locked) {
       throw new \LogicException('Read outside transaction');
@@ -79,6 +177,9 @@ final class MemoryProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return $this->saves ? $this->after : $this->snapshot;
   }
 
+  /**
+   * Exercises save draft.
+   */
   public function saveDraft(int $nid, string $language, string $state, array $updates): int {
     if (!$this->locked) {
       throw new \LogicException('Save outside transaction');
@@ -88,6 +189,9 @@ final class MemoryProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return 41;
   }
 
+  /**
+   * Exercises read revision.
+   */
   public function readRevision(int $nid, int $revision, string $language, array $fields): array {
     if (!$this->locked) {
       throw new \LogicException('Revision read outside transaction');
@@ -97,17 +201,36 @@ final class MemoryProtectedDraftStorage implements ProtectedDraftStorageInterfac
 
 }
 
+/**
+ * Builds a complete request from the protected preimage and proposed updates.
+ */
 function request(): array {
   return [
     'nid' => 19, 'language' => 'de', 'draft_state' => 'draft',
     'expected_default_revision_id' => 40, 'expected_latest_revision_id' => 40,
     'workflow_fingerprint' => str_repeat('a', 64),
     'preimage_fingerprint' => str_repeat('c', 64),
-    'updates' => ['title' => [['value' => 'Requested']], 'body' => [['value' => '<p>Requested</p>', 'format' => 'basic_html', 'summary' => 'Requested summary']]],
+    'updates' => [
+      'title' => [
+        [
+          'value' => 'Requested',
+        ],
+      ],
+      'body' => [
+        [
+          'value' => '<p>Requested</p>',
+          'format' => 'basic_html',
+          'summary' => 'Requested summary',
+        ],
+      ],
+    ],
   ];
 }
 
-function requireTrue(bool $condition, string $message): void {
+/**
+ * Exercises require true.
+ */
+function require_true(bool $condition, string $message): void {
   if (!$condition) {
     throw new \RuntimeException($message);
   }
@@ -135,7 +258,7 @@ $refusals = [
 ];
 foreach ($refusals as $name => [$key, $value]) {
   $cases['refuses before save: ' . $name] = static function () use ($key, $value): void {
-    $store = new MemoryProtectedDraftStorage();
+    $store = new CinatraMemoryProtectedDraftStorage();
     $store->snapshot[$key] = $value;
     $input = request();
     if ($key === 'latest_revision_id') {
@@ -150,14 +273,19 @@ foreach ($refusals as $name => [$key, $value]) {
       throw new \RuntimeException('Unsafe write accepted');
     }
     catch (ProtectedDraftRefusal $e) {
-      requireTrue($store->saves === 0, 'Refusal happened after a save');
-      requireTrue(!$store->committed && $store->rolledBack, 'Refusal committed');
+      require_true($store->saves === 0, 'Refusal happened after a save');
+      require_true(!$store->committed && $store->rolledBack, 'Refusal committed');
     }
   };
 }
-foreach (['language' => '', 'workflow_fingerprint' => 'a', 'updates' => [], 'expected_latest_revision_id' => 0] as $key => $value) {
+foreach ([
+  'language' => '',
+  'workflow_fingerprint' => 'a',
+  'updates' => [],
+  'expected_latest_revision_id' => 0,
+] as $key => $value) {
   $cases['invalid request: ' . $key] = static function () use ($key, $value): void {
-    $store = new MemoryProtectedDraftStorage();
+    $store = new CinatraMemoryProtectedDraftStorage();
     $input = request();
     $input[$key] = $value;
     try {
@@ -165,17 +293,17 @@ foreach (['language' => '', 'workflow_fingerprint' => 'a', 'updates' => [], 'exp
       throw new \RuntimeException('Malformed request accepted');
     }
     catch (ProtectedDraftRefusal $e) {
-      requireTrue($store->saves === 0, 'Malformed request saved');
+      require_true($store->saves === 0, 'Malformed request saved');
     }
   };
 }
 $cases['returns exact stored structured field values, not requested values'] = static function (): void {
-  $store = new MemoryProtectedDraftStorage();
+  $store = new CinatraMemoryProtectedDraftStorage();
   $result = (new ProtectedDraftService($store))->write(request());
-  requireTrue($result['fields'] === $store->stored['fields'], 'Returned request or flattened values');
-  requireTrue($result['fields']['body'][0]['summary'] === 'Stored summary', 'Lost summary');
-  requireTrue($store->saveArguments === [19, 'de', 'draft', request()['updates']], 'Changed save identity');
-  requireTrue($store->saves === 1 && $store->committed, 'Draft did not commit once');
+  require_true($result['fields'] === $store->stored['fields'], 'Returned request or flattened values');
+  require_true($result['fields']['body'][0]['summary'] === 'Stored summary', 'Lost summary');
+  require_true($store->saveArguments === [19, 'de', 'draft', request()['updates']], 'Changed save identity');
+  require_true($store->saves === 1 && $store->committed, 'Draft did not commit once');
 };
 $corruptions = [
   'foreign stored node' => ['node_id', 20],
@@ -189,51 +317,51 @@ $corruptions = [
 ];
 foreach ($corruptions as $name => [$key, $value]) {
   $cases['rolls back stored mismatch: ' . $name] = static function () use ($key, $value): void {
-    $store = new MemoryProtectedDraftStorage();
+    $store = new CinatraMemoryProtectedDraftStorage();
     $store->stored[$key] = $value;
     try {
       (new ProtectedDraftService($store))->write(request());
       throw new \RuntimeException('Corrupt stored revision accepted');
     }
     catch (ProtectedDraftRefusal $e) {
-      requireTrue($store->saves === 1 && $store->rolledBack && !$store->committed, 'Stored mismatch did not roll back');
+      require_true($store->saves === 1 && $store->rolledBack && !$store->committed, 'Stored mismatch did not roll back');
     }
   };
 }
 $cases['rolls back a changed published value'] = static function (): void {
-  $store = new MemoryProtectedDraftStorage();
+  $store = new CinatraMemoryProtectedDraftStorage();
   $store->after['published_values']['de']['title'][0]['value'] = 'Went live';
   try {
     (new ProtectedDraftService($store))->write(request());
     throw new \RuntimeException('Published change accepted');
   }
   catch (ProtectedDraftRefusal $e) {
-    requireTrue($store->rolledBack && !$store->committed, 'Live change did not roll back');
+    require_true($store->rolledBack && !$store->committed, 'Live change did not roll back');
   }
 };
 $cases['rolls back a moved default revision'] = static function (): void {
-  $store = new MemoryProtectedDraftStorage();
+  $store = new CinatraMemoryProtectedDraftStorage();
   $store->after['default_revision_id'] = 41;
   try {
     (new ProtectedDraftService($store))->write(request());
     throw new \RuntimeException('Default moved');
   }
   catch (ProtectedDraftRefusal $e) {
-    requireTrue($store->rolledBack && !$store->committed, 'Default move did not roll back');
+    require_true($store->rolledBack && !$store->committed, 'Default move did not roll back');
   }
 };
 $cases['read-back remains exact and language bound'] = static function (): void {
-  $store = new MemoryProtectedDraftStorage();
+  $store = new CinatraMemoryProtectedDraftStorage();
   $result = (new ProtectedDraftService($store))->read(19, 41, 'de', ['title', 'body']);
-  requireTrue($result === $store->stored, 'Reader substituted another representation');
-  requireTrue($store->saves === 0, 'Reader saved');
+  require_true($result === $store->stored, 'Reader substituted another representation');
+  require_true($store->saves === 0, 'Reader saved');
 };
 $cases['preimage exposes only requested readable fields and no internal snapshot'] = static function (): void {
-  $store = new MemoryProtectedDraftStorage();
+  $store = new CinatraMemoryProtectedDraftStorage();
   $store->snapshot['published_values']['en']['secret'] = [['value' => 'Must not be exported']];
   $result = (new ProtectedDraftService($store))->prepare(19, 'de', ['title']);
-  requireTrue(array_keys($result['fields']) === ['title'], 'Exported unrequested field');
-  requireTrue(!isset($result['published_values']), 'Exported internal snapshot');
+  require_true(array_keys($result['fields']) === ['title'], 'Exported unrequested field');
+  require_true(!isset($result['published_values']), 'Exported internal snapshot');
 };
 
 $failed = 0;

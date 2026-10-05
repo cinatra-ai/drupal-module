@@ -1,5 +1,10 @@
 <?php
 
+/**
+ * @file
+ * Real protected-draft save and access hooks for Kernel tests.
+ */
+
 declare(strict_types=1);
 
 use Drupal\cinatra_protected_draft_test\ProtectedDraftProbe;

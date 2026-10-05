@@ -32,15 +32,43 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
 
   use ContentModerationTestTrait;
 
+  /**
+   * {@inheritdoc}
+   */
   protected static $modules = [
     'system', 'user', 'field', 'text', 'filter', 'node', 'language',
     'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
   ];
 
+  /**
+   * Native fixture page.
+   *
+   * @var Node
+   */
   private Node $page;
+  /**
+   * Native fixture editor.
+   *
+   * @var User
+   */
   private User $editor;
+  /**
+   * Native fixture denied user.
+   *
+   * @var User
+   */
   private User $deniedUser;
+  /**
+   * Protected revision service for the requested operation.
+   *
+   * @var ProtectedDraftService
+   */
   private ProtectedDraftService $protectedDraft;
+  /**
+   * Native fixture protected storage.
+   *
+   * @var DrupalProtectedDraftStorage
+   */
   private DrupalProtectedDraftStorage $protectedStorage;
 
   /**
@@ -99,7 +127,13 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->container->get('current_user')->setAccount($this->editor);
     $this->assertFalse($this->editor->hasPermission('bypass node access'));
     $this->assertFalse($this->editor->hasPermission('administer nodes'));
-    FilterFormat::create(['format' => 'restricted', 'name' => 'Restricted', 'status' => TRUE, 'weight' => 1, 'filters' => []])->save();
+    FilterFormat::create([
+      'format' => 'restricted',
+      'name' => 'Restricted',
+      'status' => TRUE,
+      'weight' => 1,
+      'filters' => [],
+    ])->save();
     $this->page = Node::create([
       'type' => 'page', 'langcode' => 'en', 'uid' => $this->editor->id(),
       'title' => 'English live title', 'status' => TRUE, 'moderation_state' => 'published',
@@ -130,6 +164,9 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     parent::tearDown();
   }
 
+  /**
+   * Tests exact french draft keeps published translations and stored metadata.
+   */
   public function testExactFrenchDraftKeepsPublishedTranslationsAndStoredMetadata(): void {
     $before = $this->snapshot();
     $preimage = $this->protectedDraft->prepare((int) $this->page->id(), 'fr', ['title', 'body']);
@@ -159,26 +196,47 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertRootFinished();
   }
 
+  /**
+   * Tests custom moderation alias refuses before save.
+   */
   public function testCustomModerationAliasRefusesBeforeSave(): void {
-    FieldStorageConfig::create(['entity_type' => 'node', 'field_name' => 'field_moderation_state', 'type' => 'string'])->save();
-    FieldConfig::create(['entity_type' => 'node', 'bundle' => 'page', 'field_name' => 'field_moderation_state', 'label' => 'Shadow state'])->save();
+    FieldStorageConfig::create([
+      'entity_type' => 'node',
+      'field_name' => 'field_moderation_state',
+      'type' => 'string',
+    ])->save();
+    FieldConfig::create([
+      'entity_type' => 'node',
+      'bundle' => 'page',
+      'field_name' => 'field_moderation_state',
+      'label' => 'Shadow state',
+    ])->save();
     $preimage = $this->prepareTitle();
     $this->assertFalse($preimage['canonical_moderation_field']);
     $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($this->titleRequest($preimage)), 'moderation field is ambiguous');
   }
 
+  /**
+   * Tests missing draft state refuses before save.
+   */
   public function testMissingDraftStateRefusesBeforeSave(): void {
     $request = $this->titleRequest($this->prepareTitle());
     $request['draft_state'] = 'missing';
     $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($request), 'requested draft state must be unpublished and non-default');
   }
 
+  /**
+   * Tests default like state refuses before save.
+   */
   public function testDefaultLikeStateRefusesBeforeSave(): void {
     $request = $this->titleRequest($this->prepareTitle());
     $request['draft_state'] = 'archived';
     $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($request), 'requested draft state must be unpublished and non-default');
   }
 
+  /**
+   * Tests pending draft refuses before another save.
+   */
   public function testPendingDraftRefusesBeforeAnotherSave(): void {
     $this->protectedDraft->write($this->titleRequest($this->prepareTitle()));
     $preimage = $this->prepareTitle();
@@ -186,25 +244,45 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($this->titleRequest($preimage)), 'draft already waits for review');
   }
 
+  /**
+   * Tests unmoderated node refuses before save.
+   */
   public function testUnmoderatedNodeRefusesBeforeSave(): void {
     NodeType::create(['type' => 'plain', 'name' => 'Plain'])->save();
-    $node = Node::create(['type' => 'plain', 'langcode' => 'en', 'uid' => $this->editor->id(), 'title' => 'Unmoderated live page', 'status' => TRUE]);
+    $node = Node::create([
+      'type' => 'plain',
+      'langcode' => 'en',
+      'uid' => $this->editor->id(),
+      'title' => 'Unmoderated live page',
+      'status' => TRUE,
+    ]);
     $node->save();
     $preimage = $this->protectedDraft->prepare((int) $node->id(), 'en', ['title']);
     $this->assertFalse($preimage['moderated']);
     $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($this->titleRequest($preimage)), 'This page is not moderated', (int) $node->id());
   }
 
+  /**
+   * Tests denied published read refuses before save.
+   */
   public function testDeniedPublishedReadRefusesBeforeSave(): void {
     $this->container->get('current_user')->setAccount($this->deniedUser);
     $this->assertFalse($this->deniedUser->hasPermission('access content'));
     $this->assertRefusedBeforeSave(fn() => $this->prepareTitle(), 'page preimage is not readable');
   }
 
+  /**
+   * Tests unavailable translation refuses before save.
+   */
   public function testUnavailableTranslationRefusesBeforeSave(): void {
-    $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->prepare((int) $this->page->id(), 'de', ['title']), 'exact page translation is not available');
+    $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->prepare((int) $this->page->id(), 'de', [
+      'title',
+    ]), 'exact page translation is not available');
   }
 
+  /**
+   * Tests changed workflow token refuses before save.
+   */
   public function testChangedWorkflowTokenRefusesBeforeSave(): void {
     $request = $this->titleRequest($this->prepareTitle());
     $this->container->get('config.factory')->getEditable('workflows.workflow.editorial')
@@ -212,6 +290,9 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($request), 'workflow configuration changed');
   }
 
+  /**
+   * Tests changed other translation preimage refuses before save.
+   */
   public function testChangedOtherTranslationPreimageRefusesBeforeSave(): void {
     $request = $this->titleRequest($this->prepareTitle());
     $database = $this->container->get('database');
@@ -223,19 +304,44 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($request), 'live page values changed');
   }
 
+  /**
+   * Tests denied field edit refuses before save.
+   */
   public function testDeniedFieldEditRefusesBeforeSave(): void {
     ProtectedDraftProbe::$deniedField = 'body';
     $preimage = $this->protectedDraft->prepare((int) $this->page->id(), 'en', ['body']);
-    $request = $this->request($preimage, ['body' => [['value' => 'Draft body', 'summary' => 'Summary', 'format' => 'plain_text']]]);
+    $request = $this->request($preimage, [
+      'body' => [
+        [
+          'value' => 'Draft body',
+          'summary' => 'Summary',
+          'format' => 'plain_text',
+        ],
+      ],
+    ]);
     $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($request), 'requested field cannot be edited', NULL, 'body');
   }
 
+  /**
+   * Tests denied proposed text format refuses before save.
+   */
   public function testDeniedProposedTextFormatRefusesBeforeSave(): void {
     $preimage = $this->protectedDraft->prepare((int) $this->page->id(), 'en', ['body']);
-    $request = $this->request($preimage, ['body' => [['value' => 'Draft body', 'summary' => 'Summary', 'format' => 'restricted']]]);
+    $request = $this->request($preimage, [
+      'body' => [
+        [
+          'value' => 'Draft body',
+          'summary' => 'Summary',
+          'format' => 'restricted',
+        ],
+      ],
+    ]);
     $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($request), 'proposed text format is not permitted');
   }
 
+  /**
+   * Tests outer transaction is not accepted.
+   */
   public function testOuterTransactionIsNotAccepted(): void {
     $before = $this->snapshot();
     $database = $this->container->get('database');
@@ -257,26 +363,76 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertRootFinished();
   }
 
+  /**
+   * Tests unrequested save hook mutation rolls back actual revision.
+   */
   public function testUnrequestedSaveHookMutationRollsBackActualRevision(): void {
-    $this->assertSaveHookRollsBack('unrequested_body', ['title' => [['value' => 'Draft title']]], 'stored draft changed an unrequested field');
+    $this->assertSaveHookRollsBack('unrequested_body', [
+      'title' => [
+        [
+          'value' => 'Draft title',
+        ],
+      ],
+    ], 'stored draft changed an unrequested field');
   }
 
+  /**
+   * Tests other translation save hook mutation rolls back actual revision.
+   */
   public function testOtherTranslationSaveHookMutationRollsBackActualRevision(): void {
-    $this->assertSaveHookRollsBack('other_translation', ['title' => [['value' => 'Draft title']]], 'stored draft changed an unrequested field');
+    $this->assertSaveHookRollsBack('other_translation', [
+      'title' => [
+        [
+          'value' => 'Draft title',
+        ],
+      ],
+    ], 'stored draft changed an unrequested field');
   }
 
+  /**
+   * Tests stored unauthorized text format rolls back actual revision.
+   */
   public function testStoredUnauthorizedTextFormatRollsBackActualRevision(): void {
-    $this->assertSaveHookRollsBack('restricted_format', ['body' => [['value' => 'Draft body', 'summary' => 'Summary', 'format' => 'plain_text']]], 'proposed text format is not permitted');
+    $this->assertSaveHookRollsBack('restricted_format', [
+      'body' => [
+        [
+          'value' => 'Draft body',
+          'summary' => 'Summary',
+          'format' => 'plain_text',
+        ],
+      ],
+    ], 'proposed text format is not permitted');
   }
 
+  /**
+   * Tests stored update policy refusal rolls back actual revision.
+   */
   public function testStoredUpdatePolicyRefusalRollsBackActualRevision(): void {
-    $this->assertSaveHookRollsBack('deny_stored_update', ['title' => [['value' => 'Draft title']]], 'proposed draft is not readable');
+    $this->assertSaveHookRollsBack('deny_stored_update', [
+      'title' => [
+        [
+          'value' => 'Draft title',
+        ],
+      ],
+    ], 'proposed draft is not readable');
   }
 
+  /**
+   * Tests published default save hook mutation rolls back actual revision.
+   */
   public function testPublishedDefaultSaveHookMutationRollsBackActualRevision(): void {
-    $this->assertSaveHookRollsBack('published_default', ['title' => [['value' => 'Draft title']]], 'stored result is not the requested unpublished non-default draft');
+    $this->assertSaveHookRollsBack('published_default', [
+      'title' => [
+        [
+          'value' => 'Draft title',
+        ],
+      ],
+    ], 'stored result is not the requested unpublished non-default draft');
   }
 
+  /**
+   * Tests requested shared field changes in all draft translations only.
+   */
   public function testRequestedSharedFieldChangesInAllDraftTranslationsOnly(): void {
     $nid = (int) $this->page->id();
     $definition = $this->page->getFieldDefinition('field_shared_note');
@@ -285,7 +441,13 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $before = $this->snapshot();
     $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_shared_note']);
     $this->assertContains('field_shared_note', $preimage['available_fields']);
-    $stored = $this->protectedDraft->write($this->request($preimage, ['field_shared_note' => [['value' => 'Shared draft note']]]));
+    $stored = $this->protectedDraft->write($this->request($preimage, [
+      'field_shared_note' => [
+        [
+          'value' => 'Shared draft note',
+        ],
+      ],
+    ]));
     $this->assertSame('Shared draft note', $stored['fields']['field_shared_note'][0]['value']);
     $revision = $this->nodeStorage()->loadRevision($stored['revision_id']);
     foreach (['en', 'fr'] as $language) {
@@ -301,6 +463,9 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertRootFinished();
   }
 
+  /**
+   * Tests rollback does not leave cached phantom revision.
+   */
   public function testRollbackDoesNotLeaveCachedPhantomRevision(): void {
     $nid = (int) $this->page->id();
     $before = $this->snapshot();
@@ -308,7 +473,13 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     try {
       $this->protectedStorage->withLockedNode($nid, function () use ($nid, &$rid): array {
         $this->protectedStorage->readDefault($nid, 'en', ['title']);
-        $rid = $this->protectedStorage->saveDraft($nid, 'en', 'draft', ['title' => [['value' => 'Rolled-back cached title']]]);
+        $rid = $this->protectedStorage->saveDraft($nid, 'en', 'draft', [
+          'title' => [
+            [
+              'value' => 'Rolled-back cached title',
+            ],
+          ],
+        ]);
         // Exercise ordinary loaders while both storage handlers are private.
         $this->assertSame('Rolled-back cached title', $this->nodeStorage()->loadRevision($rid)->label());
         throw new ProtectedDraftRefusal('Deliberate failure after an actual stored draft.');
@@ -325,6 +496,9 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertRootFinished();
   }
 
+  /**
+   * Tests modern revision cache oracle detects an unisolated loader.
+   */
   public function testModernRevisionCacheOracleDetectsAnUnisolatedLoader(): void {
     $storage = $this->nodeStorage();
     if (!method_exists($storage, 'setPersistentRevisionCache')) {
@@ -338,7 +512,13 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     try {
       $this->protectedStorage->withLockedNode($nid, function () use ($nid, $cache_property, $shared_cache, &$rid): array {
         $this->protectedStorage->readDefault($nid, 'en', ['title']);
-        $rid = $this->protectedStorage->saveDraft($nid, 'en', 'draft', ['title' => [['value' => 'Deliberately leaked cache control']]]);
+        $rid = $this->protectedStorage->saveDraft($nid, 'en', 'draft', [
+          'title' => [
+            [
+              'value' => 'Deliberately leaked cache control',
+            ],
+          ],
+        ]);
         $actual_storage = $this->nodeStorage();
         $private_cache = $cache_property->getValue($actual_storage);
         try {
@@ -363,7 +543,9 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
       $this->assertNotNull($rid);
     }
     $database = $this->container->get('database');
-    $this->assertFalse($database->select('node_revision', 'r')->fields('r', ['vid'])->condition('vid', $rid)->execute()->fetchField());
+    $this->assertFalse($database->select('node_revision', 'r')->fields('r', [
+      'vid',
+    ])->condition('vid', $rid)->execute()->fetchField());
     // Read BEFORE any reset: unlike the protected path, this unsafe control
     // must expose the phantom. Otherwise the absence oracle is not causal.
     $phantom = $this->nodeStorage()->loadRevision($rid);
@@ -374,14 +556,23 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertRootFinished();
   }
 
+  /**
+   * Exercises prepare title.
+   */
   private function prepareTitle(): array {
     return $this->protectedDraft->prepare((int) $this->page->id(), 'en', ['title']);
   }
 
+  /**
+   * Exercises title request.
+   */
   private function titleRequest(array $preimage): array {
     return $this->request($preimage, ['title' => [['value' => 'Draft title']]]);
   }
 
+  /**
+   * Builds a complete request from the protected preimage and proposed updates.
+   */
   private function request(array $preimage, array $updates): array {
     return [
       'nid' => $preimage['node_id'], 'language' => $preimage['language'], 'draft_state' => 'draft',
@@ -392,6 +583,12 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     ];
   }
 
+  /**
+   * Checks a named refusal before any save.
+   *
+   * Checks the named refusal, absence of save hooks and unchanged stored
+   * revisions.
+   */
   private function assertRefusedBeforeSave(callable $operation, string $message, ?int $nid = NULL, ?string $denied_field = NULL): void {
     $nid ??= (int) $this->page->id();
     $before = $this->snapshot($nid);
@@ -409,6 +606,12 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertRootFinished();
   }
 
+  /**
+   * Checks rollback after an actual save hook.
+   *
+   * Checks the named stored-value guard rolls back an actual save hook
+   * mutation.
+   */
   private function assertSaveHookRollsBack(string $mode, array $updates, string $message): void {
     $nid = (int) $this->page->id();
     $preimage = $this->protectedDraft->prepare($nid, 'en', array_keys($updates));
@@ -435,7 +638,9 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   private function snapshot(?int $nid = NULL): array {
     $nid ??= (int) $this->page->id();
     $database = $this->container->get('database');
-    $default = (int) $database->select('node', 'n')->fields('n', ['vid'])->condition('nid', $nid)->execute()->fetchField();
+    $default = (int) $database->select('node', 'n')->fields('n', [
+      'vid',
+    ])->condition('nid', $nid)->execute()->fetchField();
     $revisions = (int) $database->select('node_revision', 'r')->condition('nid', $nid)->countQuery()->execute()->fetchField();
     $storage = $this->nodeStorage();
     $storage->resetCache([$nid]);
@@ -443,7 +648,10 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $published = [];
     foreach ($node->getTranslationLanguages() as $language => $unused) {
       $translation = $node->getTranslation($language);
-      $published[$language] = ['title' => $translation->get('title')->getValue(), 'status' => $translation->get('status')->getValue()];
+      $published[$language] = [
+        'title' => $translation->get('title')->getValue(),
+        'status' => $translation->get('status')->getValue(),
+      ];
       if ($translation->hasField('body')) {
         $published[$language]['body'] = $translation->get('body')->getValue();
       }
@@ -455,6 +663,9 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     return ['default' => $default, 'revisions' => $revisions, 'published' => $published];
   }
 
+  /**
+   * Returns the native node storage bound to the protected database.
+   */
   private function nodeStorage(): NodeStorageInterface {
     return $this->container->get('entity_type.manager')->getStorage('node');
   }
@@ -475,7 +686,10 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
       'content_entity_revision_id' => ['value', (int) $this->page->getRevisionId()],
       'workflow' => ['target_id', 'editorial'],
     ] as $field => [$property, $value]) {
-      $query->condition('r.' . $mapping->getColumnNames($field)[$property], $value);
+      // Revisionable content fields live in the multilingual revision-data
+      // table. The revision base table holds identifiers and metadata only.
+      $this->assertContains($field, $mapping->getFieldNames($type->getRevisionDataTable()));
+      $query->condition('d.' . $mapping->getColumnNames($field)[$property], $value);
     }
     $query->addField('d', $mapping->getColumnNames('langcode')['value'], 'stored_language');
     $query->addField('d', $mapping->getColumnNames('moderation_state')['value'], 'stored_state');
@@ -483,15 +697,24 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $query->orderBy('r.' . $revision_key, 'DESC');
     $languages = [];
     foreach ($query->execute()->fetchAll() as $row) {
-      $languages[$row->stored_language] ??= ['state' => $row->stored_state, 'revision' => (int) $row->moderation_revision];
+      $languages[$row->stored_language] ??= [
+        'state' => $row->stored_state,
+        'revision' => (int) $row->moderation_revision,
+      ];
     }
     ksort($languages);
-    $this->assertSame(['en', 'fr'], array_keys($languages), 'Both active-language saves must create actual stored moderation translations.');
+    $this->assertSame([
+      'en',
+      'fr',
+    ], array_keys($languages), 'Both active-language saves must create actual stored moderation translations.');
     $this->assertSame('published', $languages['en']['state']);
     $this->assertSame('published', $languages['fr']['state']);
     $this->assertSame($languages['en']['revision'], $languages['fr']['revision'], 'The node revision binding is shared; do not invent one CM revision per language.');
   }
 
+  /**
+   * Requires the database client and root transaction stack to be idle.
+   */
   private function assertRootFinished(): void {
     $database = $this->container->get('database');
     $this->assertFalse($database->inTransaction());

@@ -30,12 +30,47 @@ use Drupal\node\NodeInterface;
  */
 final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterface {
 
+  /**
+   * Node identifier owned by the current root transaction.
+   *
+   * @var int|null
+   */
   private ?int $lockedNode = NULL;
+  /**
+   * Stored published node used to validate the protected write.
+   *
+   * @var NodeInterface|null
+   */
   private ?NodeInterface $preimage = NULL;
+  /**
+   * Fresh locked workflow configuration.
+   *
+   * @var array|null
+   */
   private ?array $workflowConfig = NULL;
+  /**
+   * Complete locked configuration sets used by comparison tokens.
+   *
+   * @var array
+   */
   private array $configuration = [];
+  /**
+   * Original cache bindings restored after commit or rollback.
+   *
+   * @var array
+   */
   private array $privateCaches = [];
+  /**
+   * Native root transaction owned by this adapter.
+   *
+   * @var Transaction|null
+   */
   private ?Transaction $ownedTransaction = NULL;
+  /**
+   * Identifier of the original native root transaction.
+   *
+   * @var string|null
+   */
   private ?string $ownedTransactionId = NULL;
 
   public function __construct(
@@ -107,7 +142,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       elseif ($driver === 'mysql') {
         // InnoDB SERIALIZABLE next-key locks protect both existing rows and
         // their gaps. Consume each cursor without retaining a site-wide array.
-        $this->consume($this->database->query('SELECT [name] FROM {config} WHERE [collection] = :collection FOR UPDATE', [':collection' => '']));
+        $this->consume($this->database->query('SELECT [name] FROM {config} WHERE [collection] = :collection FOR UPDATE', [
+          ':collection' => '',
+        ]));
       }
       // Storage handlers retain field definitions/table mapping. Rebuild after
       // the configuration lock, and bind the fresh handlers to this connection.
@@ -139,7 +176,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         foreach (array_unique($mapped_tables) as $table) {
           $this->assertInnoDb($table);
         }
-        $this->consume($this->database->query('SELECT [' . $id . '] FROM {' . $revision_table . '} WHERE [' . $id . '] = :nid FOR UPDATE', [':nid' => $nid]));
+        $this->consume($this->database->query('SELECT [' . $id . '] FROM {' . $revision_table . '} WHERE [' . $id . '] = :nid FOR UPDATE', [
+          ':nid' => $nid,
+        ]));
       }
       // SQLite's root BEGIN IMMEDIATE has already reserved the writer. The
       // other drivers also protect in-place/default saves through the node row.
@@ -171,13 +210,13 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       return $result;
     }
     catch (\Throwable $e) {
-      if (isset($transaction)) {
-        try {
-          $transaction->rollBack();
-        }
-        catch (\Throwable $rollback_error) {
-          throw new ProtectedDraftRefusal('The edit could not be verified; inspect the page revision before retrying.', 0, $rollback_error);
-        }
+      // startTransaction() succeeded before entering this try block, so every
+      // failure here has an owned transaction to roll back.
+      try {
+        $transaction->rollBack();
+      }
+      catch (\Throwable $rollback_error) {
+        throw new ProtectedDraftRefusal('The edit could not be verified; inspect the page revision before retrying.', 0, $rollback_error);
       }
       throw $e;
     }
@@ -229,7 +268,10 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     if ($workflow !== NULL) {
       $plugin = $workflow->getTypePlugin();
       foreach ($plugin->getStates() as $state) {
-        $states[$state->id()] = ['published' => $state->isPublishedState(), 'default_revision' => $state->isDefaultRevisionState()];
+        $states[$state->id()] = [
+          'published' => $state->isPublishedState(),
+          'default_revision' => $state->isDefaultRevisionState(),
+        ];
       }
       $current = $raw_translation->get('moderation_state')->value;
       if (is_string($current) && $current !== '' && $plugin->hasState($current)) {
@@ -337,6 +379,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return (int) $node->getRevisionId();
   }
 
+  /**
+   * Checks stored draft edit, field and text-format access before commit.
+   */
   private function assertDraftAccess(NodeInterface $node, array $fields): void {
     // Check actual text-format USE before entity access hooks inspect the
     // candidate. A later hook cannot substitute a safer format for this check.
@@ -361,9 +406,19 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
   }
 
-  /** Internal only: includes unreadable fields without exporting their values. */
+  /**
+   * Internal only: includes unreadable fields without exporting their values.
+   */
   private function draftContent(NodeInterface $node): array {
-    $volatile = ['vid', 'revision_uid', 'revision_timestamp', 'revision_log', 'revision_default', 'revision_translation_affected', 'changed'];
+    $volatile = [
+      'vid',
+      'revision_uid',
+      'revision_timestamp',
+      'revision_log',
+      'revision_default',
+      'revision_translation_affected',
+      'changed',
+    ];
     $content = [];
     foreach ($node->getTranslationLanguages() as $language => $unused) {
       $translation = $node->getTranslation($language);
@@ -419,6 +474,12 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return $result;
   }
 
+  /**
+   * Verifies the locked configuration storage.
+   *
+   * Verifies active configuration and global access handlers use the locked
+   * storage.
+   */
   private function assertConfigurationStorage(): void {
     // Backend-overridable active storage cannot be assumed to use these rows.
     // Verify the actual native storage connection/table/collection, not just a
@@ -426,12 +487,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     if (get_class($this->activeConfig) !== DatabaseStorage::class) {
       throw new ProtectedDraftRefusal('The workflow storage does not support protected transaction locking.');
     }
-    // Core moderation and text-format access use Drupal's global services.
-    // An alternate injected manager/factory would not bind their real reads.
-    if (\Drupal::service('config.factory') !== $this->configFactory
-      || \Drupal::entityTypeManager() !== $this->entityTypeManager) {
-      throw new ProtectedDraftRefusal('The protected edit must use the site handlers actual access checks consume.');
-    }
+    self::assertSiteHandlers($this->configFactory, $this->entityTypeManager);
     foreach (['connection' => $this->database, 'table' => 'config', 'collection' => ''] as $property => $expected) {
       $actual = (new \ReflectionProperty(DatabaseStorage::class, $property))->getValue($this->activeConfig);
       if ($actual !== $expected) {
@@ -444,6 +500,12 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
   }
 
+  /**
+   * Keeps transaction cache entries private.
+   *
+   * Keeps uncommitted node and moderation cache entries private to the
+   * transaction.
+   */
   private function isolateCaches(SqlContentEntityStorage $storage): void {
     $bindings = [];
     foreach ([
@@ -454,11 +516,31 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       $bindings[] = [$property, $property->getValue($storage), $replacement];
     }
     $this->privateCaches[] = [$storage, $bindings];
-    foreach ($bindings as [$property, $original, $replacement]) {
+    foreach ($bindings as [$property, , $replacement]) {
       $property->setValue($storage, $replacement);
     }
   }
 
+  /**
+   * Compares injected handlers with the global handlers Core access uses.
+   *
+   * This stateless identity assertion deliberately reads the global registry.
+   * Merely checking an injected container could miss alternate handlers while
+   * Core moderation and text-format access still read the real site services.
+   */
+  private static function assertSiteHandlers(ConfigFactoryInterface $config_factory, EntityTypeManagerInterface $entity_type_manager): void {
+    if (\Drupal::service('config.factory') !== $config_factory
+      || \Drupal::entityTypeManager() !== $entity_type_manager) {
+      throw new ProtectedDraftRefusal('The protected edit must use the site handlers actual access checks consume.');
+    }
+  }
+
+  /**
+   * Restores shared cache backends safely.
+   *
+   * Restores shared cache backends after commit or rollback without copying
+   * private entries.
+   */
   private function restoreCaches(): void {
     foreach (array_reverse($this->privateCaches) as [$storage, $bindings]) {
       foreach ($bindings as [$property, $original]) {
@@ -473,14 +555,29 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $this->privateCaches = [];
   }
 
+  /**
+   * Reads the actual stored default revision.
+   *
+   * Reads native stored default revision values without load hooks or shared
+   * caches.
+   */
   private function hydrateDefault(SqlContentEntityStorage $storage, int $id): ?ContentEntityInterface {
     return $this->hydrate($storage, 'getFromStorage', $id);
   }
 
+  /**
+   * Reads the actual stored exact revision.
+   *
+   * Reads native stored exact revision values without load hooks or shared
+   * caches.
+   */
   private function hydrateRevision(SqlContentEntityStorage $storage, int $revision): ?ContentEntityInterface {
     return $this->hydrate($storage, 'doLoadMultipleRevisionsFieldItems', $revision);
   }
 
+  /**
+   * Requires native SQL hydrators and reads mapped stored field items directly.
+   */
   private function hydrate(SqlContentEntityStorage $storage, string $method, int $id): ?ContentEntityInterface {
     $this->assertSqlStorageConnection($storage);
     // These native hydrators deserialize mapped field items, but do not run
@@ -506,6 +603,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return NULL;
   }
 
+  /**
+   * Reads the latest stored node revision identifier.
+   */
   private function latestRevisionId(SqlContentEntityStorage $storage, int $nid): int {
     $type = $storage->getEntityType();
     $query = $this->database->select($type->getRevisionTable(), 'r');
@@ -513,6 +613,12 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return (int) $query->condition($type->getKey('id'), $nid)->execute()->fetchField();
   }
 
+  /**
+   * Binds actual stored moderation translations.
+   *
+   * Binds each translation to its actual stored moderation revision and
+   * workflow.
+   */
   private function bindStoredModeration(NodeInterface $node, mixed $workflow): void {
     if ($workflow === NULL) {
       return;
@@ -545,11 +651,18 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         throw new ProtectedDraftRefusal('The stored moderation state is not in the locked workflow.');
       }
       // Notify FALSE binds the computed value without changing stored status or
-      // default-revision flags. Never synthesize a missing language translation.
+      // default-revision flags. Never synthesize a missing language
+      // translation.
       $node->getTranslation($language)->get('moderation_state')->setValue([['value' => $state]], FALSE);
     }
   }
 
+  /**
+   * Checks the native dependency contract.
+   *
+   * Checks fresh filter configuration and access for every proposed text
+   * format.
+   */
   private function assertTextFormatAccess(NodeInterface $node, string $field): void {
     if (!in_array($node->getFieldDefinition($field)->getType(), ['text', 'text_long', 'text_with_summary'], TRUE)) {
       return;
@@ -570,12 +683,18 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
   }
 
+  /**
+   * Returns the native node storage bound to the protected database.
+   */
   private function nodeStorage(): SqlContentEntityStorage {
     $storage = $this->entityTypeManager->getStorage('node');
     $this->assertSqlStorageConnection($storage);
     return $storage;
   }
 
+  /**
+   * Rejects storage handlers connected to a different database.
+   */
   private function assertSqlStorageConnection(mixed $storage): void {
     if (!$storage instanceof SqlContentEntityStorage) {
       throw new ProtectedDraftRefusal('The entity storage does not support protected revision locking.');
@@ -586,6 +705,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
   }
 
+  /**
+   * Requires transactional InnoDB tables for protected MySQL writes.
+   */
   private function assertInnoDb(string $table): void {
     if (!preg_match('/\A[a-zA-Z0-9_]+\z/', $table)) {
       throw new ProtectedDraftRefusal('The table mapping is not supported.');
@@ -596,12 +718,19 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
   }
 
+  /**
+   * Exhausts a locking query without retaining a full result set.
+   */
   private function consume(object $statement): void {
     while ($statement->fetchField() !== FALSE) {
-      // Hold SQL locks until the outer transaction commits, without a full copy.
+      // Hold SQL locks until the outer transaction commits, without a full
+      // copy.
     }
   }
 
+  /**
+   * Requires the requested node to be owned by this transaction.
+   */
   private function assertLocked(int $nid): void {
     if ($this->lockedNode !== $nid || !$this->database->inTransaction()) {
       throw new ProtectedDraftRefusal('The page is not inside its protected transaction.');
@@ -609,11 +738,17 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $this->assertActiveTransaction();
   }
 
+  /**
+   * Reads the native client transaction state.
+   */
   private function transactionState(): ClientConnectionTransactionState {
     $property = new \ReflectionProperty(TransactionManagerBase::class, 'connectionTransactionState');
     return $property->getValue($this->database->transactionManager());
   }
 
+  /**
+   * Requires the original root transaction and native database connection.
+   */
   private function assertActiveTransaction(): void {
     $stack = (new \ReflectionProperty(TransactionManagerBase::class, 'stack'))->getValue($this->database->transactionManager());
     if ($this->transactionState() !== ClientConnectionTransactionState::Active
@@ -626,6 +761,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
   }
 
+  /**
+   * Checks the exact translation, node access and requested field access.
+   */
   private function readableTranslation(mixed $node, string $language, array $fields): NodeInterface {
     if (!$node instanceof NodeInterface || !$node->hasTranslation($language)) {
       throw new ProtectedDraftRefusal('The exact page translation is not available.');
@@ -644,8 +782,30 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return $translation;
   }
 
+  /**
+   * Allows only supported, writable fields in the requested translation.
+   */
   private function editableField(NodeInterface $node, string $field): bool {
-    $reserved = ['nid', 'vid', 'uuid', 'type', 'langcode', 'status', 'moderation_state', 'uid', 'created', 'changed', 'revision_uid', 'revision_timestamp', 'revision_log', 'revision_default', 'revision_translation_affected', 'default_langcode', 'content_translation_source', 'content_translation_outdated'];
+    $reserved = [
+      'nid',
+      'vid',
+      'uuid',
+      'type',
+      'langcode',
+      'status',
+      'moderation_state',
+      'uid',
+      'created',
+      'changed',
+      'revision_uid',
+      'revision_timestamp',
+      'revision_log',
+      'revision_default',
+      'revision_translation_affected',
+      'default_langcode',
+      'content_translation_source',
+      'content_translation_outdated',
+    ];
     if (in_array($field, $reserved, TRUE) || !$node->hasField($field)) {
       return FALSE;
     }
@@ -655,6 +815,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       && ($node->isDefaultTranslation() || $definition->isTranslatable());
   }
 
+  /**
+   * Reads the requested stored field item values.
+   */
   private function values(NodeInterface $node, array $fields): array {
     $values = [];
     foreach ($fields as $field) {
@@ -663,6 +826,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return $values;
   }
 
+  /**
+   * Loads the unique effective workflow from fresh locked configuration.
+   */
   private function workflowFor(NodeInterface $node): mixed {
     $this->workflowConfig = NULL;
     if (!$this->moduleHandler->moduleExists('content_moderation')) {
@@ -699,6 +865,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return $workflow;
   }
 
+  /**
+   * Binds workflow and complete field definitions to one comparison token.
+   */
   private function workflowFingerprint(array $definitions): string {
     $fields = [];
     foreach ($definitions as $name => $definition) {
@@ -717,9 +886,19 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         'default_value' => $definition->getDefaultValueLiteral(),
       ];
     }
-    return $this->fingerprint(['workflow' => $this->workflowConfig, 'fields' => $fields, 'configuration' => $this->configuration]);
+    return $this->fingerprint([
+      'workflow' => $this->workflowConfig,
+      'fields' => $fields,
+      'configuration' => $this->configuration,
+    ]);
   }
 
+  /**
+   * Checks fresh complete field definitions.
+   *
+   * Rejects cached field definitions that differ from locked active
+   * configuration.
+   */
   private function assertFreshFieldConfiguration(NodeInterface $node): void {
     $definitions = $node->getFieldDefinitions();
     $fields = $overrides = $storages = [];
@@ -778,6 +957,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
   }
 
+  /**
+   * Requires fresh filter settings before format access checks.
+   */
   private function bindFilterSettings(): void {
     $raw = $this->activeConfig->read('filter.settings');
     if (!is_array($raw)) {
@@ -790,6 +972,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $this->configuration['filter_settings'] = $raw;
   }
 
+  /**
+   * Reads active configuration directly from the locked backend.
+   */
   private function rawConfiguration(string $prefix): array {
     $result = [];
     foreach ($this->activeConfig->listAll($prefix) as $name) {
@@ -802,6 +987,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return $result;
   }
 
+  /**
+   * Creates a deterministic token for a complete configuration value.
+   */
   private function fingerprint(array $value): string {
     return ProtectedDraftConfiguration::fingerprint($value);
   }

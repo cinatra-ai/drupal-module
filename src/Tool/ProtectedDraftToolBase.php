@@ -29,8 +29,23 @@ abstract class ProtectedDraftToolBase extends ToolBase {
 
   public const CONTRACT = 'cinatra.protected-draft/v1';
 
+  /**
+   * Protected revision service for the requested operation.
+   *
+   * @var ProtectedDraftService
+   */
   protected ProtectedDraftService $protectedDraft;
+  /**
+   * Existing MCP scope and write-policy service, when installed.
+   *
+   * @var AccessManager|null
+   */
   protected ?AccessManager $mcpAccess = NULL;
+  /**
+   * Existing MCP tool-call context, when installed.
+   *
+   * @var McpToolCallContext|null
+   */
   protected ?McpToolCallContext $mcpContext = NULL;
 
   /**
@@ -98,6 +113,9 @@ abstract class ProtectedDraftToolBase extends ToolBase {
     }
   }
 
+  /**
+   * Runs the requested protected revision operation.
+   */
   abstract protected function runProtectedOperation(array $values): array;
 
 }

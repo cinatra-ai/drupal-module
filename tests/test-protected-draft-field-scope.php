@@ -1,5 +1,10 @@
 <?php
 
+/**
+ * @file
+ * Standalone protected-draft checks without a Drupal installation.
+ */
+
 declare(strict_types=1);
 
 require_once __DIR__ . '/../src/ProtectedDraft/ProtectedDraftRefusal.php';
@@ -8,7 +13,34 @@ require_once __DIR__ . '/../src/ProtectedDraft/ProtectedDraftFieldScope.php';
 use Drupal\cinatra\ProtectedDraft\ProtectedDraftFieldScope;
 use Drupal\cinatra\ProtectedDraft\ProtectedDraftRefusal;
 
-$before = ['en' => ['title' => [['value' => 'English']], 'body' => [['value' => 'English body', 'format' => 'plain_text']]], 'fr' => ['title' => [['value' => 'French']], 'body' => [['value' => 'French body', 'format' => 'plain_text']]]];
+$before = [
+  'en' => [
+    'title' => [
+      [
+        'value' => 'English',
+      ],
+    ],
+    'body' => [
+      [
+        'value' => 'English body',
+        'format' => 'plain_text',
+      ],
+    ],
+  ],
+  'fr' => [
+    'title' => [
+      [
+        'value' => 'French',
+      ],
+    ],
+    'body' => [
+      [
+        'value' => 'French body',
+        'format' => 'plain_text',
+      ],
+    ],
+  ],
+];
 $passed = 0;
 $test = function (string $name, array $after, bool $allowed) use ($before, &$passed): void {
   try {
@@ -68,7 +100,9 @@ $shared_test = function (string $name, array $after, array $shared_fields, bool 
 $shared_after = $shared_before;
 $shared_after['en']['field_shared_note'] = [['value' => 'Shared draft note']];
 $shared_after['fr']['field_shared_note'] = [['value' => 'Shared draft note']];
-$shared_test('requested shared field changes uniformly in all translations', $shared_after, ['field_shared_note'], TRUE);
+$shared_test('requested shared field changes uniformly in all translations', $shared_after, [
+  'field_shared_note',
+], TRUE);
 $changed = $shared_after;
 $changed['fr']['field_shared_note'] = [['value' => 'Inconsistent draft note']];
 $shared_test('shared field must have one stored value in all translations', $changed, ['field_shared_note'], FALSE);

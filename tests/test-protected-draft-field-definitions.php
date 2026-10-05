@@ -1,11 +1,37 @@
 <?php
 
+// Multiple dependency doubles deliberately share this standalone harness.
+// phpcs:disable Squiz.Classes.ClassFileName.NoMatch
+
+
 declare(strict_types=1);
 
-/** Native adapter API cases with doubles, not Drupal Kernel or SQL proof. */
+/**
+ * Native adapter API cases with doubles, not Drupal Kernel or SQL proof.
+ */
 
 namespace Drupal\node {
+
+  /**
+   * Provides the native node interface dependency double.
+   */
   interface NodeInterface {}
+}
+
+namespace Drupal\Core\Config {
+
+  /**
+   * Provides the configuration factory identity for a native adapter check.
+   */
+  interface ConfigFactoryInterface {}
+}
+
+namespace Drupal\Core\Entity {
+
+  /**
+   * Provides the entity manager identity for a native adapter check.
+   */
+  interface EntityTypeManagerInterface {}
 }
 
 namespace {
@@ -15,57 +41,274 @@ namespace {
   require_once dirname(__DIR__) . '/src/ProtectedDraft/DrupalProtectedDraftStorage.php';
 
   use Drupal\cinatra\ProtectedDraft\DrupalProtectedDraftStorage;
+  use Drupal\cinatra\ProtectedDraft\ProtectedDraftRefusal;
+  use Drupal\Core\Config\ConfigFactoryInterface;
+  use Drupal\Core\Entity\EntityTypeManagerInterface;
+  use Drupal\node\NodeInterface;
 
-  final class NativeFieldStorage {
+  /**
+   * Provides only the global service registry used by the identity assertion.
+   *
+   * This class is a native double; it boots no Drupal container or site.
+   */
+  final class CinatraNativeSiteServices {
+
+    /**
+     * Global configuration factory identity supplied by the native test.
+     *
+     * @var \Drupal\Core\Config\ConfigFactoryInterface
+     */
+    public static ConfigFactoryInterface $configFactory;
+
+    /**
+     * Global entity manager identity supplied by the native test.
+     *
+     * @var \Drupal\Core\Entity\EntityTypeManagerInterface
+     */
+    public static EntityTypeManagerInterface $entityTypeManager;
+
+    /**
+     * Returns the global configuration factory from the native fixture.
+     */
+    public static function service(string $id): ConfigFactoryInterface {
+      if ($id !== 'config.factory') {
+        throw new RuntimeException('The native registry exposes only config.factory.');
+      }
+      return self::$configFactory;
+    }
+
+    /**
+     * Returns the global entity manager from the native fixture.
+     */
+    public static function entityTypeManager(): EntityTypeManagerInterface {
+      return self::$entityTypeManager;
+    }
+
+  }
+
+  class_alias(CinatraNativeSiteServices::class, 'Drupal');
+
+  /**
+   * Provides the native cinatra native field storage dependency double.
+   */
+  final class CinatraNativeFieldStorage {
+
     public function __construct(public bool $revisionable = TRUE) {}
-    public function isRevisionable(): bool { return $this->revisionable; }
-    public function getCardinality(): int { return 1; }
-    public function getConstraints(): array { return []; }
+
+    /**
+     * Reports is revisionable.
+     */
+    public function isRevisionable(): bool {
+      return $this->revisionable;
+    }
+
+    /**
+     * Reports get cardinality.
+     */
+    public function getCardinality(): int {
+      return 1;
+    }
+
+    /**
+     * Reports get constraints.
+     */
+    public function getConstraints(): array {
+      return [];
+    }
+
   }
 
   // Configurable definitions intentionally have NO isRevisionable() method:
-  // FieldDefinitionInterface supplies getFieldStorageDefinition() instead.
-  class NativeConfigurableField {
+  /**
+   * FieldDefinitionInterface supplies getFieldStorageDefinition() instead.
+   */
+  class CinatraNativeConfigurableField {
+
     public function __construct(
-      protected NativeFieldStorage $storage,
+      protected CinatraNativeFieldStorage $storage,
       public bool $translatable = TRUE,
       public bool $computed = FALSE,
       public bool $readOnly = FALSE,
     ) {}
-    public function getFieldStorageDefinition(): object { return $this->storage; }
-    public function isTranslatable(): bool { return $this->translatable; }
-    public function isComputed(): bool { return $this->computed; }
-    public function isReadOnly(): bool { return $this->readOnly; }
-    public function getType(): string { return 'string'; }
-    public function getSettings(): array { return []; }
-    public function isRequired(): bool { return FALSE; }
-    public function getConstraints(): array { return []; }
-    public function getItemDefinition(): object { return new NativeFieldStorage(); }
-    public function getDefaultValueLiteral(): array { return []; }
+
+    /**
+     * Reports get field storage definition.
+     */
+    public function getFieldStorageDefinition(): object {
+      return $this->storage;
+    }
+
+    /**
+     * Reports is translatable.
+     */
+    public function isTranslatable(): bool {
+      return $this->translatable;
+    }
+
+    /**
+     * Reports is computed.
+     */
+    public function isComputed(): bool {
+      return $this->computed;
+    }
+
+    /**
+     * Reports is read only.
+     */
+    public function isReadOnly(): bool {
+      return $this->readOnly;
+    }
+
+    /**
+     * Reports get type.
+     */
+    public function getType(): string {
+      return 'string';
+    }
+
+    /**
+     * Reports get settings.
+     */
+    public function getSettings(): array {
+      return [];
+    }
+
+    /**
+     * Reports is required.
+     */
+    public function isRequired(): bool {
+      return FALSE;
+    }
+
+    /**
+     * Reports get constraints.
+     */
+    public function getConstraints(): array {
+      return [];
+    }
+
+    /**
+     * Reports get item definition.
+     */
+    public function getItemDefinition(): object {
+      return new CinatraNativeFieldStorage();
+    }
+
+    /**
+     * Reports get default value literal.
+     */
+    public function getDefaultValueLiteral(): array {
+      return [];
+    }
+
   }
 
-  // Base definitions serve as their own storage definition in Drupal.
-  final class NativeBaseField extends NativeConfigurableField {
-    public function getFieldStorageDefinition(): object { return $this; }
-    public function isRevisionable(): bool { return $this->storage->isRevisionable(); }
-    public function getCardinality(): int { return 1; }
+  /**
+   * Base definitions serve as their own storage definition in Drupal.
+*/
+  final class CinatraNativeBaseField extends CinatraNativeConfigurableField {
+
+    /**
+     * Reports get field storage definition.
+     */
+    public function getFieldStorageDefinition(): object {
+      return $this;
+    }
+
+    /**
+     * Reports is revisionable.
+     */
+    public function isRevisionable(): bool {
+      return $this->storage->isRevisionable();
+    }
+
+    /**
+     * Reports get cardinality.
+     */
+    public function getCardinality(): int {
+      return 1;
+    }
+
   }
 
-  final class NativeFieldItems {
+  /**
+   * Provides the native cinatra native field items dependency double.
+   */
+  final class CinatraNativeFieldItems {
+
     public function __construct(private array $values) {}
-    public function getValue(): array { return $this->values; }
+
+    /**
+     * Reports get value.
+     */
+    public function getValue(): array {
+      return $this->values;
+    }
+
   }
 
-  final class NativeFieldNode implements Drupal\node\NodeInterface {
+  /**
+   * Provides the native cinatra native field node dependency double.
+   */
+  final class CinatraNativeFieldNode implements NodeInterface {
+    /**
+     * Language-keyed native node translation doubles.
+     *
+     * @var array
+     */
     public array $translations = [];
+
     public function __construct(private array $definitions, private array $values, private string $language = 'en') {}
-    public function hasField(string $name): bool { return isset($this->definitions[$name]); }
-    public function getFieldDefinition(string $name): object { return $this->definitions[$name]; }
-    public function getFieldDefinitions(): array { return $this->definitions; }
-    public function isDefaultTranslation(): bool { return $this->language === 'en'; }
-    public function getTranslationLanguages(): array { return array_fill_keys(array_keys($this->translations), NULL); }
-    public function getTranslation(string $language): self { return $this->translations[$language]; }
-    public function get(string $name): NativeFieldItems { return new NativeFieldItems($this->values[$name]); }
+
+    /**
+     * Reports has field.
+     */
+    public function hasField(string $name): bool {
+      return isset($this->definitions[$name]);
+    }
+
+    /**
+     * Reports get field definition.
+     */
+    public function getFieldDefinition(string $name): object {
+      return $this->definitions[$name];
+    }
+
+    /**
+     * Reports get field definitions.
+     */
+    public function getFieldDefinitions(): array {
+      return $this->definitions;
+    }
+
+    /**
+     * Reports is default translation.
+     */
+    public function isDefaultTranslation(): bool {
+      return $this->language === 'en';
+    }
+
+    /**
+     * Reports get translation languages.
+     */
+    public function getTranslationLanguages(): array {
+      return array_fill_keys(array_keys($this->translations), NULL);
+    }
+
+    /**
+     * Reports get translation.
+     */
+    public function getTranslation(string $language): self {
+      return $this->translations[$language];
+    }
+
+    /**
+     * Reports get.
+     */
+    public function get(string $name): CinatraNativeFieldItems {
+      return new CinatraNativeFieldItems($this->values[$name]);
+    }
+
   }
 
   // Only these pure adapter methods execute; no connection, container, account,
@@ -81,34 +324,121 @@ namespace {
     }
   };
   $cases = [
-    ['configurable translated field on default language', new NativeConfigurableField(new NativeFieldStorage()), 'en', TRUE],
-    ['configurable translated field on French', new NativeConfigurableField(new NativeFieldStorage()), 'fr', TRUE],
-    ['configurable shared field on default language', new NativeConfigurableField(new NativeFieldStorage(), FALSE), 'en', TRUE],
-    ['configurable shared field on French refuses', new NativeConfigurableField(new NativeFieldStorage(), FALSE), 'fr', FALSE],
-    ['nonrevisionable storage refuses', new NativeConfigurableField(new NativeFieldStorage(FALSE)), 'en', FALSE],
-    ['computed field refuses', new NativeConfigurableField(new NativeFieldStorage(), TRUE, TRUE), 'en', FALSE],
-    ['readonly field refuses', new NativeConfigurableField(new NativeFieldStorage(), TRUE, FALSE, TRUE), 'en', FALSE],
-    ['base field using itself as storage remains editable', new NativeBaseField(new NativeFieldStorage()), 'en', TRUE],
+    [
+      'configurable translated field on default language',
+      new CinatraNativeConfigurableField(new CinatraNativeFieldStorage()),
+      'en',
+      TRUE,
+    ],
+    [
+      'configurable translated field on French',
+      new CinatraNativeConfigurableField(new CinatraNativeFieldStorage()),
+      'fr',
+      TRUE,
+    ],
+    [
+      'configurable shared field on default language',
+      new CinatraNativeConfigurableField(new CinatraNativeFieldStorage(), FALSE),
+      'en',
+      TRUE,
+    ],
+    [
+      'configurable shared field on French refuses',
+      new CinatraNativeConfigurableField(new CinatraNativeFieldStorage(), FALSE),
+      'fr',
+      FALSE,
+    ],
+    [
+      'nonrevisionable storage refuses',
+      new CinatraNativeConfigurableField(new CinatraNativeFieldStorage(FALSE)),
+      'en',
+      FALSE,
+    ],
+    [
+      'computed field refuses',
+      new CinatraNativeConfigurableField(new CinatraNativeFieldStorage(), TRUE, TRUE),
+      'en',
+      FALSE,
+    ],
+    [
+      'readonly field refuses',
+      new CinatraNativeConfigurableField(new CinatraNativeFieldStorage(), TRUE, FALSE, TRUE),
+      'en',
+      FALSE,
+    ],
+    [
+      'base field using itself as storage remains editable',
+      new CinatraNativeBaseField(new CinatraNativeFieldStorage()),
+      'en',
+      TRUE,
+    ],
   ];
   foreach ($cases as [$name, $definition, $language, $allowed]) {
-    $node = new NativeFieldNode(['body' => $definition], ['body' => [['value' => 'Stored value']]], $language);
+    $node = new CinatraNativeFieldNode(['body' => $definition], ['body' => [['value' => 'Stored value']]], $language);
     $assert($name, $editable->invoke($adapter, $node, 'body'), $allowed);
     $passed++;
     echo "PASS $name\n";
   }
 
   $definitions = [
-    'body' => new NativeConfigurableField(new NativeFieldStorage()),
-    'field_shared_note' => new NativeConfigurableField(new NativeFieldStorage(), FALSE),
-    'unrevisioned' => new NativeConfigurableField(new NativeFieldStorage(FALSE)),
-    'computed' => new NativeConfigurableField(new NativeFieldStorage(), TRUE, TRUE),
-    'changed' => new NativeBaseField(new NativeFieldStorage()),
+    'body' => new CinatraNativeConfigurableField(new CinatraNativeFieldStorage()),
+    'field_shared_note' => new CinatraNativeConfigurableField(new CinatraNativeFieldStorage(), FALSE),
+    'unrevisioned' => new CinatraNativeConfigurableField(new CinatraNativeFieldStorage(FALSE)),
+    'computed' => new CinatraNativeConfigurableField(new CinatraNativeFieldStorage(), TRUE, TRUE),
+    'changed' => new CinatraNativeBaseField(new CinatraNativeFieldStorage()),
   ];
-  $en = new NativeFieldNode($definitions, ['body' => [['value' => 'English']], 'field_shared_note' => [['value' => 'Shared']]]);
-  $fr = new NativeFieldNode($definitions, ['body' => [['value' => 'French']], 'field_shared_note' => [['value' => 'Shared']]], 'fr');
+  $en = new CinatraNativeFieldNode($definitions, [
+    'body' => [
+      [
+        'value' => 'English',
+      ],
+    ],
+    'field_shared_note' => [
+      [
+        'value' => 'Shared',
+      ],
+    ],
+  ]);
+  $fr = new CinatraNativeFieldNode($definitions, [
+    'body' => [
+      [
+        'value' => 'French',
+      ],
+    ],
+    'field_shared_note' => [
+      [
+        'value' => 'Shared',
+      ],
+    ],
+  ], 'fr');
   $en->translations = $fr->translations = ['en' => $en, 'fr' => $fr];
   $actual = $content->invoke($adapter, $en);
-  $expected = ['en' => ['body' => [['value' => 'English']], 'field_shared_note' => [['value' => 'Shared']]], 'fr' => ['body' => [['value' => 'French']], 'field_shared_note' => [['value' => 'Shared']]]];
+  $expected = [
+    'en' => [
+      'body' => [
+        [
+          'value' => 'English',
+        ],
+      ],
+      'field_shared_note' => [
+        [
+          'value' => 'Shared',
+        ],
+      ],
+    ],
+    'fr' => [
+      'body' => [
+        [
+          'value' => 'French',
+        ],
+      ],
+      'field_shared_note' => [
+        [
+          'value' => 'Shared',
+        ],
+      ],
+    ],
+  ];
   if ($actual !== $expected) {
     throw new RuntimeException('Stored scope must use storage revisionability and preserve both translation values.');
   }
@@ -123,5 +453,30 @@ namespace {
   }
   $passed++;
   echo "PASS configuration binding observes changed field storage revisionability\n";
+
+  $factory = new class implements ConfigFactoryInterface {};
+  $manager = new class implements EntityTypeManagerInterface {};
+  CinatraNativeSiteServices::$configFactory = $factory;
+  CinatraNativeSiteServices::$entityTypeManager = $manager;
+  $site_handlers = new ReflectionMethod(DrupalProtectedDraftStorage::class, 'assertSiteHandlers');
+  $site_handlers->invoke(NULL, $factory, $manager);
+  $passed++;
+  echo "PASS matching global handlers preserve the actual site identity\n";
+  foreach ([
+    'alternate injected configuration factory' => [clone $factory, $manager],
+    'alternate injected entity manager' => [$factory, clone $manager],
+  ] as $name => [$injected_factory, $injected_manager]) {
+    try {
+      $site_handlers->invoke(NULL, $injected_factory, $injected_manager);
+      throw new RuntimeException('An alternate handler bypassed the global identity guard.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      if (!str_contains($expected->getMessage(), 'actual access checks consume')) {
+        throw new RuntimeException('An unrelated refusal satisfied the identity check.');
+      }
+    }
+    $passed++;
+    echo "PASS $name refuses\n";
+  }
   echo "$passed passed, 0 failed, 0 skipped\n";
 }
