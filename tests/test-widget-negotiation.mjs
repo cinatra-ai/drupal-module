@@ -541,6 +541,7 @@ async function main() {
     const applyMsg = (seq, id) => ({ origin: INSTANCE_ORIGIN, source: frameWin, data: { type: "cinatra.embed.apply_intent", protocolVersion: 2, correlationId, seq, viewType: "content_change_proposal", proposalId: id } });
     deliverToBridge(applyMsg(3, "prop-A"));
     await flush();
+    check("bridge: the first apply_intent lands (no earlier uplink spent its seq)", captured.applied.length === 1);
     deliverToBridge(applyMsg(4, "prop-A"));      // duplicate id -> LRU dedup
     await flush();
     deliverToBridge({ origin: INSTANCE_ORIGIN, source: frameWin, data: { type: "cinatra.embed.apply_intent", protocolVersion: 2, correlationId: "WRONGcorrelationId012345", seq: 5, viewType: "content_change_proposal", proposalId: "prop-B" } });
@@ -578,6 +579,13 @@ async function main() {
       "bridge: an unknown uplink with a high seq does NOT starve the gate (a later valid uplink still lands)",
       captured.applied.length === beforeStarve + 1,
     );
+    // The panel FLOOR: a reported height below it is RAISED to the floor, never
+    //     honoured below it. MIN_PANEL_HEIGHT == 460, the height the panel opens
+    //     at; 100 + the 46px header is far below it.
+    deliverToBridge({ origin: INSTANCE_ORIGIN, source: frameWin, data: { type: "cinatra.embed.resize", protocolVersion: 2, correlationId, seq: 9, height: 100 } });
+    await flush();
+    const flooredH = cwWidget && parseInt(String(cwWidget.style.height || "0"), 10);
+    check("bridge: a resize height below the panel floor is RAISED to the floor (exactly 460px)", flooredH === 460);
 
     // (12) DOCUMENT REPLACEMENT. The frame reloads — protocol 2 says a reload
     //      runs the sign-in ceremony again — and the replacement document
