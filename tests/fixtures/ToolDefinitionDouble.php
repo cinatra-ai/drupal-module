@@ -1,15 +1,5 @@
 <?php
 
-/**
- * @file
- * A stand-in for the Tool module's ToolDefinition when that module is absent.
- *
- * Copied from drupal/tool 1.0.0-beta11 (commit 4c5809cd),
- * src/Tool/ToolDefinition.php lines 115-175: __construct(), get() and set()
- * are verbatim. Tests load this file only when the real class does not exist,
- * so the real class wins whenever the Tool module is present.
- */
-
 // phpcs:disable Squiz.Classes.ClassFileName.NoMatch
 
 declare(strict_types=1);
@@ -24,6 +14,12 @@ use Drupal\tool\TypedData\OutputDefinitionInterface;
 
 /**
  * Defines a tool plugin definition (test double).
+ *
+ * A stand-in for the Tool module's ToolDefinition when that module is absent.
+ * Copied from drupal/tool 1.0.0-beta11 (commit 4c5809cd),
+ * src/Tool/ToolDefinition.php lines 115-175: __construct(), get() and set()
+ * are verbatim. Tests load this file only when the real class does not exist,
+ * so the real class wins whenever the Tool module is present.
  */
 class ToolDefinition extends PluginDefinition {
 

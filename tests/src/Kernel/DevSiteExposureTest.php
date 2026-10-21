@@ -395,7 +395,21 @@ final class DevSiteExposureTest extends KernelTestBase {
     $profile = $servers['cinatra'];
     $this->assertSame(CinatraDevSite::PROFILE, $profile);
     $this->assertSame('cinatra', $profile['id']);
-    foreach (['name', 'version', 'pagination_limit', 'include_all_tools', 'gateway_mode', 'enable_resources', 'enable_prompts', 'component_public_only', 'transports', 'enabled', 'scopes', 'permission_callback'] as $key) {
+    $keys = [
+      'name',
+      'version',
+      'pagination_limit',
+      'include_all_tools',
+      'gateway_mode',
+      'enable_resources',
+      'enable_prompts',
+      'component_public_only',
+      'transports',
+      'enabled',
+      'scopes',
+      'permission_callback',
+    ];
+    foreach ($keys as $key) {
       $this->assertArrayHasKey($key, $profile);
     }
     $this->assertSame(CinatraDevSite::EXPOSED_TOOLS, $profile['tools']);
@@ -769,7 +783,17 @@ final class DevSiteExposureTest extends KernelTestBase {
         $this->assertGateDenied($response, $built, $served, $user);
       }
     }
-    foreach (['strip_tools', 'tools_one', 'tools_three', 'tools_unknown', 'strip_id', 'include_all', 'gateway', 'extra_key'] as $value) {
+    $values = [
+      'strip_tools',
+      'tools_one',
+      'tools_three',
+      'tools_unknown',
+      'strip_id',
+      'include_all',
+      'gateway',
+      'extra_key',
+    ];
+    foreach ($values as $value) {
       $served = FakeRemoteController::$served;
       [$response, $request] = $this->tampered(['*' => [$value]]);
       $this->assertSame(403, $response->getStatusCode(), $value);
@@ -824,30 +848,54 @@ final class DevSiteExposureTest extends KernelTestBase {
     $this->arm();
     $this->assertSame(CinatraDevSite::ENDPOINT_CONTROLLER, $this->controller());
     $classes = [
-      'keyless' => [function (): Request {
-        return $this->request(FALSE);
-      }, 401, NULL],
-      'wrong key' => [function (): Request {
-        $request = $this->request(FALSE);
-        $request->headers->set('Authorization', 'Bearer wrong');
-        return $request;
-      }, 401, NULL],
-      'ip' => [function (): Request {
-        return $this->request();
-      }, 404, ['allowed_ips', ['none']]],
-      'origin' => [function (): Request {
-        $request = $this->request();
-        $request->headers->set('Origin', 'http://elsewhere.example');
-        return $request;
-      }, 404, NULL],
-      'accept' => [function (): Request {
-        $request = $this->request();
-        $request->headers->set('Accept', 'application/json');
-        return $request;
-      }, 406, NULL],
-      'disabled' => [function (): Request {
-        return $this->request();
-      }, 404, ['enabled', FALSE]],
+      'keyless' => [
+        function (): Request {
+          return $this->request(FALSE);
+        },
+        401,
+        NULL,
+      ],
+      'wrong key' => [
+        function (): Request {
+          $request = $this->request(FALSE);
+          $request->headers->set('Authorization', 'Bearer wrong');
+          return $request;
+        },
+        401,
+        NULL,
+      ],
+      'ip' => [
+        function (): Request {
+          return $this->request();
+        },
+        404,
+        ['allowed_ips', ['none']],
+      ],
+      'origin' => [
+        function (): Request {
+          $request = $this->request();
+          $request->headers->set('Origin', 'http://elsewhere.example');
+          return $request;
+        },
+        404,
+        NULL,
+      ],
+      'accept' => [
+        function (): Request {
+          $request = $this->request();
+          $request->headers->set('Accept', 'application/json');
+          return $request;
+        },
+        406,
+        NULL,
+      ],
+      'disabled' => [
+        function (): Request {
+          return $this->request();
+        },
+        404,
+        ['enabled', FALSE],
+      ],
     ];
     foreach ($classes as $label => [$build, $status, $setting]) {
       if ($setting !== NULL) {
