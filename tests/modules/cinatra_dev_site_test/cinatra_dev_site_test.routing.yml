@@ -1,0 +1,7 @@
+mcp_tools_remote.handle:
+  path: '/_mcp_tools'
+  defaults:
+    _controller: '\Drupal\cinatra_dev_site_test\FakeRemoteController::handle'
+  methods: [GET, POST]
+  requirements:
+    _access: 'TRUE'

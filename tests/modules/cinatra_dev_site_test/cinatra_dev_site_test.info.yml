@@ -1,0 +1,8 @@
+name: 'Cinatra development site test'
+type: module
+description: 'Stand-ins for the Tool and MCP Tools services in development-site kernel tests.'
+package: Testing
+hidden: true
+core_version_requirement: ^10.3 || ^11 || ^12
+dependencies:
+  - cinatra:cinatra_dev_site
