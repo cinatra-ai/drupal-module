@@ -1,0 +1,45 @@
+parameters:
+  cinatra_dev_site.remote_controller: 'Drupal\mcp_tools_remote\Controller\McpToolsRemoteController'
+
+services:
+  cinatra_dev_site.ensure:
+    class: Drupal\cinatra_dev_site\CinatraDevSite
+    arguments:
+      - '@config.factory'
+      - '@entity_type.manager'
+      - '@database'
+      - '@state'
+      - '@lock'
+      - '@logger.factory'
+      - '@module_handler'
+      - '@?plugin.manager.tool'
+      - '@cinatra.protected_draft_storage'
+      - '@router.builder'
+      - '@router.route_provider'
+      - '@request_stack'
+      - '@?mcp_tools.server_config_repository'
+      - '%cinatra_dev_site.remote_controller%'
+      - '@cinatra_dev_site.profile_guard'
+      - '@account_switcher'
+
+  cinatra_dev_site.profile_guard:
+    class: Drupal\cinatra_dev_site\Mcp\ProfileToolGuard
+    arguments: ['@request_stack']
+
+  cinatra_dev_site.route_subscriber:
+    class: Drupal\cinatra_dev_site\Routing\DevSiteRouteSubscriber
+    arguments: ['%cinatra_dev_site.remote_controller%']
+    tags:
+      - { name: event_subscriber }
+
+  cinatra_dev_site.config_override:
+    class: Drupal\cinatra_dev_site\Config\DevSiteConfigOverride
+    arguments: ['@state']
+    tags:
+      - { name: config.factory.override, priority: 5 }
+
+  cinatra_dev_site.export_transform:
+    class: Drupal\cinatra_dev_site\EventSubscriber\DevSiteExportTransform
+    arguments: ['@state']
+    tags:
+      - { name: event_subscriber }

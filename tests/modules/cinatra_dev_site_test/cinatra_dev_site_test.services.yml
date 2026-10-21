@@ -1,0 +1,23 @@
+services:
+  plugin.manager.tool:
+    class: Drupal\cinatra_dev_site_test\TestToolManager
+    arguments: ['@container.namespaces', '@module_handler', '@state']
+  mcp_tools.server_config_repository:
+    class: Drupal\cinatra_dev_site_test\TestServerConfigRepository
+    arguments: ['@config.factory', '@module_handler', '@service_container', '@logger.factory']
+  cinatra_dev_site_test.allow_all:
+    class: Drupal\cinatra_dev_site_test\AllowAllCallback
+  cinatra_dev_site_test.server_id_override:
+    class: Drupal\cinatra_dev_site_test\TestServerIdOverride
+    arguments: ['@state']
+    tags:
+      - { name: config.factory.override, priority: 10 }
+  cinatra_dev_site_test.logger:
+    class: Drupal\cinatra_dev_site_test\TestLogger
+    tags:
+      - { name: logger }
+  cinatra_dev_site_test.route_subscriber:
+    class: Drupal\cinatra_dev_site_test\TestRouteSubscriber
+    arguments: ['@state']
+    tags:
+      - { name: event_subscriber }

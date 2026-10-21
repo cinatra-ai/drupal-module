@@ -11,6 +11,7 @@ parameters:
     - src
     - cinatra.module
     - cinatra.install
+    - modules/cinatra_dev_site
   excludePaths:
     # Third-party sources still supply symbols; exclude only their analysis.
     # A flat exclusion also removes the optional scanDirectories below.
@@ -23,4 +24,9 @@ parameters:
     - vendor/drupal/tool/src
     - vendor/drupal/mcp_tools/src
   # The vendored widget bundle is JavaScript, not PHP — nothing to analyse.
-  ignoreErrors: []
+  ignoreErrors:
+    # The scoped tool manager wraps the site-wide one per request; it has no
+    # discovery of its own, so it has no cache backend to declare.
+    -
+      message: '#^Missing cache backend declaration for performance\.$#'
+      path: modules/cinatra_dev_site/src/Mcp/ScopedToolManager.php

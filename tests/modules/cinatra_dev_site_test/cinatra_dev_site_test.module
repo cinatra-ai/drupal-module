@@ -1,0 +1,123 @@
+<?php
+
+/**
+ * @file
+ * Hooks that tamper with, count and observe the development-site road.
+ */
+
+declare(strict_types=1);
+
+use Drupal\node\NodeInterface;
+use Drupal\workflows\WorkflowInterface;
+
+/**
+ * Implements hook_mcp_tools_server_configs_alter().
+ *
+ * Runs after the submodule's alter. It numbers the reads of the current
+ * request, applies the State tamper map to an existing cinatra profile, and
+ * records the read number.
+ */
+function cinatra_dev_site_test_mcp_tools_server_configs_alter(array &$servers): void {
+  $request = \Drupal::requestStack()->getCurrentRequest();
+  $read = 0;
+  if ($request !== NULL) {
+    $read = (int) $request->attributes->get('_cinatra_dev_site_test_read', 0) + 1;
+    $request->attributes->set('_cinatra_dev_site_test_read', $read);
+  }
+  $state = \Drupal::state();
+  $map = (array) $state->get('cinatra_dev_site_test.tamper', []);
+  $values = array_merge((array) ($map['*'] ?? []), (array) ($map[$read] ?? []));
+  if (isset($servers['cinatra']) && is_array($servers['cinatra'])) {
+    foreach ($values as $value) {
+      _cinatra_dev_site_test_tamper($servers['cinatra'], (string) $value);
+    }
+  }
+  if ($request !== NULL) {
+    $reads = (array) $state->get('cinatra_dev_site_test.reads', []);
+    $reads[] = $read;
+    $state->set('cinatra_dev_site_test.reads', $reads);
+  }
+}
+
+/**
+ * Applies one tamper value to a profile.
+ *
+ * @param array $profile
+ *   The profile, changed in place.
+ * @param string $value
+ *   The tamper value.
+ */
+function _cinatra_dev_site_test_tamper(array &$profile, string $value): void {
+  switch ($value) {
+    case 'strip_callback':
+      unset($profile['permission_callback']);
+      break;
+
+    case 'replace_callback':
+      $profile['permission_callback'] = 'cinatra_dev_site_test.allow_all:check';
+      break;
+
+    case 'bad_callback':
+      $profile['permission_callback'] = 'cinatra_dev_site_test.no_such_service:check';
+      break;
+
+    case 'strip_tools':
+      unset($profile['tools']);
+      break;
+
+    case 'tools_one':
+      $profile['tools'] = ['cinatra_read_protected_revision'];
+      break;
+
+    case 'tools_three':
+      $profile['tools'] = [
+        'cinatra_read_protected_revision',
+        'cinatra_write_protected_draft',
+        'cinatra_dev_site_test_third',
+      ];
+      break;
+
+    case 'tools_unknown':
+      $profile['tools'] = ['cinatra_dev_site_test_unknown'];
+      break;
+
+    case 'strip_id':
+      unset($profile['id']);
+      break;
+
+    case 'include_all':
+      $profile['include_all_tools'] = TRUE;
+      break;
+
+    case 'gateway':
+      $profile['gateway_mode'] = TRUE;
+      break;
+
+    case 'extra_key':
+      $profile['x'] = TRUE;
+      break;
+
+    case 'disable':
+      $profile['enabled'] = FALSE;
+      break;
+  }
+}
+
+/**
+ * Implements hook_workflow_presave().
+ */
+function cinatra_dev_site_test_workflow_presave(WorkflowInterface $workflow): void {
+  if (\Drupal::state()->get('cinatra_dev_site_test.fail_workflow')) {
+    throw new \RuntimeException('fail_workflow');
+  }
+}
+
+/**
+ * Implements hook_node_presave().
+ */
+function cinatra_dev_site_test_node_presave(NodeInterface $node): void {
+  $state = \Drupal::state();
+  $seen = (array) $state->get('cinatra_dev_site_test.in_transaction', []);
+  $seen[] = \Drupal::database()->inTransaction();
+  $state->set('cinatra_dev_site_test.in_transaction', $seen);
+}

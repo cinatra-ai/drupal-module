@@ -1,0 +1,99 @@
+<?php
+
+/**
+ * @file
+ * Hooks of the Cinatra development site submodule.
+ *
+ * The profile alter and the status refusal act only while the site is armed.
+ * The import guard acts only on a syncing save on a site without the marker.
+ */
+
+declare(strict_types=1);
+
+use Drupal\cinatra_dev_site\CinatraDevSite;
+use Drupal\cinatra_dev_site\Mcp\ProfileBinding;
+use Drupal\node\NodeInterface;
+use Drupal\workflows\WorkflowInterface;
+
+/**
+ * Implements hook_mcp_tools_server_configs_alter().
+ */
+function cinatra_dev_site_mcp_tools_server_configs_alter(array &$servers): void {
+  if (!CinatraDevSite::isArmed()) {
+    return;
+  }
+  if (isset($servers[CinatraDevSite::PROFILE_ID])) {
+    // A foreign profile under our id: disabled in this altered view only.
+    if (is_array($servers[CinatraDevSite::PROFILE_ID])) {
+      $servers[CinatraDevSite::PROFILE_ID]['enabled'] = FALSE;
+    }
+    else {
+      unset($servers[CinatraDevSite::PROFILE_ID]);
+    }
+    return;
+  }
+  $request = \Drupal::requestStack()->getCurrentRequest();
+  if ($request === NULL) {
+    return;
+  }
+  $binding = $request->attributes->get(CinatraDevSite::BINDING_ATTRIBUTE);
+  if (!$binding instanceof ProfileBinding || $binding->request() !== $request) {
+    return;
+  }
+  $servers[CinatraDevSite::PROFILE_ID] = CinatraDevSite::PROFILE;
+  $binding->noteRead();
+}
+
+/**
+ * Implements hook_node_presave().
+ *
+ * While armed, an existing moderated page changes its status only through its
+ * moderation state.
+ */
+function cinatra_dev_site_node_presave(NodeInterface $node): void {
+  if (!CinatraDevSite::isArmed() || $node->bundle() !== 'page' || $node->isNew() || $node->isSyncing()) {
+    return;
+  }
+  if (!\Drupal::service('content_moderation.moderation_information')->isModeratedEntity($node)) {
+    return;
+  }
+  $original = method_exists($node, 'getOriginal') ? $node->getOriginal() : ($node->original ?? NULL);
+  if (!$original instanceof NodeInterface) {
+    return;
+  }
+  foreach (array_keys($node->getTranslationLanguages()) as $langcode) {
+    if (!$original->hasTranslation($langcode)) {
+      continue;
+    }
+    $translation = $node->getTranslation($langcode);
+    $before = $original->getTranslation($langcode);
+    if ($translation->isPublished() !== $before->isPublished()
+      && $translation->get('moderation_state')->value === $before->get('moderation_state')->value) {
+      throw new \RuntimeException(CinatraDevSite::STATUS_REFUSAL_TEXT);
+    }
+  }
+}
+
+/**
+ * Implements hook_ENTITY_TYPE_presave() for workflow entities.
+ *
+ * The import guard: a configuration import may not bind node:page on a site
+ * without the development marker.
+ */
+function cinatra_dev_site_workflow_presave(WorkflowInterface $workflow): void {
+  if (!$workflow->isSyncing() || CinatraDevSite::markerPresent()) {
+    return;
+  }
+  if ($workflow->get('type') !== 'content_moderation') {
+    return;
+  }
+  if (!$workflow->getTypePlugin()->appliesToEntityTypeAndBundle('node', 'page')) {
+    return;
+  }
+  $stored = \Drupal::service('config.storage')->read('workflows.workflow.' . $workflow->id());
+  $nodes = is_array($stored) ? ($stored['type_settings']['entity_types']['node'] ?? []) : [];
+  if (is_array($nodes) && in_array('page', $nodes, TRUE)) {
+    return;
+  }
+  throw new \RuntimeException(CinatraDevSite::IMPORT_GUARD_TEXT);
+}

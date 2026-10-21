@@ -1,0 +1,9 @@
+mcp_tools_remote.handle:
+  path: '/_mcp_tools'
+  defaults:
+    _controller: '\Drupal\cinatra_dev_site_test\FakeRemoteController::handle'
+  methods: [GET, POST]
+  requirements:
+    # Test-only stand-in for the remote endpoint; the inner controller checks
+    # its own key, so the route itself is open.
+    _access: 'TRUE'
