@@ -11,6 +11,7 @@ parameters:
     - src
     - cinatra.module
     - cinatra.install
+    - modules/cinatra_dev_site
   excludePaths:
     # Third-party sources still supply symbols; exclude only their analysis.
     # A flat exclusion also removes the optional scanDirectories below.
