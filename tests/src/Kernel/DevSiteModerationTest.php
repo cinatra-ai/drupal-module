@@ -319,10 +319,16 @@ final class DevSiteModerationTest extends KernelTestBase {
     \Drupal::service('cinatra_dev_site.ensure')->release(TRUE);
     $this->assertNull(\Drupal::state()->get(CinatraDevSite::ARMED_KEY));
     $this->assertNull(\Drupal::state()->get(CinatraDevSite::BOUND_KEY));
-    // The import of a transformed sync removes the binding, as here.
+    // The import of a transformed sync removes the binding, as here. A syncing
+    // save keeps the raw type settings, so they are written directly.
     $workflow = $this->editorial();
-    $workflow->getTypePlugin()->removeEntityTypeAndBundle('node', 'page');
+    $settings = $workflow->get('type_settings');
+    $settings['entity_types']['node'] = array_values(array_diff($settings['entity_types']['node'], ['page']));
+    if ($settings['entity_types']['node'] === []) {
+      unset($settings['entity_types']['node']);
+    }
     $workflow->setSyncing(TRUE);
+    $workflow->set('type_settings', $settings);
     $workflow->save();
     $this->assertFalse($this->editorial()->getTypePlugin()->appliesToEntityTypeAndBundle('node', 'page'));
     $storage = $this->nodeStorage();
@@ -802,7 +808,9 @@ final class DevSiteModerationTest extends KernelTestBase {
    *   The reloaded default revision.
    */
   private function addGerman(NodeInterface $page, bool $published, bool $new_revision): NodeInterface {
+    // The translation keeps the page's owner, as an editor's would.
     $german = $page->addTranslation('de', [
+      'uid' => $page->getOwnerId(),
       'title' => $page->label() . ' (de)',
       'body' => [['value' => $page->label() . ' de body', 'summary' => '', 'format' => 'plain_text']],
       'status' => $published,
