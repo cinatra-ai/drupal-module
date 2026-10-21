@@ -2,6 +2,7 @@
 
 // phpcs:disable Squiz.Classes.ClassFileName.NoMatch
 
+
 declare(strict_types=1);
 
 namespace Drupal\tool\Tool;
