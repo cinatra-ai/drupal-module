@@ -54,7 +54,11 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
    *   with the key as its first argument, '<function> unknown' otherwise.
    */
   private function uses(string $code): array {
-    $tokens = array_values(array_filter(token_get_all($code), static fn($t): bool => !is_array($t) || !in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], TRUE)));
+    $tokens = array_values(array_filter(token_get_all($code), static fn($t): bool => !is_array($t) || !in_array($t[0], [
+      T_WHITESPACE,
+      T_COMMENT,
+      T_DOC_COMMENT,
+    ], TRUE)));
     $uses = [];
     $function = '';
     foreach ($tokens as $i => $token) {

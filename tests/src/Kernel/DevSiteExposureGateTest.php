@@ -295,7 +295,10 @@ final class DevSiteExposureGateTest extends KernelTestBase {
     ];
     $broken = [
       'missing key' => [ProbeController::class, ['mcp_tools.resource_registry' => ProbeRegistry::class]],
-      'missing class' => [ProbeController::class, ['mcp_tools.prompt_registry' => 'Drupal\cinatra_dev_site_probe\Missing'] + $good],
+      'missing class' => [
+        ProbeController::class,
+        ['mcp_tools.prompt_registry' => 'Drupal\cinatra_dev_site_probe\Missing'] + $good,
+      ],
       'not a string' => [ProbeController::class, ['mcp_tools.prompt_registry' => 7] + $good],
       'missing inner' => ['Drupal\cinatra_dev_site_probe\Missing', $good],
       'inner without create' => [ProbeRegistry::class, $good],
