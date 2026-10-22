@@ -44,6 +44,57 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
   }
 
   /**
+   * The scan reports every other read of the flag.
+   *
+   * Each snippet reads the flag outside the guard. The scan must list it as a
+   * use it cannot classify, or as a read by a function that is not the guard.
+   *
+   * @param string $code
+   *   The source the scan reads.
+   *
+   * @dataProvider otherReads
+   */
+  public function testScanReportsOtherReads(string $code): void {
+    $uses = $this->uses($code);
+    $breaches = array_filter($uses, static fn(string $use): bool => str_ends_with($use, ' unknown')
+      || (str_ends_with($use, ' get') && $use !== 'exposureActive get'));
+    $this->assertNotEmpty($breaches, 'Uses: ' . implode(', ', $uses));
+  }
+
+  /**
+   * Reads of the flag that are not the guard.
+   *
+   * A key built by concatenation ('cinatra_dev_site.' . 'armed') is not
+   * caught yet, so it is not listed here.
+   *
+   * @return array<string, array{string}>
+   *   The cases.
+   */
+  public static function otherReads(): array {
+    return [
+      'second reader method' => [
+        '<?php final class CinatraDevSite {'
+        . ' public const ARMED_KEY = \'cinatra_dev_site.armed\';'
+        . ' public static function exposureActive(): bool {'
+        . ' return \\Drupal::state()->get(self::ARMED_KEY) === TRUE; }'
+        . ' public static function isArmed(): bool {'
+        . ' return \\Drupal::state()->get(self::ARMED_KEY) === TRUE; }'
+        . ' }',
+      ],
+      'literal key' => [
+        '<?php function probe() { return \\Drupal::state()->get(\'cinatra_dev_site.armed\'); }',
+      ],
+      'key in a variable' => [
+        '<?php function probe() { $k = self::ARMED_KEY; return \\Drupal::state()->get($k); }',
+      ],
+      'fully qualified class' => [
+        '<?php function probe() {'
+        . ' return \\Drupal::state()->get(\\Drupal\\cinatra_dev_site\\CinatraDevSite::ARMED_KEY); }',
+      ],
+    ];
+  }
+
+  /**
    * Lists each use of ARMED_KEY or its literal in one file.
    *
    * @param string $code

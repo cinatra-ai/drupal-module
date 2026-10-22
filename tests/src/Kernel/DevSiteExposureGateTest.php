@@ -176,6 +176,8 @@ final class DevSiteExposureGateTest extends KernelTestBase {
       'class_resolver',
       'logger.factory',
       'cinatra.protected_draft_storage',
+      'plugin.manager.tool',
+      'account_switcher',
     ];
     return array_combine($ids, array_map(static fn(string $id): array => [$id], $ids));
   }
