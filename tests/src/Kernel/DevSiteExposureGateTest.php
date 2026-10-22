@@ -14,6 +14,8 @@ use Drupal\KernelTests\KernelTestBase;
 use Psr\Log\NullLogger;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Session\Session;
+use Symfony\Component\HttpFoundation\Session\Storage\MockArraySessionStorage;
 
 /**
  * Tests the exposure gate of the development site.
@@ -343,6 +345,13 @@ final class DevSiteExposureGateTest extends KernelTestBase {
     $this->setMarkerAndFlag($marker, $armed);
     ProbeController::$pull = $pull;
     $request = Request::create('/_mcp_tools', 'POST');
+    // The request on top of the stack needs a session: on Drupal 11 the
+    // parent tearDown() reads the session of the current request. Give it an
+    // ephemeral session the way DrupalKernel::initializeEphemeralSession()
+    // does.
+    $session = new Session(new MockArraySessionStorage());
+    $session->start();
+    $request->setSession($session);
     $this->container->get('request_stack')->push($request);
     $endpoint = $this->container->get('class_resolver')->getInstanceFromDefinition(DevSiteRemoteEndpoint::class);
     return [$endpoint->handle($request), $request];
