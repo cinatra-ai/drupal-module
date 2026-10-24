@@ -104,7 +104,7 @@ final class DevSiteInstallBootstrapTest extends UnitTestCase {
    *   The marker value, or NULL for none.
    *
    * @return array
-   *   The decoded 'hook' and 'class' results.
+   *   The decoded 'premise', 'hook' and 'class' results.
    */
   private function probe(string $phase, ?string $marker): array {
     $autoload = dirname((string) (new \ReflectionClass(ClassLoader::class))->getFileName(), 2) . '/autoload.php';
@@ -122,6 +122,15 @@ final class DevSiteInstallBootstrapTest extends UnitTestCase {
     $this->assertSame(0, proc_close($process), 'The install check failed to load: ' . $err);
     $result = json_decode($out, TRUE);
     $this->assertIsArray($result);
+    // The premise: before either form loaded, no class of the module could be
+    // autoloaded in the child process.
+    $this->assertSame([
+      'Drupal\cinatra_dev_site\CinatraDevSite' => FALSE,
+      'Drupal\cinatra_dev_site\Controller\DevSiteRemoteEndpoint' => FALSE,
+      'Drupal\cinatra_dev_site\Install\Requirements\CinatraDevSiteRequirements' => FALSE,
+      'Drupal\cinatra_dev_site\Mcp\AllowListContainer' => FALSE,
+      'Drupal\cinatra_dev_site\Mcp\ExposureDeniedException' => FALSE,
+    ], $result['premise'] ?? NULL);
     return $result;
   }
 

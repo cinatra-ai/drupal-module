@@ -10,6 +10,7 @@ use Drupal\cinatra_dev_site\Mcp\AllowListContainer;
 use Drupal\cinatra_dev_site\Mcp\ExposureDeniedException;
 use Drupal\cinatra_dev_site_probe\ProbeController;
 use Drupal\cinatra_dev_site_probe\ProbeRegistry;
+use Drupal\cinatra_dev_site_probe\ProbeState;
 use Drupal\KernelTests\KernelTestBase;
 use Psr\Log\NullLogger;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -55,6 +56,8 @@ final class DevSiteExposureGateTest extends KernelTestBase {
     ProbeController::$pull = [];
     ProbeController::$seen = [];
     ProbeController::$handled = FALSE;
+    ProbeController::$trail = [];
+    ProbeState::$fail = FALSE;
   }
 
   /**
@@ -62,6 +65,7 @@ final class DevSiteExposureGateTest extends KernelTestBase {
    */
   protected function tearDown(): void {
     putenv('CINATRA_DEV_SITE');
+    ProbeState::$fail = FALSE;
     parent::tearDown();
   }
 
@@ -78,8 +82,14 @@ final class DevSiteExposureGateTest extends KernelTestBase {
    * @dataProvider guardCases
    */
   public function testEndpointAsksTheGuardFirst(?string $marker, mixed $armed, bool $active): void {
+    $this->observeState();
     [$response, $request] = $this->send(['state'], $marker, $armed);
+    // The inner controller is built once, after the guard. The guard reads
+    // the armed flag only when the marker is "1".
+    $armed_read = 'state ' . CinatraDevSite::ARMED_KEY;
+    $this->assertSame($marker === '1' ? [$armed_read, 'create'] : ['create'], $this->gateTrail());
     if ($active) {
+      $this->assertInstanceOf(AllowListContainer::class, ProbeController::$seen['container']);
       $this->assertSame(403, $response->getStatusCode());
       $this->assertSame(CinatraDevSite::DENY_TEXT, $response->getContent());
       $this->assertSame('refused', ProbeController::$seen['state']);
@@ -111,6 +121,51 @@ final class DevSiteExposureGateTest extends KernelTestBase {
     $this->setMarkerAndFlag($marker, $armed);
     $this->assertSame($active, CinatraDevSite::exposureActive());
     $this->assertSame($marker === '1', CinatraDevSite::markerPresent());
+  }
+
+  /**
+   * Without the marker the guard does not read State, not even once.
+   *
+   * State fails every read here, so a guard that read State first would throw
+   * instead of answering FALSE.
+   */
+  public function testGuardReadsTheMarkerBeforeState(): void {
+    $this->observeState();
+    foreach ([NULL, '', '0', 'true', '01', ' 1', '1 '] as $marker) {
+      $this->setMarkerAndFlag($marker, TRUE);
+      ProbeController::$trail = [];
+      ProbeState::$fail = TRUE;
+      $thrown = $this->caught(static fn() => CinatraDevSite::exposureActive());
+      ProbeState::$fail = FALSE;
+      $this->assertNull($thrown, var_export($marker, TRUE));
+      $this->assertFalse(CinatraDevSite::exposureActive(), var_export($marker, TRUE));
+      $this->assertSame([], ProbeController::$trail, var_export($marker, TRUE));
+    }
+  }
+
+  /**
+   * With the marker, a failing State read propagates and nothing is served.
+   */
+  public function testStateFailureWithTheMarkerServesNothing(): void {
+    $this->setMarkerAndFlag('1', TRUE);
+    $this->observeState();
+    ProbeState::$fail = TRUE;
+    $thrown = $this->caught(static fn() => CinatraDevSite::exposureActive());
+    $this->assertInstanceOf(\RuntimeException::class, $thrown);
+    $this->assertSame('probe state failure', $thrown->getMessage());
+    // Through the endpoint: the failure comes before the inner controller is
+    // built, so it neither gets a container nor handles the request.
+    ProbeController::$trail = [];
+    $endpoint = $this->endpoint(ProbeController::class, [
+      'mcp_tools.resource_registry' => ProbeRegistry::class,
+      'mcp_tools.prompt_registry' => ProbeRegistry::class,
+    ]);
+    $thrown = $this->caught(static fn() => $endpoint->handle(Request::create('/_mcp_tools', 'POST')));
+    $this->assertInstanceOf(\RuntimeException::class, $thrown);
+    $this->assertSame('probe state failure', $thrown->getMessage());
+    $this->assertSame(['state ' . CinatraDevSite::ARMED_KEY], ProbeController::$trail);
+    $this->assertSame([], ProbeController::$seen);
+    $this->assertFalse(ProbeController::$handled);
   }
 
   /**
@@ -150,6 +205,9 @@ final class DevSiteExposureGateTest extends KernelTestBase {
    * @dataProvider refusedIds
    */
   public function testIdOutsideTheAllowListIsRefused(string $id): void {
+    // The premise: the site's own container has this service.
+    $this->assertTrue($this->container->has($id), $id);
+    $this->assertIsObject($this->container->get($id), $id);
     [$response] = $this->send([$id], '1', TRUE);
     $this->assertSame(403, $response->getStatusCode());
     $this->assertSame(CinatraDevSite::DENY_TEXT, $response->getContent());
@@ -202,13 +260,39 @@ final class DevSiteExposureGateTest extends KernelTestBase {
    * While active, the registries are empty and the client bridge absent.
    */
   public function testResourcesPromptsAndBridgeAreNotServed(): void {
-    [$response] = $this->send(['mcp_tools.resource_registry', 'mcp_tools.prompt_registry', 'mcp_tools.client_bridge'], '1', TRUE);
+    $site = [
+      'mcp_tools.resource_registry' => ['private resource'],
+      'mcp_tools.prompt_registry' => ['private prompt'],
+      'mcp_tools.client_bridge' => ['client bridge'],
+    ];
+    // The premise: the site's own registries and bridge hold their items.
+    $this->assertSame($site, $this->siteItems(array_keys($site)));
+    [$response] = $this->send(array_keys($site), '1', TRUE);
     $this->assertSame(200, $response->getStatusCode());
     $this->assertSame([], ProbeController::$seen['mcp_tools.resource_registry']);
     $this->assertSame([], ProbeController::$seen['mcp_tools.prompt_registry']);
     $this->assertNull(ProbeController::$seen['mcp_tools.client_bridge']);
-    // The site's own registries still hold their items.
-    $this->assertSame(['private resource'], $this->container->get('mcp_tools.resource_registry')->items());
+    // The site's own registries and bridge still hold their items.
+    $this->assertSame($site, $this->siteItems(array_keys($site)));
+  }
+
+  /**
+   * Lists the items of the site's own registry stand-ins.
+   *
+   * @param string[] $ids
+   *   The service ids.
+   *
+   * @return array
+   *   The items of each id.
+   */
+  private function siteItems(array $ids): array {
+    $items = [];
+    foreach ($ids as $id) {
+      $service = $this->container->get($id);
+      $this->assertInstanceOf(ProbeRegistry::class, $service, $id);
+      $items[$id] = $service->items();
+    }
+    return $items;
   }
 
   /**
@@ -372,6 +456,43 @@ final class DevSiteExposureGateTest extends KernelTestBase {
    */
   private function endpoint(string $inner, array $registries): DevSiteRemoteEndpoint {
     return new DevSiteRemoteEndpoint($this->container, new NullLogger(), $inner, $registries);
+  }
+
+  /**
+   * Puts the recording State stand-in in place of the site's State.
+   */
+  private function observeState(): void {
+    $this->container->set('state', new ProbeState($this->container->get('state')));
+  }
+
+  /**
+   * The create() calls and the armed flag reads of the trail, in order.
+   *
+   * @return string[]
+   *   'create' or 'state cinatra_dev_site.armed' for each event.
+   */
+  private function gateTrail(): array {
+    $events = ['create', 'state ' . CinatraDevSite::ARMED_KEY];
+    return array_values(array_filter(ProbeController::$trail, static fn(string $event): bool => in_array($event, $events, TRUE)));
+  }
+
+  /**
+   * Runs a callable and returns what it threw.
+   *
+   * @param callable $call
+   *   The call.
+   *
+   * @return \Throwable|null
+   *   The throwable, or NULL when the call returned.
+   */
+  private function caught(callable $call): ?\Throwable {
+    try {
+      $call();
+    }
+    catch (\Throwable $e) {
+      return $e;
+    }
+    return NULL;
   }
 
   /**

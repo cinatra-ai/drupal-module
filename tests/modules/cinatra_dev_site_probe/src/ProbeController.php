@@ -13,7 +13,8 @@ use Symfony\Component\HttpFoundation\Response;
  * An inner controller that records what its create() was given.
  *
  * The test names the ids it pulls, in order, in $pull. The id "!throw" makes
- * create() throw a plain runtime exception.
+ * create() throw a plain runtime exception. $seen holds what the last
+ * create() saw; $trail counts every create() and is never reset by it.
  */
 final class ProbeController implements ContainerInjectionInterface {
 
@@ -41,9 +42,20 @@ final class ProbeController implements ContainerInjectionInterface {
   public static bool $handled = FALSE;
 
   /**
+   * What happened, in order, across all calls.
+   *
+   * 'create' for each call of create(), and 'state <key>' for each State read
+   * that ProbeState saw. Only the test resets it.
+   *
+   * @var string[]
+   */
+  public static array $trail = [];
+
+  /**
    * {@inheritdoc}
    */
   public static function create(ContainerInterface $container) {
+    static::$trail[] = 'create';
     static::$seen = ['container' => $container];
     foreach (static::$pull as $id) {
       if ($id === '!throw') {
