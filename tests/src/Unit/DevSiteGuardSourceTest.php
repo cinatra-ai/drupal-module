@@ -74,12 +74,12 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
     return [
       'second reader method' => [
         '<?php final class CinatraDevSite {'
-        . ' public const ARMED_KEY = \'cinatra_dev_site.armed\';'
-        . ' public static function exposureActive(): bool {'
-        . ' return \\Drupal::state()->get(self::ARMED_KEY) === TRUE; }'
-        . ' public static function isArmed(): bool {'
-        . ' return \\Drupal::state()->get(self::ARMED_KEY) === TRUE; }'
-        . ' }',
+          . ' public const ARMED_KEY = \'cinatra_dev_site.armed\';'
+          . ' public static function exposureActive(): bool {'
+          . ' return \\Drupal::state()->get(self::ARMED_KEY) === TRUE; }'
+          . ' public static function isArmed(): bool {'
+          . ' return \\Drupal::state()->get(self::ARMED_KEY) === TRUE; }'
+          . ' }',
       ],
       'literal key' => [
         '<?php function probe() { return \\Drupal::state()->get(\'cinatra_dev_site.armed\'); }',
@@ -89,7 +89,7 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
       ],
       'fully qualified class' => [
         '<?php function probe() {'
-        . ' return \\Drupal::state()->get(\\Drupal\\cinatra_dev_site\\CinatraDevSite::ARMED_KEY); }',
+          . ' return \\Drupal::state()->get(\\Drupal\\cinatra_dev_site\\CinatraDevSite::ARMED_KEY); }',
       ],
     ];
   }
