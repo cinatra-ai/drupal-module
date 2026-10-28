@@ -1,0 +1,15 @@
+name: 'Cinatra development site'
+type: module
+description: 'Development sites only: moderates basic pages and exposes the two protected-draft tools through the remote MCP endpoint.'
+hidden: true
+package: Development
+core_version_requirement: ^10.5 || ^11
+php: 8.3
+dependencies:
+  - cinatra:cinatra
+  - drupal:node
+  - drupal:workflows
+  - drupal:content_moderation
+  - tool:tool
+  - mcp_tools:mcp_tools
+  - mcp_tools:mcp_tools_remote

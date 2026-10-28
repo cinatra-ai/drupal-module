@@ -1,0 +1,38 @@
+<?php
+
+/**
+ * @file
+ * Install, requirements and uninstall of the development site submodule.
+ */
+
+declare(strict_types=1);
+
+use Drupal\cinatra_dev_site\CinatraDevSite;
+use Drupal\Core\Hook\Attribute\LegacyRequirementsHook;
+
+/**
+ * Implements hook_requirements().
+ *
+ * The install needs the development marker CINATRA_DEV_SITE=1.
+ */
+#[LegacyRequirementsHook]
+function cinatra_dev_site_requirements($phase): array {
+  if ($phase !== 'install' || CinatraDevSite::markerPresent()) {
+    return [];
+  }
+  return [
+    'cinatra_dev_site_marker' => [
+      'title' => 'Cinatra development site',
+      'description' => 'This module installs only on a site with CINATRA_DEV_SITE=1.',
+      // REQUIREMENT_ERROR.
+      'severity' => 2,
+    ],
+  ];
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function cinatra_dev_site_uninstall($is_syncing): void {
+  \Drupal::service('cinatra_dev_site.ensure')->release((bool) $is_syncing);
+}

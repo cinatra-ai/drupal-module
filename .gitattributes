@@ -24,6 +24,10 @@
 # Automated tests are not shipped in the release tarball.
 /tests               export-ignore
 
+# The development-site submodule is never shipped (it acts only on a site
+# that carries the development marker).
+/modules/cinatra_dev_site export-ignore
+
 # Drupal.org project-page source material (logo, screenshots plan, page copy,
 # generation script). Staged here while the drupal.org project is parked; the
 # logo is promoted to the repo root at project-creation time. None of it ships
