@@ -1,0 +1,32 @@
+<?php
+
+/**
+ * @file
+ * Changes one field of a syncing node save while a test asks for it.
+ *
+ * The migration's saves are the only syncing saves of the page migration
+ * tests, so a fixture save is never changed. The node and moderation state
+ * storages let a test make one revision unreadable.
+ */
+
+declare(strict_types=1);
+
+use Drupal\cinatra_dev_site_page_test\PageMutation;
+use Drupal\cinatra_dev_site_page_test\UnreadableNodeStorage;
+use Drupal\cinatra_dev_site_page_test\UnreadableStateStorage;
+use Drupal\node\NodeInterface;
+
+/**
+ * Implements hook_node_presave().
+ */
+function cinatra_dev_site_page_test_node_presave(NodeInterface $node): void {
+  PageMutation::apply($node);
+}
+
+/**
+ * Implements hook_entity_type_alter().
+ */
+function cinatra_dev_site_page_test_entity_type_alter(array &$entity_types): void {
+  $entity_types['node']->setStorageClass(UnreadableNodeStorage::class);
+  $entity_types['content_moderation_state']->setStorageClass(UnreadableStateStorage::class);
+}
