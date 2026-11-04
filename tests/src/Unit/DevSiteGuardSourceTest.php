@@ -378,21 +378,35 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
    *   The file name.
    *
    * @return bool
-   *   TRUE when the scan reads the file.
+   *   TRUE when the name ends in .php, .module, .install or .inc.
    */
   private static function scans(string $name): bool {
-    return preg_match('/\.(php|module|install|inc)$/', $name) === 1;
+    return preg_match('/\.(php|module|install|inc)\z/', $name) === 1;
   }
 
   /**
-   * Lists each use of ARMED_KEY or its literal in one file.
+   * Lists each use of ARMED_KEY, or of a run of literals that spells it.
+   *
+   * A run right after the three tokens "const", "ARMED_KEY" and "=" is not
+   * listed on its own; that definition is listed once, as 'const'.
    *
    * @param string $code
    *   The file's source.
    *
    * @return string[]
-   *   'const' for the definition, '<function> <method>' for a State call
-   *   with the key as its first argument, '<function> unknown' otherwise.
+   *   'const' for the name ARMED_KEY when the token right before it is
+   *   "const" and the token right after it is "=" (a typed or a grouped
+   *   definition is not such a use); '<function> <method>' when
+   *   self::ARMED_KEY, static::ARMED_KEY or the unqualified
+   *   CinatraDevSite::ARMED_KEY is the first argument of a method call
+   *   and is followed by ")" or ",": "->" or "?->", then one token whose
+   *   text is <method>, then "("; '<function> unknown' for every other
+   *   use, a run of literals that spells the key included. The receiver
+   *   of the method call is not checked. <function> is the last name that
+   *   directly follows the keyword "function" before the use, or empty.
+   *   The keyword "function" is matched by its token type, in any case;
+   *   every other token named here is compared by its text, case
+   *   included, so CONST or SELF does not count as "const" or "self".
    */
   private function uses(string $code): array {
     $tokens = array_values(array_filter(token_get_all($code), static fn($t): bool => !is_array($t) || !in_array($t[0], [
@@ -407,7 +421,7 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
       if (is_array($token) && $token[0] === T_FUNCTION && is_array($tokens[$i + 1] ?? NULL) && $tokens[$i + 1][0] === T_STRING) {
         $function = $tokens[$i + 1][1];
       }
-      $literal = is_array($token) && $token[0] === T_CONSTANT_ENCAPSED_STRING && str_contains($text, 'cinatra_dev_site.armed');
+      $literal = $this->spellsTheKey($tokens, $i);
       $constant = is_array($token) && $token[0] === T_STRING && $text === 'ARMED_KEY';
       if (!$literal && !$constant) {
         continue;
@@ -425,6 +439,46 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
       $uses[] = $function . ' ' . ($call ? $at($i - 4) : 'unknown');
     }
     return $uses;
+  }
+
+  /**
+   * Tells whether a string literal starts a run that spells the key.
+   *
+   * A run is the literal and the literals joined to it by ".", read as one
+   * value. It spells the key when the value contains the key. When the run
+   * is also joined by "." to something that is not a literal, it spells the
+   * key too when the value is "armed", ends in ".armed", or ends in
+   * "cinatra_dev_site.". A literal inside a run is not read on its own.
+   * A literal may carry the prefix b or B. A single-quoted literal is read
+   * as PHP reads it, a double-quoted one with stripcslashes().
+   *
+   * @param array $tokens
+   *   The tokens, without whitespace and comments.
+   * @param int $i
+   *   The index of the token.
+   *
+   * @return bool
+   *   TRUE when the token starts such a run.
+   */
+  private function spellsTheKey(array $tokens, int $i): bool {
+    $string = static fn(int $k): bool => is_array($tokens[$k] ?? NULL) && $tokens[$k][0] === T_CONSTANT_ENCAPSED_STRING;
+    $dot = static fn(int $k): bool => ($tokens[$k] ?? NULL) === '.';
+    if (!$string($i) || ($dot($i - 1) && $string($i - 2))) {
+      return FALSE;
+    }
+    $value = '';
+    $k = $i - 2;
+    do {
+      $k += 2;
+      $text = ltrim($tokens[$k][1], 'bB');
+      $inner = substr($text, 1, -1);
+      $value .= $text[0] === '"' ? stripcslashes($inner) : str_replace(['\\\\', "\\'"], ['\\', "'"], $inner);
+    } while ($dot($k + 1) && $string($k + 2));
+    if (str_contains($value, 'cinatra_dev_site.armed')) {
+      return TRUE;
+    }
+    $joined = $dot($i - 1) || $dot($k + 1);
+    return $joined && preg_match('/(^armed|\.armed|cinatra_dev_site\.)\z/', $value) === 1;
   }
 
 }
