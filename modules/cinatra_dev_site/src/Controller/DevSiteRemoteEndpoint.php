@@ -6,8 +6,13 @@ namespace Drupal\cinatra_dev_site\Controller;
 
 use Drupal\cinatra_dev_site\CinatraDevSite;
 use Drupal\cinatra_dev_site\Mcp\AllowListContainer;
+use Drupal\cinatra_dev_site\Mcp\ExecutionGate;
 use Drupal\cinatra_dev_site\Mcp\ExposureDeniedException;
+use Drupal\cinatra_dev_site\Mcp\ProfileBinding;
+use Drupal\cinatra_dev_site\Mcp\ScopedToolManager;
+use Drupal\Component\Plugin\PluginManagerInterface;
 use Drupal\Core\DependencyInjection\ContainerInjectionInterface;
+use Drupal\Core\Session\AccountSwitcherInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\Request;
@@ -90,6 +95,16 @@ final class DevSiteRemoteEndpoint implements ContainerInjectionInterface {
       }
       $served[$id] = new $class([]);
     }
+    $tools = $this->container->get('plugin.manager.tool', ContainerInterface::NULL_ON_INVALID_REFERENCE);
+    $switcher = $this->container->get('account_switcher', ContainerInterface::NULL_ON_INVALID_REFERENCE);
+    if (!$tools instanceof PluginManagerInterface || !$switcher instanceof AccountSwitcherInterface) {
+      $this->logger->error('A tool service of the exposure is not available.');
+      return new Response('Not found.', 404);
+    }
+    $binding = new ProfileBinding($request);
+    $request->attributes->set(CinatraDevSite::BINDING_ATTRIBUTE, $binding);
+    $served['plugin.manager.tool'] = new ScopedToolManager($tools, $binding);
+    $served['account_switcher'] = new ExecutionGate($switcher, $binding);
     try {
       return $inner::create(new AllowListContainer($this->container, $served))->handle($request);
     }
