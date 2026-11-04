@@ -1,0 +1,44 @@
+<?php
+
+/**
+ * @file
+ * Install requirements and uninstall of the development site submodule.
+ *
+ * Core loads this file to check a module that is not installed yet, before
+ * the module's namespace is registered. So the requirements hook names no
+ * class of this module.
+ */
+
+declare(strict_types=1);
+
+use Drupal\cinatra_dev_site\CinatraDevSite;
+use Drupal\Core\Hook\Attribute\LegacyRequirementsHook;
+
+/**
+ * Implements hook_requirements().
+ *
+ * The install needs the development marker CINATRA_DEV_SITE=1.
+ */
+#[LegacyRequirementsHook]
+function cinatra_dev_site_requirements($phase): array {
+  if ($phase !== 'install' || getenv('CINATRA_DEV_SITE') === '1') {
+    return [];
+  }
+  return [
+    'cinatra_dev_site_marker' => [
+      'title' => 'Cinatra development site',
+      'description' => 'This module installs only on a site with CINATRA_DEV_SITE=1.',
+      // REQUIREMENT_ERROR.
+      'severity' => 2,
+    ],
+  ];
+}
+
+/**
+ * Implements hook_uninstall().
+ *
+ * It runs only for an installed module, whose namespace is registered.
+ */
+function cinatra_dev_site_uninstall($is_syncing): void {
+  CinatraDevSite::disarm();
+}

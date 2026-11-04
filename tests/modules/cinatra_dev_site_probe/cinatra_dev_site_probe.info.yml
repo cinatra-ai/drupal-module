@@ -1,0 +1,8 @@
+name: 'Cinatra development site probe'
+type: module
+description: 'A probing inner controller and registry stand-ins for the exposure gate kernel tests.'
+package: Testing
+hidden: true
+core_version_requirement: ^10.3 || ^11 || ^12
+dependencies:
+  - cinatra:cinatra_dev_site

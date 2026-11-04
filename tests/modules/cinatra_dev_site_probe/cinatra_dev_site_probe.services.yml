@@ -1,0 +1,18 @@
+services:
+  # Stand-ins for the upstream registries, each holding one private item.
+  # The exposure must serve the inner controller an EMPTY registry instead.
+  mcp_tools.resource_registry:
+    class: Drupal\cinatra_dev_site_probe\ProbeRegistry
+    arguments: [['private resource']]
+  mcp_tools.prompt_registry:
+    class: Drupal\cinatra_dev_site_probe\ProbeRegistry
+    arguments: [['private prompt']]
+  # A stand-in for the client bridge; the exposure must serve it as absent.
+  mcp_tools.client_bridge:
+    class: Drupal\cinatra_dev_site_probe\ProbeRegistry
+    arguments: [['client bridge']]
+  # A plugin manager under the tool manager's id. The endpoint of unit 1 never
+  # reads it; the pass-through endpoint of the PR head wraps it, so the red
+  # run there reaches the inner controller.
+  plugin.manager.tool:
+    alias: plugin.manager.mail
