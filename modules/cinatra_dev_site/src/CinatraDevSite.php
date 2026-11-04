@@ -30,6 +30,49 @@ final class CinatraDevSite {
   public const DENY_TEXT = 'cinatra_dev_site: the remote request was refused.';
 
   /**
+   * The two tools the cinatra profile lists and calls.
+   */
+  public const EXPOSED_TOOLS = [
+    'cinatra_read_protected_revision',
+    'cinatra_write_protected_draft',
+  ];
+
+  /**
+   * The profile id.
+   */
+  public const PROFILE_ID = 'cinatra';
+
+  /**
+   * The profile's permission callback: the profile guard service.
+   */
+  public const GUARD_CALLBACK = 'cinatra_dev_site.profile_guard:check';
+
+  /**
+   * The request attribute that carries the request's profile binding.
+   */
+  public const BINDING_ATTRIBUTE = '_cinatra_dev_site_binding';
+
+  /**
+   * The cinatra profile: tools only, no resources, no prompts.
+   */
+  public const PROFILE = [
+    'name' => 'Cinatra development site',
+    'version' => '1.0.0',
+    'pagination_limit' => 50,
+    'include_all_tools' => FALSE,
+    'gateway_mode' => FALSE,
+    'enable_resources' => FALSE,
+    'enable_prompts' => FALSE,
+    'component_public_only' => TRUE,
+    'transports' => ['http'],
+    'enabled' => TRUE,
+    'scopes' => ['read', 'write'],
+    'permission_callback' => self::GUARD_CALLBACK,
+    'id' => self::PROFILE_ID,
+    'tools' => self::EXPOSED_TOOLS,
+  ];
+
+  /**
    * Whether this process may serve the exposure.
    *
    * @return bool
@@ -48,6 +91,25 @@ final class CinatraDevSite {
    */
   public static function markerPresent(): bool {
     return getenv(self::MARKER_ENV) === '1';
+  }
+
+  /**
+   * Whether a profile array is exactly the cinatra profile.
+   *
+   * @param mixed $profile
+   *   The profile read from the repository.
+   *
+   * @return bool
+   *   TRUE only for an exact match of PROFILE, key order aside.
+   */
+  public static function validProfile(mixed $profile): bool {
+    if (!is_array($profile)) {
+      return FALSE;
+    }
+    $expected = self::PROFILE;
+    ksort($expected);
+    ksort($profile);
+    return $profile === $expected;
   }
 
   /**
