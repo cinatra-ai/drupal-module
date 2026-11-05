@@ -258,13 +258,14 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
   public function testReplayThrowPopsTheRequest(): void {
     $top = $this->container->get('request_stack')->getCurrentRequest();
     $this->container->get('state')->set(self::MODE, 'throw');
+    $thrown = NULL;
     try {
       $this->verifier()->verify($this->before);
-      $this->fail('The replay failure did not pass up.');
     }
     catch (\RuntimeException $e) {
-      $this->assertSame('verify test failure', $e->getMessage());
+      $thrown = $e;
     }
+    $this->assertSame('verify test failure', $thrown?->getMessage());
     $this->assertSame($top, $this->container->get('request_stack')->getCurrentRequest());
   }
 
@@ -302,6 +303,54 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
     $this->assertSame([], $this->verifier()->verify($this->before));
     $this->assertSame('unbound', $this->container->get('cinatra_dev_site.editorial_binder')->release(FALSE));
     $this->assertSame(['page_not_bound'], $this->verifier()->verify($this->before));
+  }
+
+  /**
+   * Each term of page_not_bound fails the verify step on its own.
+   *
+   * The bundle info is read (and cached) before the stored record changes
+   * under it, so the stored workflow and the bundle info disagree.
+   *
+   * @param string $case
+   *   Which term fails.
+   *
+   * @dataProvider unboundCases
+   */
+  public function testPageNotBoundTerms(string $case): void {
+    $storage = $this->container->get('config.storage');
+    $info = $this->container->get('content_moderation.moderation_information');
+    $name = EditorialBinder::CONFIG_NAME;
+    if ($case === 'editorial absent') {
+      Workflow::load(EditorialBinder::ID)->delete();
+    }
+    elseif ($case === 'stored record unbound') {
+      $this->assertSame(EditorialBinder::ID, $info->getWorkflowForEntityTypeAndBundle('node', 'page')?->id());
+      $record = $storage->read($name);
+      $record['type_settings']['entity_types'] = [];
+      $storage->write($name, $record);
+    }
+    else {
+      $record = $storage->read($name);
+      $this->container->get('cinatra_dev_site.editorial_binder')->release(FALSE);
+      $this->assertNull($info->getWorkflowForEntityTypeAndBundle('node', 'page'));
+      $storage->write($name, $record);
+    }
+    $this->container->get('config.factory')->reset($name);
+    $this->assertSame(['page_not_bound'], $this->verifier()->verify($this->before));
+  }
+
+  /**
+   * The terms of page_not_bound.
+   *
+   * @return array<string, array{string}>
+   *   The cases.
+   */
+  public static function unboundCases(): array {
+    return [
+      'editorial absent' => ['editorial absent'],
+      'stored record unbound, bundle info names editorial' => ['stored record unbound'],
+      'stored record bound, bundle info names none' => ['bundle info names none'],
+    ];
   }
 
   /**
@@ -353,7 +402,9 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
     ]);
     $this->container->get('config.factory')->reset('mcp_tools.servers');
     $snapshot = $this->snapshot();
+    $top = $this->container->get('request_stack')->getCurrentRequest();
     $census = $this->container->get('cinatra_dev_site.census')->read();
+    $this->assertSame($top, $this->container->get('request_stack')->getCurrentRequest());
     $this->assertSame([
       'profiles' => [
         'default' => ['include_all_tools' => FALSE, 'gateway_mode' => NULL, 'transports' => ['http'], 'enabled' => NULL],
@@ -366,6 +417,42 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
       'server_configs_alter' => ['cinatra_dev_site', 'cinatra_dev_site_verify_test'],
     ], $census);
     $this->assertSame($snapshot, $this->snapshot());
+  }
+
+  /**
+   * Stored servers that are not a list, and a replay that finds no profile.
+   */
+  public function testCensusOddValues(): void {
+    $storage = $this->container->get('config.storage');
+    $census = $this->container->get('cinatra_dev_site.census');
+    $storage->write('mcp_tools.servers', ['servers' => 'not a list']);
+    $this->container->get('config.factory')->reset('mcp_tools.servers');
+    $this->assertSame(['cinatra (replay)'], array_keys($census->read()['profiles']));
+
+    // A stored cinatra profile is foreign: the alter disables it, so the
+    // replay reads no profile.
+    $storage->write('mcp_tools.servers', ['servers' => [CinatraDevSite::PROFILE_ID => CinatraDevSite::PROFILE]]);
+    $this->container->get('config.factory')->reset('mcp_tools.servers');
+    $profiles = $census->read()['profiles'];
+    $this->assertSame([CinatraDevSite::PROFILE_ID, 'cinatra (replay)'], array_keys($profiles));
+    $this->assertNull($profiles['cinatra (replay)']);
+  }
+
+  /**
+   * A failure that throws in the census replay passes up after the pop.
+   */
+  public function testCensusReplayThrowPopsTheRequest(): void {
+    $top = $this->container->get('request_stack')->getCurrentRequest();
+    $this->container->get('state')->set(self::MODE, 'throw');
+    $thrown = NULL;
+    try {
+      $this->container->get('cinatra_dev_site.census')->read();
+    }
+    catch (\RuntimeException $e) {
+      $thrown = $e;
+    }
+    $this->assertSame('verify test failure', $thrown?->getMessage());
+    $this->assertSame($top, $this->container->get('request_stack')->getCurrentRequest());
   }
 
   /**
