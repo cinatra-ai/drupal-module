@@ -1,0 +1,37 @@
+<?php
+
+/**
+ * @file
+ * A profile alter that misbehaves in the way a State key names.
+ *
+ * It runs after the submodule's alter (module order). Modes: add_profile adds
+ * the cinatra profile for every request; second_read counts a second read on
+ * the current request's binding; change_profile narrows the cinatra profile's
+ * tools; throw throws for a request that carries a binding.
+ */
+
+declare(strict_types=1);
+
+use Drupal\cinatra_dev_site\CinatraDevSite;
+use Drupal\cinatra_dev_site\Mcp\ProfileBinding;
+
+/**
+ * Implements hook_mcp_tools_server_configs_alter().
+ */
+function cinatra_dev_site_verify_test_mcp_tools_server_configs_alter(array &$servers): void {
+  $mode = \Drupal::state()->get('cinatra_dev_site_verify_test.mode');
+  $id = CinatraDevSite::PROFILE_ID;
+  $binding = \Drupal::requestStack()->getCurrentRequest()?->attributes->get(CinatraDevSite::BINDING_ATTRIBUTE);
+  if ($mode === 'add_profile' && !isset($servers[$id])) {
+    $servers[$id] = CinatraDevSite::PROFILE;
+  }
+  elseif ($mode === 'second_read' && $binding instanceof ProfileBinding) {
+    $binding->noteRead();
+  }
+  elseif ($mode === 'change_profile' && isset($servers[$id])) {
+    $servers[$id]['tools'] = [CinatraDevSite::EXPOSED_TOOLS[0]];
+  }
+  elseif ($mode === 'throw' && $binding instanceof ProfileBinding) {
+    throw new \RuntimeException('verify test failure');
+  }
+}
