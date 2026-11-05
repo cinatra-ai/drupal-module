@@ -21,3 +21,9 @@ services:
     class: Drupal\cinatra_dev_site\Config\DevSiteConfigOverride
     tags:
       - { name: config.factory.override, priority: 5 }
+  # Binds node:page to editorial; as a subscriber it also transforms exports.
+  cinatra_dev_site.editorial_binder:
+    class: Drupal\cinatra_dev_site\Workflow\EditorialBinder
+    arguments: ['@config.storage', '@entity_type.manager', '@state', '@content_moderation.moderation_information']
+    tags:
+      - { name: event_subscriber }
