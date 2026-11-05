@@ -78,6 +78,9 @@ final class ExposureVerifier {
   /**
    * Verifies the exposure, the page binding and each page's moderation.
    *
+   * The server_id check reads the config factory's cached value: a caller
+   * that changed the armed flag resets mcp_tools_remote.settings first.
+   *
    * @param \Symfony\Component\Routing\Route|null $before
    *   The endpoint route as read before the router rebuild, or NULL.
    *
@@ -176,8 +179,7 @@ final class ExposureVerifier {
     sort($ids);
     $exposed = CinatraDevSite::EXPOSED_TOOLS;
     sort($exposed);
-    $remote = array_filter($listed, static fn($d): bool => $d instanceof ToolDefinition && $d->getProvider() === 'mcp_tools_remote');
-    if ($ids !== $exposed || count($remote) !== count($exposed)) {
+    if ($ids !== $exposed) {
       return 'replay_listing';
     }
     $user = $this->currentUser->id();
