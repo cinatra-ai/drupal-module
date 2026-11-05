@@ -1,0 +1,20 @@
+<?php
+
+/**
+ * @file
+ * Names a workflow for node:page in the bundle info while a State key says.
+ *
+ * Another module could do the same; the binder's preflight must see it.
+ */
+
+declare(strict_types=1);
+
+/**
+ * Implements hook_entity_bundle_info_alter().
+ */
+function cinatra_dev_site_binding_test_entity_bundle_info_alter(array &$bundles): void {
+  $workflow = \Drupal::state()->get('cinatra_dev_site_binding_test.workflow');
+  if (is_string($workflow) && isset($bundles['node']['page'])) {
+    $bundles['node']['page']['workflow'] = $workflow;
+  }
+}
