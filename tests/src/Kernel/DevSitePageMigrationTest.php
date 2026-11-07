@@ -1121,8 +1121,16 @@ final class DevSitePageMigrationTest extends KernelTestBase {
     $node = $this->nodeStorage()->loadUnchanged($nid);
     $languages = [];
     foreach (array_keys($node->getTranslationLanguages()) as $langcode) {
-      $values = $node->getTranslation($langcode)->toArray();
-      unset($values['moderation_state']);
+      $translation = $node->getTranslation($langcode);
+      // The field values as toArray() reads them, but the moderation state
+      // is skipped before it is computed: on Drupal 10, computing it with a
+      // state row that cannot be loaded calls a method on NULL.
+      $values = [];
+      foreach (array_keys($translation->getFieldDefinitions()) as $name) {
+        if ($name !== 'moderation_state') {
+          $values[$name] = $translation->get($name)->getValue();
+        }
+      }
       ksort($values);
       $languages[$langcode] = $values;
     }
