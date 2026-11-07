@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\cinatra_dev_site_probe;
 
 use Drupal\Core\DependencyInjection\ContainerInjectionInterface;
+use Drupal\Core\Session\AccountInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -14,7 +15,10 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * The test names the ids it pulls, in order, in $pull. The id "!throw" makes
  * create() throw a plain runtime exception. $seen holds what the last
- * create() saw; $trail counts every create() and is never reset by it.
+ * create() saw; $trail counts every create() and is never reset by it. With
+ * $switchAs set, handle() switches to that account through the account
+ * switcher that create() got, the way the upstream controller does, and
+ * switches back.
  */
 final class ProbeController implements ContainerInjectionInterface {
 
@@ -52,6 +56,13 @@ final class ProbeController implements ContainerInjectionInterface {
   public static array $trail = [];
 
   /**
+   * The account handle() switches to, or NULL for no switch.
+   *
+   * @var \Drupal\Core\Session\AccountInterface|null
+   */
+  public static ?AccountInterface $switchAs = NULL;
+
+  /**
    * {@inheritdoc}
    */
   public static function create(ContainerInterface $container) {
@@ -79,6 +90,10 @@ final class ProbeController implements ContainerInjectionInterface {
    */
   public function handle(Request $request): Response {
     static::$handled = TRUE;
+    if (static::$switchAs !== NULL) {
+      static::$seen['account_switcher']->switchTo(static::$switchAs);
+      static::$seen['account_switcher']->switchBack();
+    }
     return new Response('probe served', 200);
   }
 

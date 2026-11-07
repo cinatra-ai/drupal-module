@@ -11,8 +11,7 @@ services:
   mcp_tools.client_bridge:
     class: Drupal\cinatra_dev_site_probe\ProbeRegistry
     arguments: [['client bridge']]
-  # A plugin manager under the tool manager's id. The endpoint of unit 1 never
-  # reads it; the pass-through endpoint of the PR head wraps it, so the red
-  # run there reaches the inner controller.
+  # A plugin manager under the tool manager's id. While the exposure is
+  # active the endpoint wraps it in the request's scoped tool manager.
   plugin.manager.tool:
     alias: plugin.manager.mail
