@@ -110,7 +110,12 @@ final class PageMigrator {
         $saved = $this->protectedDraftStorage->withLockedNode($nid, fn(): array => $this->migratePage($nid, $planned));
       }
       catch (\Throwable $e) {
-        return ['ok' => FALSE, 'migrated' => $migrated, 'refused' => ['migration_failed:' . $nid], 'error' => $e->getMessage()];
+        return [
+          'ok' => FALSE,
+          'migrated' => $migrated,
+          'refused' => ['migration_failed:' . $nid],
+          'error' => $e->getMessage(),
+        ];
       }
       finally {
         $this->storage('node')->resetCache([$nid]);
@@ -207,7 +212,13 @@ final class PageMigrator {
         $missing = [$default_langcode => $missing[$default_langcode]] + $missing;
       }
     }
-    $plan = ['default' => $default, 'default_langcode' => $default_langcode, 'missing' => $missing, 'existing' => $existing, 'resave' => $resave];
+    $plan = [
+      'default' => $default,
+      'default_langcode' => $default_langcode,
+      'missing' => $missing,
+      'existing' => $existing,
+      'resave' => $resave,
+    ];
     return [$plan, $refused];
   }
 

@@ -808,7 +808,7 @@ final class DevSitePageMigrationTest extends KernelTestBase {
     $page->getTranslation('de')->setUnpublished();
     $this->assertSame(PageMigrator::STATUS_REFUSAL_TEXT, $this->saveMessage($page));
     $this->assertSame($before, $this->pageValues($nid));
-    // en changes its state, de only its status.
+    // The en translation changes its state, de only its status.
     $page = $this->nodeStorage()->loadUnchanged($nid);
     $page->getTranslation('en')->set('moderation_state', 'archived');
     $page->getTranslation('de')->setUnpublished();
@@ -927,10 +927,22 @@ final class DevSitePageMigrationTest extends KernelTestBase {
     switch ($case) {
       case 'new page':
         $this->bindPages();
-        $existing = Node::create(['type' => 'page', 'langcode' => 'en', 'title' => 'Existing page', 'uid' => $this->editor->id(), 'moderation_state' => 'published']);
+        $existing = Node::create([
+          'type' => 'page',
+          'langcode' => 'en',
+          'title' => 'Existing page',
+          'uid' => $this->editor->id(),
+          'moderation_state' => 'published',
+        ]);
         $existing->save();
         $existing = $this->nodeStorage()->loadUnchanged($existing->id());
-        $page = Node::create(['type' => 'page', 'langcode' => 'en', 'title' => 'New page', 'uid' => $this->editor->id(), 'moderation_state' => 'published']);
+        $page = Node::create([
+          'type' => 'page',
+          'langcode' => 'en',
+          'title' => 'New page',
+          'uid' => $this->editor->id(),
+          'moderation_state' => 'published',
+        ]);
         // Setting the moderation state also sets the status to match it, so
         // the status is set afterwards: unpublished in the published state.
         $page->setUnpublished();
@@ -962,7 +974,12 @@ final class DevSitePageMigrationTest extends KernelTestBase {
         NodeType::create(['type' => 'article', 'name' => 'Article'])->save();
         $workflow = $this->createEditorialWorkflow();
         $this->addEntityTypeAndBundleToWorkflow($workflow, 'node', 'article');
-        $page = Node::create(['type' => 'article', 'title' => 'Article', 'uid' => $this->editor->id(), 'moderation_state' => 'published']);
+        $page = Node::create([
+          'type' => 'article',
+          'title' => 'Article',
+          'uid' => $this->editor->id(),
+          'moderation_state' => 'published',
+        ]);
         $page->save();
         $page = $this->nodeStorage()->load($page->id());
         $this->assertTrue($page->isPublished());
