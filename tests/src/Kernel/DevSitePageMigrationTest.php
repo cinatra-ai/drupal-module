@@ -930,7 +930,10 @@ final class DevSitePageMigrationTest extends KernelTestBase {
         $existing = Node::create(['type' => 'page', 'langcode' => 'en', 'title' => 'Existing page', 'uid' => $this->editor->id(), 'moderation_state' => 'published']);
         $existing->save();
         $existing = $this->nodeStorage()->loadUnchanged($existing->id());
-        $page = Node::create(['type' => 'page', 'langcode' => 'en', 'title' => 'New page', 'uid' => $this->editor->id(), 'status' => FALSE, 'moderation_state' => 'published']);
+        $page = Node::create(['type' => 'page', 'langcode' => 'en', 'title' => 'New page', 'uid' => $this->editor->id(), 'moderation_state' => 'published']);
+        // Setting the moderation state also sets the status to match it, so
+        // the status is set afterwards: unpublished in the published state.
+        $page->setUnpublished();
         // Give the new page an original whose state is equal and whose status
         // differs: only the isNew() test keeps the hook from refusing it.
         if (method_exists($page, 'setOriginal')) {
