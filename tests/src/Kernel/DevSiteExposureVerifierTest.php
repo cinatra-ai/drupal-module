@@ -413,8 +413,8 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
       'profiles' => [
         'default' => ['include_all_tools' => FALSE, 'gateway_mode' => NULL, 'transports' => ['http'], 'enabled' => NULL],
         'broken' => NULL,
-        'cinatra (replay)' => ['include_all_tools' => FALSE, 'gateway_mode' => FALSE, 'transports' => ['http'], 'enabled' => TRUE],
       ],
+      'replay' => ['profile' => ['include_all_tools' => FALSE, 'gateway_mode' => FALSE, 'transports' => ['http'], 'enabled' => TRUE]],
       'server_id' => ['effective' => CinatraDevSite::PROFILE_ID, 'raw' => ''],
       'controller' => CinatraDevSite::ENDPOINT_CONTROLLER,
       'modules' => array_fill_keys(Census::MODULES, FALSE),
@@ -431,15 +431,30 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
     $census = $this->container->get('cinatra_dev_site.census');
     $storage->write('mcp_tools.servers', ['servers' => 'not a list']);
     $this->container->get('config.factory')->reset('mcp_tools.servers');
-    $this->assertSame(['cinatra (replay)'], array_keys($census->read()['profiles']));
+    $this->assertSame([], $census->read()['profiles']);
 
     // A stored cinatra profile is foreign: the alter disables it, so the
     // replay reads no profile.
     $storage->write('mcp_tools.servers', ['servers' => [CinatraDevSite::PROFILE_ID => CinatraDevSite::PROFILE]]);
     $this->container->get('config.factory')->reset('mcp_tools.servers');
-    $profiles = $census->read()['profiles'];
-    $this->assertSame([CinatraDevSite::PROFILE_ID, 'cinatra (replay)'], array_keys($profiles));
-    $this->assertNull($profiles['cinatra (replay)']);
+    $read = $census->read();
+    $this->assertSame([CinatraDevSite::PROFILE_ID], array_keys($read['profiles']));
+    $this->assertSame(['profile' => NULL], $read['replay']);
+  }
+
+  /**
+   * A stored id 'cinatra (replay)' stays a stored profile beside the replay.
+   */
+  public function testCensusStoredIdNamedLikeTheReplay(): void {
+    $this->container->get('config.storage')->write('mcp_tools.servers', [
+      'servers' => ['cinatra (replay)' => ['enabled' => FALSE]],
+    ]);
+    $this->container->get('config.factory')->reset('mcp_tools.servers');
+    $census = $this->container->get('cinatra_dev_site.census')->read();
+    $this->assertSame([
+      'cinatra (replay)' => ['include_all_tools' => NULL, 'gateway_mode' => NULL, 'transports' => NULL, 'enabled' => FALSE],
+    ], $census['profiles']);
+    $this->assertSame(['include_all_tools' => FALSE, 'gateway_mode' => FALSE, 'transports' => ['http'], 'enabled' => TRUE], $census['replay']['profile'] ?? NULL);
   }
 
   /**
@@ -467,6 +482,7 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
     $this->container->get('config.factory')->reset('mcp_tools_remote.settings');
     $census = $this->container->get('cinatra_dev_site.census')->read();
     $this->assertSame(['default'], array_keys($census['profiles']));
+    $this->assertNull($census['replay'] ?? 'no replay key');
     $this->assertSame(['effective' => '', 'raw' => ''], $census['server_id']);
   }
 
