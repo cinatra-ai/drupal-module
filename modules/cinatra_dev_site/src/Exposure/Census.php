@@ -57,14 +57,14 @@ final class Census {
    * Reads the census.
    *
    * @return array
-   *   'profiles': each stored profile id with the four keys (NULL for a
-   *   stored value that is not an array), plus 'cinatra (replay)' while the
-   *   exposure is active and the repository can answer: the cinatra profile
-   *   as a request with its own binding reads it (NULL when absent);
-   *   'server_id': the effective and the raw value; 'controller': the
-   *   endpoint route's controller, or NULL without the route; 'modules':
-   *   each of MODULES with whether it is enabled; 'server_configs_alter':
-   *   the modules that implement the profile alter.
+   *   'profiles': each stored profile id with the four keys (NULL for a value
+   *   that is not an array); 'replay': NULL, or while the exposure is active
+   *   and the repository answers, ['profile' => the four keys of the cinatra
+   *   profile a request with its own binding reads, or NULL], apart from the
+   *   stored ids; 'server_id': the effective and the raw value; 'controller':
+   *   the endpoint route's controller, or NULL without the route; 'modules':
+   *   each of MODULES with whether it is enabled; 'server_configs_alter': the
+   *   modules that implement the profile alter.
    */
   public function read(): array {
     $profiles = [];
@@ -72,6 +72,7 @@ final class Census {
     foreach (is_array($stored) ? $stored : [] as $id => $profile) {
       $profiles[(string) $id] = is_array($profile) ? self::keys($profile) : NULL;
     }
+    $replay = NULL;
     if (CinatraDevSite::exposureActive() && $this->repository !== NULL && method_exists($this->repository, 'getServer')) {
       $request = Request::create('/_mcp_tools');
       $request->attributes->set(CinatraDevSite::BINDING_ATTRIBUTE, new ProfileBinding($request));
@@ -82,7 +83,7 @@ final class Census {
       finally {
         $this->requestStack->pop();
       }
-      $profiles[CinatraDevSite::PROFILE_ID . ' (replay)'] = is_array($profile) ? self::keys($profile) : NULL;
+      $replay = ['profile' => is_array($profile) ? self::keys($profile) : NULL];
     }
     try {
       $controller = $this->routeProvider->getRouteByName(CinatraDevSite::ENDPOINT_ROUTE)->getDefault('_controller');
@@ -101,6 +102,7 @@ final class Census {
     $settings = $this->configFactory->get('mcp_tools_remote.settings');
     return [
       'profiles' => $profiles,
+      'replay' => $replay,
       'server_id' => ['effective' => $settings->get('server_id'), 'raw' => $settings->getRawData()['server_id'] ?? NULL],
       'controller' => $controller,
       'modules' => $modules,
