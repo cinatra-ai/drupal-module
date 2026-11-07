@@ -306,10 +306,14 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
   }
 
   /**
-   * Each term of page_not_bound fails the verify step on its own.
+   * Each term of page_not_bound has a row that fails the verify step.
    *
    * The bundle info is read (and cached) before the stored record changes
-   * under it, so the stored workflow and the bundle info disagree.
+   * under it, so in the second and third rows the stored workflow and the
+   * bundle info disagree and exactly one term is false. The first row
+   * deletes editorial, so the stored workflow and the bundle info name no
+   * editorial either: all three terms are false there, and it holds the
+   * first term, which the check reads first.
    *
    * @param string $case
    *   Which term fails.
@@ -494,16 +498,27 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
   }
 
   /**
-   * The stored State and configuration.
+   * The stored State, configuration and entity revisions.
+   *
+   * A node or a moderation state saved as a new revision adds a row to its
+   * revision table, so such a save changes the snapshot.
    *
    * @return array
-   *   Every State value and every configuration record.
+   *   Every State value, every configuration record, and every row of the
+   *   node and content moderation state field revision tables.
    */
   private function snapshot(): array {
     $storage = $this->container->get('config.storage');
+    $database = $this->container->get('database');
+    $revisions = [];
+    foreach (['node_field_revision' => 'vid', 'content_moderation_state_field_revision' => 'revision_id'] as $table => $key) {
+      $revisions[$table] = $database->select($table, 'r')->fields('r')->orderBy($key)->orderBy('langcode')
+        ->execute()->fetchAll(\PDO::FETCH_ASSOC);
+    }
     return [
       'state' => $this->container->get('keyvalue')->get('state')->getAll(),
       'config' => $storage->readMultiple($storage->listAll()),
+      'revisions' => $revisions,
     ];
   }
 
