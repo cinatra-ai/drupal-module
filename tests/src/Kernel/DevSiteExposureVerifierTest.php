@@ -482,7 +482,8 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
     $this->container->get('config.factory')->reset('mcp_tools_remote.settings');
     $census = $this->container->get('cinatra_dev_site.census')->read();
     $this->assertSame(['default'], array_keys($census['profiles']));
-    $this->assertNull($census['replay'] ?? 'no replay key');
+    $this->assertArrayHasKey('replay', $census);
+    $this->assertNull($census['replay']);
     $this->assertSame(['effective' => '', 'raw' => ''], $census['server_id']);
   }
 

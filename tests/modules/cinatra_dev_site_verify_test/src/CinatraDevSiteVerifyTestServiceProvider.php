@@ -11,7 +11,10 @@ use Symfony\Component\DependencyInjection\Definition;
 /**
  * Puts the test tool manager under the tool manager's id.
  *
- * It replaces the alias the probe module sets under that id.
+ * It replaces the alias the probe module sets under that id. The definition
+ * is public, as the tool module's own one is: a private definition with one
+ * user is inlined when the container compiles, and the test then cannot read
+ * it from the container.
  */
 final class CinatraDevSiteVerifyTestServiceProvider implements ServiceModifierInterface {
 
@@ -19,7 +22,7 @@ final class CinatraDevSiteVerifyTestServiceProvider implements ServiceModifierIn
    * {@inheritdoc}
    */
   public function alter(ContainerBuilder $container) {
-    $container->setDefinition('plugin.manager.tool', new Definition(VerifyToolManager::class));
+    $container->setDefinition('plugin.manager.tool', (new Definition(VerifyToolManager::class))->setPublic(TRUE));
   }
 
 }
