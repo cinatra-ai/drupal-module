@@ -161,6 +161,28 @@ final class DevSiteEnsureTest extends KernelTestBase {
   }
 
   /**
+   * A stored include_all_tools of FALSE passes the preflight and arms.
+   *
+   * FALSE is the only stored value that passes when the key exists; an
+   * absent key is the setUp of every other passing row.
+   */
+  public function testStoredFalseIncludeAllToolsArms(): void {
+    $this->page(TRUE);
+    $this->container->get('config.storage')->write('mcp_tools_remote.settings', [
+      'enabled' => TRUE,
+      'server_id' => '',
+      'include_all_tools' => FALSE,
+    ]);
+    $this->container->get('config.factory')->reset();
+
+    $result = $this->ensure()->ensure();
+
+    $this->assertTrue($result['ok'], 'Refused: ' . implode(', ', $result['refused']));
+    $this->assertSame([], $result['refused']);
+    $this->assertArmed(TRUE);
+  }
+
+  /**
    * A second run verifies again and changes no stored value.
    *
    * The snapshot compares State, configuration and the revision tables. The
