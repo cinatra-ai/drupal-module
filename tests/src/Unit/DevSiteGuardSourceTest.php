@@ -47,8 +47,8 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
   /**
    * Only arm() sets the flag and only disarm() deletes it.
    *
-   * ensure() calls arm() as its last write (MUST-FIX 5); a second writer
-   * could set the flag before the verify step.
+   * The method ensure() calls arm() as its last write (MUST-FIX 5); a second
+   * writer could set the flag before the verify step.
    */
   public function testArmedFlagHasOneWriterAndOneRemover(): void {
     $uses = $this->moduleUses();
@@ -65,8 +65,9 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
    */
   public function testVerifyingScopeHasOneCaller(): void {
     $callers = [];
+    $skip = [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT];
     foreach ($this->moduleFiles() as $relative => $code) {
-      $tokens = array_values(array_filter(token_get_all($code), static fn($t): bool => !is_array($t) || !in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], TRUE)));
+      $tokens = array_values(array_filter(token_get_all($code), static fn($t): bool => !is_array($t) || !in_array($t[0], $skip, TRUE)));
       foreach ($tokens as $i => $token) {
         if (is_array($token) && $token[0] === T_STRING && strcasecmp($token[1], 'verifying') === 0
           && is_array($tokens[$i - 1] ?? NULL) && $tokens[$i - 1][0] === T_DOUBLE_COLON) {

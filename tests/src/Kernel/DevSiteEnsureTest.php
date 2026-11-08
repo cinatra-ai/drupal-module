@@ -141,7 +141,7 @@ final class DevSiteEnsureTest extends KernelTestBase {
   /**
    * A fresh site is bound, migrated, verified and armed; ok reaches the line.
    */
-  public function testEnsureArmsAVerifiedSite(): void {
+  public function testEnsureArmsVerifiedSite(): void {
     $published = $this->page(TRUE);
     $draft = $this->page(FALSE);
     Node::create(['type' => 'article', 'title' => 'Not a page'])->save();
@@ -197,15 +197,30 @@ final class DevSiteEnsureTest extends KernelTestBase {
     $storage = $this->container->get('config.storage');
     match ($case) {
       'no marker' => putenv('CINATRA_DEV_SITE'),
-      'include all tools' => $storage->write('mcp_tools_remote.settings', ['enabled' => TRUE, 'server_id' => '', 'include_all_tools' => TRUE]),
-      'include all tools 1' => $storage->write('mcp_tools_remote.settings', ['enabled' => TRUE, 'server_id' => '', 'include_all_tools' => 1]),
-      'include all tools null' => $storage->write('mcp_tools_remote.settings', ['enabled' => TRUE, 'server_id' => '', 'include_all_tools' => NULL]),
+      'include all tools' => $storage->write('mcp_tools_remote.settings', [
+        'enabled' => TRUE,
+        'server_id' => '',
+        'include_all_tools' => TRUE,
+      ]),
+      'include all tools 1' => $storage->write('mcp_tools_remote.settings', [
+        'enabled' => TRUE,
+        'server_id' => '',
+        'include_all_tools' => 1,
+      ]),
+      'include all tools null' => $storage->write('mcp_tools_remote.settings', [
+        'enabled' => TRUE,
+        'server_id' => '',
+        'include_all_tools' => NULL,
+      ]),
       'stored profile' => $storage->write('mcp_tools.servers', ['servers' => [CinatraDevSite::PROFILE_ID => ['name' => 'Foreign']]]),
       'servers not a list' => $storage->write('mcp_tools.servers', ['servers' => CinatraDevSite::PROFILE_ID]),
       'servers null' => $storage->write('mcp_tools.servers', ['servers' => NULL]),
       'no servers config' => $storage->delete('mcp_tools.servers'),
       'tool missing' => VerifyToolManager::$definitions = [self::READ => VerifyToolManager::$definitions[self::READ]],
-      'tool provider' => VerifyToolManager::$definitions[self::READ] = new ToolDefinition(['id' => self::READ, 'provider' => 'other']),
+      'tool provider' => VerifyToolManager::$definitions[self::READ] = new ToolDefinition([
+        'id' => self::READ,
+        'provider' => 'other',
+      ]),
       'other workflow' => Workflow::create(['id' => 'other', 'label' => 'Other', 'type' => 'content_moderation'])->save(),
       'foreign route' => EnsureFault::$step = 'foreign route',
       'no route' => EnsureFault::$step = 'no route',
@@ -342,7 +357,11 @@ final class DevSiteEnsureTest extends KernelTestBase {
     $this->page(TRUE);
     $this->assertTrue($this->ensure()->ensure()['ok']);
     $this->assertArmed(TRUE);
-    $this->container->get('config.storage')->write('mcp_tools_remote.settings', ['enabled' => TRUE, 'server_id' => '', 'include_all_tools' => TRUE]);
+    $this->container->get('config.storage')->write('mcp_tools_remote.settings', [
+      'enabled' => TRUE,
+      'server_id' => '',
+      'include_all_tools' => TRUE,
+    ]);
     $this->container->get('config.factory')->reset();
 
     $result = $this->ensure()->ensure();
