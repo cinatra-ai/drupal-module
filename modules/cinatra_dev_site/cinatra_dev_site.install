@@ -11,7 +11,7 @@
 
 declare(strict_types=1);
 
-use Drupal\cinatra_dev_site\CinatraDevSite;
+use Drupal\cinatra_dev_site\DevSiteEnsure;
 use Drupal\Core\Hook\Attribute\LegacyRequirementsHook;
 
 /**
@@ -38,7 +38,15 @@ function cinatra_dev_site_requirements($phase): array {
  * Implements hook_uninstall().
  *
  * It runs only for an installed module, whose namespace is registered.
+ * ModuleInstaller::uninstall() of Drupal core 11.4 calls it after
+ * hook_module_preuninstall() and before it removes the module's
+ * configuration and its entry in the extension list. release() takes
+ * ensure()'s lock: while ensure() holds it, this throws, so the uninstall
+ * stops before core removes either.
  */
 function cinatra_dev_site_uninstall($is_syncing): void {
-  CinatraDevSite::disarm();
+  $result = \Drupal::service('cinatra_dev_site.ensure')->release((bool) $is_syncing);
+  if (!$result['ok']) {
+    throw new \RuntimeException(DevSiteEnsure::BUSY_TEXT);
+  }
 }
