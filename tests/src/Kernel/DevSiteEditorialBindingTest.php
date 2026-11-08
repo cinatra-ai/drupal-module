@@ -525,7 +525,7 @@ final class DevSiteEditorialBindingTest extends KernelTestBase {
    * record. Both times State has no ownership value then. After a bind() that
    * bound nothing (the page was bound already), the stored record stays.
    */
-  public function testUndoAfterABindThatCreatedReusedOrBoundNothing(): void {
+  public function testUndoAfterBindThatCreatedReusedOrBoundNothing(): void {
     $this->binder()->undo($this->binder()->bind());
     $this->assertSame([], $this->workflowIds());
     $this->assertNull(\Drupal::state()->get(EditorialBinder::OWNED_KEY));
@@ -552,7 +552,7 @@ final class DevSiteEditorialBindingTest extends KernelTestBase {
    * owned. After the kill after the save, undo() of the next call keeps the
    * ownership record.
    */
-  public function testIntentOfAKilledBindIsCompleted(): void {
+  public function testIntentOfKilledBindIsCompleted(): void {
     $workflow = $this->createStandardEditorial();
     $intent = ['id' => EditorialBinder::ID, 'uuid' => $workflow->uuid(), 'intent' => TRUE];
 
@@ -706,7 +706,7 @@ final class DevSiteEditorialBindingTest extends KernelTestBase {
    * A read double plays the race: release() reads the owned record, but the
    * workflow it then loads was deleted and recreated with a page binding.
    */
-  public function testReleaseKeepsAWorkflowRecreatedAfterItsRead(): void {
+  public function testReleaseKeepsWorkflowRecreatedAfterItsRead(): void {
     $this->binder()->bind();
     $read = $this->stored();
     $owned = \Drupal::state()->get(EditorialBinder::OWNED_KEY);
@@ -817,7 +817,7 @@ final class DevSiteEditorialBindingTest extends KernelTestBase {
    * The copy holds no editorial record, and no extension list or one whose
    * module list is missing.
    */
-  public function testExportTransformOfACopyWithoutThem(): void {
+  public function testExportTransformOfCopyWithoutThem(): void {
     $copy = new MemoryStorage();
     $this->binder()->onExportTransform(new StorageTransformEvent($copy));
     $this->assertSame([], $copy->listAll());
@@ -835,7 +835,7 @@ final class DevSiteEditorialBindingTest extends KernelTestBase {
    * that the transform wrote first. The control: the same double, refusing
    * nothing, ends with both left out.
    */
-  public function testExportTransformThrowsWhenTheCopyRefusesAWrite(): void {
+  public function testExportTransformThrowsWhenTheCopyRefusesWrite(): void {
     $this->binder()->bind();
     $copy = new class() extends MemoryStorage {
 
@@ -906,7 +906,7 @@ final class DevSiteEditorialBindingTest extends KernelTestBase {
   /**
    * An unmarked import that creates editorial bound to node:page is refused.
    */
-  public function testImportGuardRefusesANewBinding(): void {
+  public function testImportGuardRefusesNewBinding(): void {
     putenv('CINATRA_DEV_SITE');
     $this->createStandardEditorial();
     $sync = $this->container->get('config.storage.sync');
