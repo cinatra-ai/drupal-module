@@ -10,9 +10,9 @@ use Drupal\Core\Extension\ModuleHandlerInterface;
 /**
  * Stands in for the MCP Tools server config repository.
  *
- * getServers() and getServer() follow drupal/mcp_tools 1.0.0-beta18,
- * src/Mcp/ServerConfigRepository.php: stored profiles merged over the
- * defaults, the profile alter, then the disabled ones dropped.
+ * The methods getServers() and getServer() follow drupal/mcp_tools
+ * 1.0.0-beta18, src/Mcp/ServerConfigRepository.php: stored profiles merged
+ * over the defaults, the profile alter, then the disabled ones dropped.
  */
 final class VerifyRepository {
 

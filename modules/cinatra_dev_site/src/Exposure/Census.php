@@ -23,7 +23,13 @@ final class Census {
   /**
    * The modules whose presence the census reports.
    */
-  public const MODULES = ['mcp_tools_stdio', 'mcp_tools_mcp_server', 'mcp_tools_ai', 'tool_ai_connector', 'tool_explorer'];
+  public const MODULES = [
+    'mcp_tools_stdio',
+    'mcp_tools_mcp_server',
+    'mcp_tools_ai',
+    'tool_ai_connector',
+    'tool_explorer',
+  ];
 
   /**
    * The profile keys the census reports.

@@ -142,7 +142,11 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
    * The router is not rebuilt, so the route still points at the endpoint.
    */
   public function testVerifyFailsWhileTheExposureIsNotActive(): void {
-    foreach (['marker' => fn() => putenv('CINATRA_DEV_SITE'), 'flag' => fn() => $this->container->get('state')->delete(CinatraDevSite::ARMED_KEY)] as $label => $off) {
+    $switches = [
+      'marker' => fn() => putenv('CINATRA_DEV_SITE'),
+      'flag' => fn() => $this->container->get('state')->delete(CinatraDevSite::ARMED_KEY),
+    ];
+    foreach ($switches as $label => $off) {
       $off();
       $this->container->get('config.factory')->reset('mcp_tools_remote.settings');
       $this->assertSame(['replay_profile', 'server_id'], $this->verifier()->verify($this->before), $label);
@@ -161,7 +165,7 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
    *
    * @dataProvider changedDefinitions
    */
-  public function testVerifyNamesAChangedToolDefinition(string $change): void {
+  public function testVerifyNamesChangedToolDefinition(string $change): void {
     $definitions = [
       'other provider' => new ToolDefinition(['id' => self::READ, 'provider' => 'other']),
       'remote provider' => new ToolDefinition(['id' => self::READ, 'provider' => 'mcp_tools_remote']),
@@ -414,7 +418,14 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
         'default' => ['include_all_tools' => FALSE, 'gateway_mode' => NULL, 'transports' => ['http'], 'enabled' => NULL],
         'broken' => NULL,
       ],
-      'replay' => ['profile' => ['include_all_tools' => FALSE, 'gateway_mode' => FALSE, 'transports' => ['http'], 'enabled' => TRUE]],
+      'replay' => [
+        'profile' => [
+          'include_all_tools' => FALSE,
+          'gateway_mode' => FALSE,
+          'transports' => ['http'],
+          'enabled' => TRUE,
+        ],
+      ],
       'server_id' => ['effective' => CinatraDevSite::PROFILE_ID, 'raw' => ''],
       'controller' => CinatraDevSite::ENDPOINT_CONTROLLER,
       'modules' => array_fill_keys(Census::MODULES, FALSE),
@@ -452,9 +463,19 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
     $this->container->get('config.factory')->reset('mcp_tools.servers');
     $census = $this->container->get('cinatra_dev_site.census')->read();
     $this->assertSame([
-      'cinatra (replay)' => ['include_all_tools' => NULL, 'gateway_mode' => NULL, 'transports' => NULL, 'enabled' => FALSE],
+      'cinatra (replay)' => [
+        'include_all_tools' => NULL,
+        'gateway_mode' => NULL,
+        'transports' => NULL,
+        'enabled' => FALSE,
+      ],
     ], $census['profiles']);
-    $this->assertSame(['include_all_tools' => FALSE, 'gateway_mode' => FALSE, 'transports' => ['http'], 'enabled' => TRUE], $census['replay']['profile'] ?? NULL);
+    $this->assertSame([
+      'include_all_tools' => FALSE,
+      'gateway_mode' => FALSE,
+      'transports' => ['http'],
+      'enabled' => TRUE,
+    ], $census['replay']['profile'] ?? NULL);
   }
 
   /**
