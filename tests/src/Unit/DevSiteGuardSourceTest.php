@@ -45,6 +45,39 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
   }
 
   /**
+   * Only arm() sets the flag and only disarm() deletes it.
+   *
+   * ensure() calls arm() as its last write (MUST-FIX 5); a second writer
+   * could set the flag before the verify step.
+   */
+  public function testArmedFlagHasOneWriterAndOneRemover(): void {
+    $uses = $this->moduleUses();
+    $this->assertSame(['src/CinatraDevSite.php arm set'], array_values(array_filter($uses, static fn(string $use): bool => str_ends_with($use, ' set'))));
+    $this->assertSame(['src/CinatraDevSite.php disarm delete'], array_values(array_filter($uses, static fn(string $use): bool => str_ends_with($use, ' delete'))));
+  }
+
+  /**
+   * Only DevSiteEnsure.php enters the verifying scope.
+   *
+   * The scope makes exposureActive() TRUE for this process without the flag.
+   * Every static call of a method named verifying in the module's files is
+   * listed with its file.
+   */
+  public function testVerifyingScopeHasOneCaller(): void {
+    $callers = [];
+    foreach ($this->moduleFiles() as $relative => $code) {
+      $tokens = array_values(array_filter(token_get_all($code), static fn($t): bool => !is_array($t) || !in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], TRUE)));
+      foreach ($tokens as $i => $token) {
+        if (is_array($token) && $token[0] === T_STRING && strcasecmp($token[1], 'verifying') === 0
+          && is_array($tokens[$i - 1] ?? NULL) && $tokens[$i - 1][0] === T_DOUBLE_COLON) {
+          $callers[] = $relative;
+        }
+      }
+    }
+    $this->assertSame(['src/DevSiteEnsure.php'], array_values(array_unique($callers)));
+  }
+
+  /**
    * The scan reads a file only when its name ends in one of four extensions.
    *
    * The extensions are .php, .module, .install and .inc. A name that has a
@@ -369,6 +402,42 @@ final class DevSiteGuardSourceTest extends UnitTestCase {
         '<?php function probe() { return \\Drupal::state()->get(b\'cinatra_dev_site.\' . B"armed"); }',
       ],
     ];
+  }
+
+  /**
+   * Reads every scanned file of the module.
+   *
+   * @return array<string, string>
+   *   The code, keyed by the path relative to the module folder.
+   */
+  private function moduleFiles(): array {
+    $module = dirname((string) (new \ReflectionClass(CinatraDevSite::class))->getFileName(), 2);
+    $files = [];
+    $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($module, \FilesystemIterator::SKIP_DOTS));
+    foreach ($iterator as $file) {
+      if (self::scans($file->getFilename())) {
+        $files[substr($file->getPathname(), strlen($module) + 1)] = (string) file_get_contents($file->getPathname());
+      }
+    }
+    ksort($files);
+    return $files;
+  }
+
+  /**
+   * Lists every use of the flag in the module, each with its file.
+   *
+   * @return string[]
+   *   The uses, as "<file> <function> <get|set|delete|unknown>" or
+   *   "<file> const".
+   */
+  private function moduleUses(): array {
+    $uses = [];
+    foreach ($this->moduleFiles() as $relative => $code) {
+      foreach ($this->uses($code) as $use) {
+        $uses[] = $relative . ' ' . $use;
+      }
+    }
+    return $uses;
   }
 
   /**

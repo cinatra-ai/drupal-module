@@ -1,0 +1,8 @@
+name: 'Cinatra development site ensure test'
+type: module
+description: 'Fault doubles for the ensure() kernel tests: a throw at the router rebuild, the census, the log line, the delete of the armed flag or the release of the lock, a lapsed lock and a nested call, while a test asks for it.'
+package: Testing
+hidden: true
+core_version_requirement: ^10.3 || ^11 || ^12
+dependencies:
+  - cinatra:cinatra_dev_site

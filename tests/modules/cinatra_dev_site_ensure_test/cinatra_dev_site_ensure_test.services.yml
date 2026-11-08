@@ -1,0 +1,11 @@
+services:
+  # Throws at a router rebuild while the exposure is active, on request.
+  cinatra_dev_site_ensure_test.route_subscriber:
+    class: Drupal\cinatra_dev_site_ensure_test\FaultRouteSubscriber
+    tags:
+      - { name: event_subscriber }
+  # Records the log lines of the cinatra_dev_site channel; throws on request.
+  cinatra_dev_site_ensure_test.logger:
+    class: Drupal\cinatra_dev_site_ensure_test\FaultLogger
+    tags:
+      - { name: logger }
