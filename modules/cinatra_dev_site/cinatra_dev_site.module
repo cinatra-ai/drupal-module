@@ -1,0 +1,48 @@
+<?php
+
+/**
+ * @file
+ * Hooks of the Cinatra development site submodule.
+ *
+ * Each hook asks the exposure guard first and does nothing while the exposure
+ * is not active.
+ */
+
+declare(strict_types=1);
+
+use Drupal\cinatra_dev_site\CinatraDevSite;
+use Drupal\cinatra_dev_site\Mcp\ProfileBinding;
+
+/**
+ * Implements hook_mcp_tools_server_configs_alter().
+ *
+ * While the exposure is active, it adds the cinatra profile for the current
+ * request only when that request carries its own binding, and it counts the
+ * read on that binding. An entry already under the cinatra id is foreign:
+ * the hook disables an array entry in this altered view, removes any other
+ * value, and counts no read. The mcp_tools repository turns every stored
+ * entry into an array before it invokes this hook, so a stored entry is
+ * disabled; another value under the id can come from an earlier
+ * implementation of this hook or from another caller of the alter.
+ */
+function cinatra_dev_site_mcp_tools_server_configs_alter(array &$servers): void {
+  if (!CinatraDevSite::exposureActive()) {
+    return;
+  }
+  $id = CinatraDevSite::PROFILE_ID;
+  if (array_key_exists($id, $servers)) {
+    if (is_array($servers[$id])) {
+      $servers[$id]['enabled'] = FALSE;
+    }
+    else {
+      unset($servers[$id]);
+    }
+    return;
+  }
+  $request = \Drupal::requestStack()->getCurrentRequest();
+  $binding = $request?->attributes->get(CinatraDevSite::BINDING_ATTRIBUTE);
+  if ($binding instanceof ProfileBinding && $binding->request === $request) {
+    $servers[$id] = CinatraDevSite::PROFILE;
+    $binding->noteRead();
+  }
+}

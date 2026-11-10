@@ -1,0 +1,13 @@
+# A stand-in for the upstream remote route, with the probe controller as its
+# stock controller (the probe sets cinatra_dev_site.remote_controller to it).
+# No test dispatches it, so it allows no access.
+mcp_tools_remote.handle:
+  path: '/_mcp_tools'
+  defaults:
+    _controller: '\Drupal\cinatra_dev_site_probe\ProbeController::handle'
+    _title: 'Probe remote endpoint'
+  requirements:
+    _access: 'FALSE'
+  methods: [GET, POST]
+  options:
+    no_cache: TRUE

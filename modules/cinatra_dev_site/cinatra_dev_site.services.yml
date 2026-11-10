@@ -10,3 +10,14 @@ services:
   cinatra_dev_site.profile_guard:
     class: Drupal\cinatra_dev_site\Mcp\ProfileToolGuard
     arguments: ['@request_stack']
+  # Points the remote route at the endpoint while the exposure is active.
+  cinatra_dev_site.route_subscriber:
+    class: Drupal\cinatra_dev_site\Routing\DevSiteRouteSubscriber
+    arguments: ['%cinatra_dev_site.remote_controller%']
+    tags:
+      - { name: event_subscriber }
+  # Points the remote server id at the cinatra profile while active.
+  cinatra_dev_site.config_override:
+    class: Drupal\cinatra_dev_site\Config\DevSiteConfigOverride
+    tags:
+      - { name: config.factory.override, priority: 5 }
