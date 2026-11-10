@@ -1,0 +1,8 @@
+name: 'Cinatra development site verify test'
+type: module
+description: 'Test doubles for the exposure verifier and census kernel tests: a tool manager, a server repository and a profile alter that misbehaves when a State key says.'
+package: Testing
+hidden: true
+core_version_requirement: ^10.3 || ^11 || ^12
+dependencies:
+  - cinatra:cinatra_dev_site

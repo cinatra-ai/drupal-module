@@ -48,6 +48,16 @@ final class CinatraDevSite {
   public const GUARD_CALLBACK = 'cinatra_dev_site.profile_guard:check';
 
   /**
+   * The remote MCP route that the route subscriber may switch.
+   */
+  public const ENDPOINT_ROUTE = 'mcp_tools_remote.handle';
+
+  /**
+   * The controller that the route subscriber sets while the exposure is active.
+   */
+  public const ENDPOINT_CONTROLLER = '\Drupal\cinatra_dev_site\Controller\DevSiteRemoteEndpoint::handle';
+
+  /**
    * The request attribute that carries the request's profile binding.
    */
   public const BINDING_ATTRIBUTE = '_cinatra_dev_site_binding';

@@ -3,13 +3,80 @@
 /**
  * @file
  * Hooks of the Cinatra development site submodule.
+ *
+ * The profile alter asks the exposure guard first; the import guard (workflow
+ * presave) asks only for the development marker.
  */
 
 declare(strict_types=1);
 
 use Drupal\cinatra_dev_site\CinatraDevSite;
+use Drupal\cinatra_dev_site\Mcp\ProfileBinding;
 use Drupal\cinatra_dev_site\Page\PageMigrator;
+use Drupal\cinatra_dev_site\Workflow\EditorialBinder;
+use Drupal\content_moderation\Plugin\WorkflowType\ContentModerationInterface;
 use Drupal\node\NodeInterface;
+use Drupal\workflows\WorkflowInterface;
+
+/**
+ * Implements hook_mcp_tools_server_configs_alter().
+ *
+ * While the exposure is active, it adds the cinatra profile for the current
+ * request only when that request carries its own binding, and it counts the
+ * read on that binding. An entry already under the cinatra id is foreign:
+ * the hook disables an array entry in this altered view, removes any other
+ * value, and counts no read. The mcp_tools repository turns every stored
+ * entry into an array before it invokes this hook, so a stored entry is
+ * disabled; another value under the id can come from an earlier
+ * implementation of this hook or from another caller of the alter.
+ */
+function cinatra_dev_site_mcp_tools_server_configs_alter(array &$servers): void {
+  if (!CinatraDevSite::exposureActive()) {
+    return;
+  }
+  $id = CinatraDevSite::PROFILE_ID;
+  if (array_key_exists($id, $servers)) {
+    if (is_array($servers[$id])) {
+      $servers[$id]['enabled'] = FALSE;
+    }
+    else {
+      unset($servers[$id]);
+    }
+    return;
+  }
+  $request = \Drupal::requestStack()->getCurrentRequest();
+  $binding = $request?->attributes->get(CinatraDevSite::BINDING_ATTRIBUTE);
+  if ($binding instanceof ProfileBinding && $binding->request === $request) {
+    $servers[$id] = CinatraDevSite::PROFILE;
+    $binding->noteRead();
+  }
+}
+
+/**
+ * Implements hook_ENTITY_TYPE_presave() for workflow entities.
+ *
+ * The import guard: on a site without the development marker, a syncing
+ * save (as a configuration import makes) of a content moderation workflow
+ * that binds node:page throws, unless the stored record of that workflow is
+ * a content moderation workflow whose node bundle list is an array that
+ * names page.
+ */
+function cinatra_dev_site_workflow_presave(WorkflowInterface $workflow): void {
+  if (!$workflow->isSyncing() || CinatraDevSite::markerPresent()) {
+    return;
+  }
+  $plugin = $workflow->getTypePlugin();
+  if (!$plugin instanceof ContentModerationInterface || !$plugin->appliesToEntityTypeAndBundle('node', 'page')) {
+    return;
+  }
+  $stored = \Drupal::service('config.storage')->read('workflows.workflow.' . $workflow->id());
+  $moderated = is_array($stored) && ($stored['type'] ?? NULL) === 'content_moderation';
+  $nodes = $moderated ? ($stored['type_settings']['entity_types']['node'] ?? []) : [];
+  if (is_array($nodes) && in_array('page', $nodes, TRUE)) {
+    return;
+  }
+  throw new \RuntimeException(EditorialBinder::IMPORT_GUARD_TEXT);
+}
 
 /**
  * Implements hook_node_presave().

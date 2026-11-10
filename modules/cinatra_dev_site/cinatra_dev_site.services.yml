@@ -10,6 +10,34 @@ services:
   cinatra_dev_site.profile_guard:
     class: Drupal\cinatra_dev_site\Mcp\ProfileToolGuard
     arguments: ['@request_stack']
+  # Points the remote route at the endpoint while the exposure is active.
+  cinatra_dev_site.route_subscriber:
+    class: Drupal\cinatra_dev_site\Routing\DevSiteRouteSubscriber
+    arguments: ['%cinatra_dev_site.remote_controller%']
+    tags:
+      - { name: event_subscriber }
+  # Points the remote server id at the cinatra profile while active.
+  cinatra_dev_site.config_override:
+    class: Drupal\cinatra_dev_site\Config\DevSiteConfigOverride
+    tags:
+      - { name: config.factory.override, priority: 5 }
+  # Binds node:page to editorial; as a subscriber it also transforms exports.
+  cinatra_dev_site.editorial_binder:
+    class: Drupal\cinatra_dev_site\Workflow\EditorialBinder
+    arguments: ['@config.storage', '@entity_type.manager', '@state', '@content_moderation.moderation_information']
+    tags:
+      - { name: event_subscriber }
+  # Verifies the exposure, the page binding and each page's moderation; it
+  # writes nothing and does not arm.
+  cinatra_dev_site.exposure_verifier:
+    class: Drupal\cinatra_dev_site\Exposure\ExposureVerifier
+    arguments: ['@?plugin.manager.tool', '@?mcp_tools.server_config_repository', '@config.factory', '@router.route_provider',
+      '@request_stack', '@cinatra_dev_site.profile_guard', '@account_switcher', '@current_user',
+      '@cinatra_dev_site.editorial_binder', '@entity_type.manager', '@content_moderation.moderation_information']
+  # Reads the census of the exposure; it writes nothing.
+  cinatra_dev_site.census:
+    class: Drupal\cinatra_dev_site\Exposure\Census
+    arguments: ['@config.factory', '@module_handler', '@router.route_provider', '@request_stack', '@?mcp_tools.server_config_repository']
   # Binds the pages of node:page to editorial rows; nothing in this unit runs it.
   cinatra_dev_site.page_migrator:
     class: Drupal\cinatra_dev_site\Page\PageMigrator
