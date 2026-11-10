@@ -46,7 +46,7 @@ final class DevSiteScopedToolTest extends KernelTestBase {
   /**
    * {@inheritdoc}
    */
-  protected static $modules = ['system', 'user', 'cinatra', 'cinatra_dev_site'];
+  protected static $modules = ['system', 'user', 'workflows', 'content_moderation', 'cinatra', 'cinatra_dev_site'];
 
   /**
    * {@inheritdoc}

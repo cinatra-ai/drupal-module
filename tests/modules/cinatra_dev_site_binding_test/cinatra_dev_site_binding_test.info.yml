@@ -1,0 +1,8 @@
+name: 'Cinatra development site binding test'
+type: module
+description: 'Test doubles for the editorial binding kernel tests: a bundle info alter and a State that fails once.'
+package: Testing
+hidden: true
+core_version_requirement: ^10.3 || ^11 || ^12
+dependencies:
+  - cinatra:cinatra_dev_site
