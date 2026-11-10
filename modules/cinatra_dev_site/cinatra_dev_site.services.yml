@@ -27,3 +27,14 @@ services:
     arguments: ['@config.storage', '@entity_type.manager', '@state', '@content_moderation.moderation_information']
     tags:
       - { name: event_subscriber }
+  # Verifies the exposure, the page binding and each page's moderation; it
+  # writes nothing and does not arm.
+  cinatra_dev_site.exposure_verifier:
+    class: Drupal\cinatra_dev_site\Exposure\ExposureVerifier
+    arguments: ['@?plugin.manager.tool', '@?mcp_tools.server_config_repository', '@config.factory', '@router.route_provider',
+      '@request_stack', '@cinatra_dev_site.profile_guard', '@account_switcher', '@current_user',
+      '@cinatra_dev_site.editorial_binder', '@entity_type.manager', '@content_moderation.moderation_information']
+  # Reads the census of the exposure; it writes nothing.
+  cinatra_dev_site.census:
+    class: Drupal\cinatra_dev_site\Exposure\Census
+    arguments: ['@config.factory', '@module_handler', '@router.route_provider', '@request_stack', '@?mcp_tools.server_config_repository']

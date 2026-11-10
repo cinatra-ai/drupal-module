@@ -1,0 +1,5 @@
+services:
+  # A stand-in for the MCP Tools server repository (getServers, getServer).
+  mcp_tools.server_config_repository:
+    class: Drupal\cinatra_dev_site_verify_test\VerifyRepository
+    arguments: ['@config.factory', '@module_handler']
