@@ -80,11 +80,11 @@ instance supports it, an accepted change is dropped straight back into the page.
 
 ### Do I need a Cinatra account?
 
-You need access to a running Cinatra instance. Cinatra is an open source AI
-platform that you or your organisation host and connect the assistant to — learn
-more and get the source at <https://www.cinatra.ai>. Once your instance is
-running, open the Cinatra settings, enter the instance's web address, and
-connect.
+You need access to a running Cinatra instance. Cinatra is The Open Source
+Agentic Teams Workspace, which you or your organisation host and connect the
+assistant to — learn more and get the source at <https://www.cinatra.ai>. Once
+your instance is running, open the Cinatra settings, enter the instance's web
+address, and connect.
 
 ### What it does for editors
 
