@@ -1,0 +1,8 @@
+name: 'Cinatra development site page test'
+type: module
+description: 'A node presave hook and storage doubles for the page migration kernel tests: it changes one field of a syncing save, or makes one revision unreadable, on request.'
+package: Testing
+hidden: true
+core_version_requirement: ^10.3 || ^11 || ^12
+dependencies:
+  - cinatra:cinatra_dev_site

@@ -12,8 +12,10 @@ declare(strict_types=1);
 
 use Drupal\cinatra_dev_site\CinatraDevSite;
 use Drupal\cinatra_dev_site\Mcp\ProfileBinding;
+use Drupal\cinatra_dev_site\Page\PageMigrator;
 use Drupal\cinatra_dev_site\Workflow\EditorialBinder;
 use Drupal\content_moderation\Plugin\WorkflowType\ContentModerationInterface;
+use Drupal\node\NodeInterface;
 use Drupal\workflows\WorkflowInterface;
 
 /**
@@ -74,4 +76,30 @@ function cinatra_dev_site_workflow_presave(WorkflowInterface $workflow): void {
     return;
   }
   throw new \RuntimeException(EditorialBinder::IMPORT_GUARD_TEXT);
+}
+
+/**
+ * Implements hook_node_presave().
+ *
+ * While the exposure is active, an existing moderated page changes its status
+ * only through its moderation state. Core runs this hook before its own
+ * moderation hook syncs the status, and a refusal rolls the save back.
+ */
+function cinatra_dev_site_node_presave(NodeInterface $node): void {
+  if (!CinatraDevSite::exposureActive() || $node->bundle() !== 'page' || $node->isNew() || $node->isSyncing()
+    || !\Drupal::service('content_moderation.moderation_information')->isModeratedEntity($node)) {
+    return;
+  }
+  $original = method_exists($node, 'getOriginal') ? $node->getOriginal() : ($node->original ?? NULL);
+  foreach (array_keys($node->getTranslationLanguages()) as $langcode) {
+    if (!$original instanceof NodeInterface || !$original->hasTranslation($langcode)) {
+      continue;
+    }
+    $translation = $node->getTranslation($langcode);
+    $before = $original->getTranslation($langcode);
+    if ($translation->isPublished() !== $before->isPublished()
+      && $translation->get('moderation_state')->value === $before->get('moderation_state')->value) {
+      throw new \RuntimeException(PageMigrator::STATUS_REFUSAL_TEXT);
+    }
+  }
 }

@@ -38,3 +38,7 @@ services:
   cinatra_dev_site.census:
     class: Drupal\cinatra_dev_site\Exposure\Census
     arguments: ['@config.factory', '@module_handler', '@router.route_provider', '@request_stack', '@?mcp_tools.server_config_repository']
+  # Binds the pages of node:page to editorial rows; nothing in this unit runs it.
+  cinatra_dev_site.page_migrator:
+    class: Drupal\cinatra_dev_site\Page\PageMigrator
+    arguments: ['@entity_type.manager', '@cinatra.protected_draft_storage']
