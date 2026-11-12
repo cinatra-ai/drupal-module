@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Drupal\cinatra_dev_site;
 
+use Drupal\Core\Config\ConfigFactoryInterface;
+
 /**
  * The development marker and the one exposure guard.
  *
@@ -42,6 +44,19 @@ final class CinatraDevSite {
    * The profile id.
    */
   public const PROFILE_ID = 'cinatra';
+
+  /**
+   * The record of the server profiles in drupal/mcp_tools 1.0.0-beta15 on.
+   */
+  public const SERVERS_CONFIG = 'mcp_tools.servers';
+
+  /**
+   * The same record's name in drupal/mcp_tools 1.0.0-beta1 to beta14.
+   *
+   * The update 10001 of beta15 moves this record to SERVERS_CONFIG and
+   * deletes it, so a site stores one of the two.
+   */
+  public const SERVERS_CONFIG_LEGACY = 'mcp_tools_servers.settings';
 
   /**
    * The profile's permission callback: the profile guard service.
@@ -123,6 +138,27 @@ final class CinatraDevSite {
     finally {
       self::$verifying = FALSE;
     }
+  }
+
+  /**
+   * Names the stored records of the mcp_tools server profiles.
+   *
+   * @param \Drupal\Core\Config\ConfigFactoryInterface $config_factory
+   *   The config factory.
+   *
+   * @return string[]
+   *   Each of SERVERS_CONFIG and SERVERS_CONFIG_LEGACY that is stored, in
+   *   that order: none, one, or both on a site that an import or a failed
+   *   update left with both.
+   */
+  public static function storedServersConfigs(ConfigFactoryInterface $config_factory): array {
+    $names = [];
+    foreach ([self::SERVERS_CONFIG, self::SERVERS_CONFIG_LEGACY] as $name) {
+      if (!$config_factory->get($name)->isNew()) {
+        $names[] = $name;
+      }
+    }
+    return $names;
   }
 
   /**

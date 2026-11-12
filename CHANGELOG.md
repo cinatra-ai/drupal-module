@@ -8,6 +8,7 @@ Releases are tag-driven: the GitHub release tag is `v<MAJOR>.<MINOR>.<PATCH>`
 and the corresponding drupal.org release tag is the bare `<MAJOR>.<MINOR>.<PATCH>`.
 
 ## Unreleased
+- The development site now reads the mcp_tools server profiles under both names that drupal/mcp_tools uses: `mcp_tools_servers.settings` (1.0.0-beta1 to beta14) and `mcp_tools.servers` (beta15 and later). On a site with beta14 or older it refused to arm with `mcp_config_absent`. A site that stores both records refuses with `mcp_config_ambiguous`.
 - The protected draft preimage now reports the page's translation languages, so Cinatra can save a draft of a single-language page whose language it read from the page's path, and refuses when the page has other translations. The list is reported only when the editor may view every translation; otherwise it is left out and Cinatra refuses, so a translation the editor may not view is never named.
 - The assistant sign-in now happens inside the Cinatra panel and stays between the editor and Cinatra: this site no longer starts, completes or receives that sign-in, and never holds an editor's Cinatra credential. Requires a Cinatra instance on widget bootstrap protocol 2.
 - Removed the three same-origin broker routes the old sign-in needed (`/cinatra/token`, `/cinatra/widget-auth/init`, `/cinatra/widget-auth/token`). Nothing on the site calls them, and a stale page that does gets a plain 404.
