@@ -273,6 +273,8 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $raw_translation = $node->getTranslation($language);
     $stored_fields = $this->values($raw_translation, $fields);
     $published = [];
+    $translation_languages = array_map('strval', array_keys($node->getTranslationLanguages()));
+    sort($translation_languages);
     foreach ($node->getTranslationLanguages() as $langcode => $lang) {
       // INTERNAL SQL-hydrated equality snapshot, never a load-hook echo.
       $published[$langcode] = $node->getTranslation($langcode)->toArray();
@@ -340,6 +342,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       'allowed_draft_states' => array_values(array_unique($allowed)),
       'field_access' => $access,
       'available_fields' => $available_fields,
+      // Every translation of the default revision, so a caller can bind a
+      // candidate language (for example a computed path item) before a write.
+      'translation_languages' => $translation_languages,
       'fields' => $stored_fields,
       'published_values' => $published,
     ];
