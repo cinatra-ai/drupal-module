@@ -363,6 +363,12 @@ $cases['preimage exposes only requested readable fields and no internal snapshot
   require_true(array_keys($result['fields']) === ['title'], 'Exported unrequested field');
   require_true(!isset($result['published_values']), 'Exported internal snapshot');
 };
+$cases['preimage reports the node translation languages'] = static function (): void {
+  $store = new CinatraMemoryProtectedDraftStorage();
+  $store->snapshot['translation_languages'] = ['de', 'fr'];
+  $result = (new ProtectedDraftService($store))->prepare(19, 'de', ['title']);
+  require_true(($result['translation_languages'] ?? NULL) === ['de', 'fr'], 'Dropped the translation languages');
+};
 
 $failed = 0;
 foreach ($cases as $name => $test) {

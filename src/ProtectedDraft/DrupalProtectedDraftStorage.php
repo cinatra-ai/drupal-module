@@ -280,6 +280,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $this->entityTypeManager->getAccessControlHandler('node')->resetCache();
     // Access hooks inspect a clone; they cannot mutate stored return values.
     $translation = $this->readableTranslation(clone $node, $language, $fields);
+    $translation_languages = $this->viewableTranslationLanguages(clone $node);
     $definitions = $raw_translation->getFieldDefinitions();
     $moderation = $definitions['moderation_state'] ?? NULL;
     $canonical = $moderation !== NULL
@@ -321,7 +322,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       }
     }
     $this->preimage = $raw_translation;
-    return [
+    $preimage = [
       'node_id' => (int) $node->id(),
       'uuid' => $node->uuid(),
       'language' => $raw_translation->language()->getId(),
@@ -340,9 +341,18 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       'allowed_draft_states' => array_values(array_unique($allowed)),
       'field_access' => $access,
       'available_fields' => $available_fields,
+      // Every translation of the default revision, so a caller can bind a
+      // candidate language (for example a computed path item) before a write;
+      // removed below when the account may not view one of them.
+      'translation_languages' => $translation_languages,
       'fields' => $stored_fields,
       'published_values' => $published,
     ];
+    if ($translation_languages === NULL) {
+      // A translation this account may not view: report no list at all.
+      unset($preimage['translation_languages']);
+    }
+    return $preimage;
   }
 
   /**
@@ -882,6 +892,32 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       }
     }
     return $translation;
+  }
+
+  /**
+   * Lists the translation languages only when the account may view each one.
+   *
+   * Each translation of the default revision takes the view check of the
+   * requested translation. Naming a translation the account may not view would
+   * disclose it, and a list without it would make a multilingual page look
+   * single-language, so one unviewable translation yields NULL (no list).
+   *
+   * @return string[]|null
+   *   The sorted language codes, or NULL when one translation is not viewable.
+   */
+  private function viewableTranslationLanguages(NodeInterface $node): ?array {
+    $languages = [];
+    foreach (array_keys($node->getTranslationLanguages()) as $langcode) {
+      $langcode = (string) $langcode;
+      $translation = $node->getTranslation($langcode);
+      if ($translation->language()->getId() !== $langcode
+        || !$translation->access('view', $this->account, TRUE)->isAllowed()) {
+        return NULL;
+      }
+      $languages[] = $langcode;
+    }
+    sort($languages, SORT_STRING);
+    return $languages === [] ? NULL : $languages;
   }
 
   /**

@@ -25,7 +25,7 @@ final class ProtectedDraftService {
         'latest_revision_id', 'is_default_revision', 'is_published',
         'moderated', 'canonical_moderation_field', 'workflow_fingerprint', 'preimage_fingerprint',
         'draft_states', 'allowed_draft_states', 'fields',
-        'available_fields',
+        'available_fields', 'translation_languages',
       ];
       $result = array_intersect_key($snapshot, array_flip($allowed));
       $result['fields'] = array_intersect_key($snapshot['fields'] ?? [], array_flip($fields));
