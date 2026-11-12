@@ -61,6 +61,13 @@ final class DevSiteEnsureTest extends KernelTestBase {
   private const RESULT_TAG = 'CINATRA_DEV_SITE_ENSURE_RESULT=';
 
   /**
+   * The name of the profile record in drupal/mcp_tools beta1 to beta14.
+   *
+   * Release 1.0.0-beta15 renamed it to mcp_tools.servers (update 10001).
+   */
+  private const LEGACY_SERVERS = 'mcp_tools_servers.settings';
+
+  /**
    * {@inheritdoc}
    */
   protected static $modules = [
@@ -183,6 +190,45 @@ final class DevSiteEnsureTest extends KernelTestBase {
   }
 
   /**
+   * The record that drupal/mcp_tools beta1 to beta14 installs arms.
+   *
+   * Those releases store the profiles in mcp_tools_servers.settings, and
+   * their config/install ships the four stock profiles; such a site has no
+   * mcp_tools.servers record.
+   */
+  public function testLegacyMcpToolsProfilesArm(): void {
+    $this->page(TRUE);
+    $profile = [
+      'name' => 'Drupal MCP Tools',
+      'version' => '1.0.0',
+      'pagination_limit' => 50,
+      'include_all_tools' => FALSE,
+      'gateway_mode' => FALSE,
+      'enable_resources' => TRUE,
+      'enable_prompts' => TRUE,
+      'component_public_only' => FALSE,
+      'transports' => ['http', 'stdio'],
+    ];
+    $this->legacyOnly([
+      'default_server' => 'default',
+      'servers' => [
+        'default' => $profile,
+        'development' => ['scopes' => ['read', 'write', 'admin']] + $profile,
+        'staging' => ['gateway_mode' => TRUE, 'scopes' => ['read', 'write']] + $profile,
+        'production' => ['gateway_mode' => TRUE, 'scopes' => ['read']] + $profile,
+      ],
+    ]);
+    $this->container->get('config.factory')->reset();
+
+    $result = $this->ensure()->ensure();
+
+    $this->assertTrue($result['ok'], 'Refused: ' . implode(', ', $result['refused']));
+    $this->assertSame([], $result['refused']);
+    $this->assertSame(['default', 'development', 'staging', 'production'], array_keys($result['census']['profiles']));
+    $this->assertArmed(TRUE);
+  }
+
+  /**
    * A second run verifies again and changes no stored value.
    *
    * The snapshot compares State, configuration and the revision tables. The
@@ -238,6 +284,9 @@ final class DevSiteEnsureTest extends KernelTestBase {
       'servers not a list' => $storage->write('mcp_tools.servers', ['servers' => CinatraDevSite::PROFILE_ID]),
       'servers null' => $storage->write('mcp_tools.servers', ['servers' => NULL]),
       'no servers config' => $storage->delete('mcp_tools.servers'),
+      'legacy stored profile' => $this->legacyOnly(['servers' => [CinatraDevSite::PROFILE_ID => ['name' => 'Foreign']]]),
+      'legacy servers not a list' => $this->legacyOnly(['servers' => CinatraDevSite::PROFILE_ID]),
+      'both servers configs' => $storage->write(self::LEGACY_SERVERS, ['servers' => ['default' => ['name' => 'Default']]]),
       'tool missing' => VerifyToolManager::$definitions = [self::READ => VerifyToolManager::$definitions[self::READ]],
       'tool provider' => VerifyToolManager::$definitions[self::READ] = new ToolDefinition([
         'id' => self::READ,
@@ -281,6 +330,9 @@ final class DevSiteEnsureTest extends KernelTestBase {
       'servers not a list' => ['servers not a list', ['mcp_servers_unreadable']],
       'servers null' => ['servers null', ['mcp_servers_unreadable']],
       'no servers config' => ['no servers config', ['mcp_config_absent']],
+      'legacy stored profile' => ['legacy stored profile', ['profile_collision']],
+      'legacy servers not a list' => ['legacy servers not a list', ['mcp_servers_unreadable']],
+      'both servers configs' => ['both servers configs', ['mcp_config_ambiguous']],
       'tool missing' => ['tool missing', ['tool_definition_missing:' . self::WRITE]],
       'tool provider' => ['tool provider', ['tool_provider_unexpected:' . self::READ]],
       'other workflow' => ['other workflow', ['other_workflow']],
@@ -909,6 +961,21 @@ final class DevSiteEnsureTest extends KernelTestBase {
     $page = Node::create(['type' => 'page', 'title' => $published ? 'Published' : 'Draft', 'status' => $published]);
     $page->save();
     return (int) $page->id();
+  }
+
+  /**
+   * Stores the profile record under the beta1 to beta14 name only.
+   *
+   * @param array $record
+   *   The record.
+   *
+   * @return bool
+   *   TRUE once written.
+   */
+  private function legacyOnly(array $record): bool {
+    $storage = $this->container->get('config.storage');
+    $storage->delete('mcp_tools.servers');
+    return $storage->write(self::LEGACY_SERVERS, $record);
   }
 
   /**

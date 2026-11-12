@@ -55,7 +55,13 @@ final class VerifyRepository {
    *   The profiles keyed by id.
    */
   public function getServers(): array {
-    $servers = $this->configFactory->get('mcp_tools.servers')->get('servers') ?? [];
+    // drupal/mcp_tools beta15 and later read mcp_tools.servers; beta1 to
+    // beta14 read mcp_tools_servers.settings, the name beta15 renames.
+    $config = $this->configFactory->get('mcp_tools.servers');
+    if ($config->isNew()) {
+      $config = $this->configFactory->get('mcp_tools_servers.settings');
+    }
+    $servers = $config->get('servers') ?? [];
     $servers = is_array($servers) && $servers !== [] ? $servers : ['default' => []];
     $normalized = [];
     foreach ($servers as $id => $server) {
