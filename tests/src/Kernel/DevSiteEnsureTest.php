@@ -231,8 +231,8 @@ final class DevSiteEnsureTest extends KernelTestBase {
   /**
    * An empty profile list is a readable list: it passes and arms.
    *
-   * drupal/mcp_tools serves its default profile for an empty list; only a
-   * missing or non-array list refuses.
+   * The module drupal/mcp_tools serves its default profile for an empty
+   * list; only a missing or non-array list refuses.
    *
    * @param string $name
    *   The record name.
@@ -376,7 +376,8 @@ final class DevSiteEnsureTest extends KernelTestBase {
       'legacy servers not a list' => ['legacy servers not a list', ['mcp_servers_unreadable']],
       'both servers configs' => ['both servers configs', ['mcp_config_ambiguous']],
       'legacy servers missing' => ['legacy servers missing', ['mcp_servers_unreadable']],
-      'legacy empty record' => ['legacy empty record', ['mcp_servers_unreadable']],
+      // Core's config storage reads an empty stored record as absent.
+      'legacy empty record' => ['legacy empty record', ['mcp_config_absent']],
       'legacy servers null' => ['legacy servers null', ['mcp_servers_unreadable']],
       'servers missing' => ['servers missing', ['mcp_servers_unreadable']],
       'tool missing' => ['tool missing', ['tool_definition_missing:' . self::WRITE]],
