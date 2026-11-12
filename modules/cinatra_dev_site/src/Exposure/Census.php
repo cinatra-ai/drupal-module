@@ -74,7 +74,8 @@ final class Census {
    */
   public function read(): array {
     $profiles = [];
-    $stored = $this->configFactory->get('mcp_tools.servers')->getRawData()['servers'] ?? [];
+    $name = CinatraDevSite::storedServersConfigs($this->configFactory)[0] ?? CinatraDevSite::SERVERS_CONFIG;
+    $stored = $this->configFactory->get($name)->getRawData()['servers'] ?? [];
     foreach (is_array($stored) ? $stored : [] as $id => $profile) {
       $profiles[(string) $id] = is_array($profile) ? self::keys($profile) : NULL;
     }

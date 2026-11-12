@@ -366,10 +366,17 @@ final class DevSiteEnsure {
     if (!is_string($controller) || !in_array(ltrim($controller, '\\'), $allowed, TRUE)) {
       $refused[] = 'endpoint_route_unexpected';
     }
-    $servers = $this->configFactory->get('mcp_tools.servers');
+    // drupal/mcp_tools stores the profiles under one of two names, by
+    // release. With both stored, which one the installed release reads is
+    // not known here, so the run refuses.
+    $stored = CinatraDevSite::storedServersConfigs($this->configFactory);
+    $servers = $this->configFactory->get($stored[0] ?? CinatraDevSite::SERVERS_CONFIG);
     $settings = $this->configFactory->get(self::SETTINGS);
-    if ($servers->isNew() || $settings->isNew()) {
+    if ($stored === [] || $settings->isNew()) {
       $refused[] = 'mcp_config_absent';
+    }
+    if (count($stored) > 1) {
+      $refused[] = 'mcp_config_ambiguous';
     }
     // The stored records without overrides. A key is read as absent only
     // when the record lacks it: a stored NULL is a value, not an absent key.
@@ -379,9 +386,9 @@ final class DevSiteEnsure {
     if (array_key_exists('include_all_tools', $stored_settings) && $stored_settings['include_all_tools'] !== FALSE) {
       $refused[] = 'include_all_tools_true';
     }
-    if (array_key_exists('servers', $stored_servers) && !is_array($stored_servers['servers'])) {
-      // An unreadable profile list, NULL too, cannot be shown free of a
-      // collision.
+    if ($stored !== [] && !is_array($stored_servers['servers'] ?? NULL)) {
+      // A stored record whose profile list is missing or not an array, NULL
+      // too, cannot be shown free of a collision. An empty list is a list.
       $refused[] = 'mcp_servers_unreadable';
     }
     elseif (array_key_exists(CinatraDevSite::PROFILE_ID, $stored_servers['servers'] ?? [])) {
