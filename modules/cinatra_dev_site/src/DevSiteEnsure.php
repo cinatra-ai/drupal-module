@@ -386,9 +386,9 @@ final class DevSiteEnsure {
     if (array_key_exists('include_all_tools', $stored_settings) && $stored_settings['include_all_tools'] !== FALSE) {
       $refused[] = 'include_all_tools_true';
     }
-    if (array_key_exists('servers', $stored_servers) && !is_array($stored_servers['servers'])) {
-      // An unreadable profile list, NULL too, cannot be shown free of a
-      // collision.
+    if ($stored !== [] && !is_array($stored_servers['servers'] ?? NULL)) {
+      // A stored record whose profile list is missing or not an array, NULL
+      // too, cannot be shown free of a collision. An empty list is a list.
       $refused[] = 'mcp_servers_unreadable';
     }
     elseif (array_key_exists(CinatraDevSite::PROFILE_ID, $stored_servers['servers'] ?? [])) {
