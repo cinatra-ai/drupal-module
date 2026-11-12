@@ -10,7 +10,8 @@ namespace Drupal\cinatra_dev_site;
  * Every path that serves the exposure asks exposureActive() before any work.
  * It is the only reader of the armed State flag, and it also requires the
  * development marker of the running process: a database restored on a site
- * without the marker serves nothing.
+ * without the marker serves nothing. Only arm() sets the flag, and only
+ * DevSiteEnsure calls arm() and verifying().
  */
 final class CinatraDevSite {
 
@@ -83,14 +84,45 @@ final class CinatraDevSite {
   ];
 
   /**
+   * Whether this process runs the verify step of ensure(); never stored.
+   *
+   * @var bool
+   */
+  private static bool $verifying = FALSE;
+
+  /**
    * Whether this process may serve the exposure.
    *
    * @return bool
-   *   TRUE only when the marker is "1" and the State flag is exactly TRUE.
-   *   The marker is read first, so without it State is not read.
+   *   TRUE only when the marker is "1" and either this process is inside
+   *   verifying() or the State flag is exactly TRUE. The marker is read
+   *   first, so without it State is not read.
    */
   public static function exposureActive(): bool {
-    return self::markerPresent() && \Drupal::state()->get(self::ARMED_KEY) === TRUE;
+    return self::markerPresent() && (self::$verifying || \Drupal::state()->get(self::ARMED_KEY) === TRUE);
+  }
+
+  /**
+   * Runs a callable while this process alone counts as exposed.
+   *
+   * It writes nothing: the scope is a static value of this process, and it
+   * ends when the callable returns or throws. Without the marker the scope
+   * changes nothing, because exposureActive() reads the marker first.
+   *
+   * @param \Closure $run
+   *   The verify step.
+   *
+   * @return mixed
+   *   What the callable returns.
+   */
+  public static function verifying(\Closure $run): mixed {
+    self::$verifying = TRUE;
+    try {
+      return $run();
+    }
+    finally {
+      self::$verifying = FALSE;
+    }
   }
 
   /**
@@ -120,6 +152,13 @@ final class CinatraDevSite {
     ksort($expected);
     ksort($profile);
     return $profile === $expected;
+  }
+
+  /**
+   * Sets the armed State flag; ensure() calls it as its last write.
+   */
+  public static function arm(): void {
+    \Drupal::state()->set(self::ARMED_KEY, TRUE);
   }
 
   /**

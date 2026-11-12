@@ -1,0 +1,50 @@
+<?php
+
+/**
+ * @file
+ * Counts the profile reads of requests that carry a binding.
+ *
+ * The verify step of ensure() makes the first such read and the census the
+ * second, so the fault 'census' throws at the second. The fault 'plan'
+ * throws at the first node entity query of a run, which the page plan makes
+ * before any write. At a workflow save, the fault 'arm at unbind' arms the
+ * site, as a run of ensure() elsewhere would while release() unbinds, and
+ * the fault 'unbind' throws.
+ */
+
+declare(strict_types=1);
+
+use Drupal\cinatra_dev_site\CinatraDevSite;
+use Drupal\cinatra_dev_site\Mcp\ProfileBinding;
+use Drupal\cinatra_dev_site_ensure_test\EnsureFault;
+use Drupal\Core\Database\Query\AlterableInterface;
+use Drupal\workflows\WorkflowInterface;
+
+/**
+ * Implements hook_mcp_tools_server_configs_alter().
+ */
+function cinatra_dev_site_ensure_test_mcp_tools_server_configs_alter(array &$servers): void {
+  $binding = \Drupal::requestStack()->getCurrentRequest()?->attributes->get(CinatraDevSite::BINDING_ATTRIBUTE);
+  if ($binding instanceof ProfileBinding) {
+    EnsureFault::$bindingReads++;
+    EnsureFault::fail('census', EnsureFault::$bindingReads >= 2);
+  }
+}
+
+/**
+ * Implements hook_query_TAG_alter() for the tag entity_query_node.
+ */
+function cinatra_dev_site_ensure_test_query_entity_query_node_alter(AlterableInterface $query): void {
+  EnsureFault::fail('plan');
+}
+
+/**
+ * Implements hook_ENTITY_TYPE_update() for workflow.
+ */
+function cinatra_dev_site_ensure_test_workflow_update(WorkflowInterface $workflow): void {
+  if (EnsureFault::$step === 'arm at unbind') {
+    EnsureFault::$step = NULL;
+    CinatraDevSite::arm();
+  }
+  EnsureFault::fail('unbind');
+}

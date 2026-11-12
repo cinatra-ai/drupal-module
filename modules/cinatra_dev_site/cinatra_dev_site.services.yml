@@ -5,6 +5,8 @@ parameters:
   cinatra_dev_site.empty_registries:
     mcp_tools.resource_registry: 'Drupal\mcp_tools\Mcp\Resource\ResourceRegistry'
     mcp_tools.prompt_registry: 'Drupal\mcp_tools\Mcp\Prompt\PromptRegistry'
+  # How many seconds release() waits for the lock that ensure() holds.
+  cinatra_dev_site.lock_wait: 300
 services:
   # The cinatra profile's permission callback (CinatraDevSite::GUARD_CALLBACK).
   cinatra_dev_site.profile_guard:
@@ -38,7 +40,14 @@ services:
   cinatra_dev_site.census:
     class: Drupal\cinatra_dev_site\Exposure\Census
     arguments: ['@config.factory', '@module_handler', '@router.route_provider', '@request_stack', '@?mcp_tools.server_config_repository']
-  # Binds the pages of node:page to editorial rows; nothing in this unit runs it.
+  # Binds the pages of node:page to editorial rows; ensure() runs it.
   cinatra_dev_site.page_migrator:
     class: Drupal\cinatra_dev_site\Page\PageMigrator
     arguments: ['@entity_type.manager', '@cinatra.protected_draft_storage']
+  # Checks, binds, migrates, verifies and arms last (the connector's call).
+  cinatra_dev_site.ensure:
+    class: Drupal\cinatra_dev_site\DevSiteEnsure
+    arguments: ['@lock', '@config.factory', '@router.builder', '@router.route_provider', '@cinatra_dev_site.editorial_binder',
+      '@cinatra_dev_site.page_migrator', '@cinatra_dev_site.exposure_verifier', '@cinatra_dev_site.census', '@logger.factory',
+      '@?plugin.manager.tool', '@?mcp_tools.server_config_repository', '%cinatra_dev_site.remote_controller%',
+      '%cinatra_dev_site.lock_wait%']
