@@ -281,6 +281,27 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   }
 
   /**
+   * Tests the preimage reports every translation language of the node.
+   *
+   * A caller that only knows a candidate language (for example the computed
+   * path item, which names the default translation when the path field is
+   * untranslatable) binds it to this list before it writes.
+   */
+  public function testPreimageReportsEveryTranslationLanguage(): void {
+    $preimage = $this->protectedDraft->prepare((int) $this->page->id(), 'en', ['title']);
+    $this->assertArrayHasKey('translation_languages', $preimage);
+    $this->assertSame(['en', 'fr'], $preimage['translation_languages']);
+    $single = Node::create([
+      'type' => 'page', 'langcode' => 'en', 'uid' => $this->editor->id(),
+      'title' => 'English only page', 'status' => TRUE, 'moderation_state' => 'published',
+    ]);
+    $single->save();
+    $preimage = $this->protectedDraft->prepare((int) $single->id(), 'en', ['title']);
+    $this->assertArrayHasKey('translation_languages', $preimage);
+    $this->assertSame(['en'], $preimage['translation_languages']);
+  }
+
+  /**
    * Tests unavailable translation refuses before save.
    */
   public function testUnavailableTranslationRefusesBeforeSave(): void {
