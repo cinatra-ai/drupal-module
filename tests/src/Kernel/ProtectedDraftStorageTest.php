@@ -302,6 +302,60 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   }
 
   /**
+   * Tests the translation languages are sorted, not in core's list order.
+   *
+   * Core lists a node's translations in language weight order. With French
+   * weighted first, only an explicit sort yields the lexical list.
+   */
+  public function testPreimageSortsTranslationLanguages(): void {
+    ConfigurableLanguage::load('fr')->setWeight(-10)->save();
+    $this->container->get('language_manager')->reset();
+    $this->nodeStorage()->resetCache([(int) $this->page->id()]);
+    $page = $this->nodeStorage()->load($this->page->id());
+    $this->assertSame(['fr', 'en'], array_map('strval', array_keys($page->getTranslationLanguages())), 'Core must list French first for this test to be causal.');
+    $preimage = $this->prepareTitle();
+    $this->assertSame(['en', 'fr'], $preimage['translation_languages'] ?? NULL);
+  }
+
+  /**
+   * Tests the translation languages are omitted when one is not viewable.
+   *
+   * An account that may view the published English translation but not the
+   * unpublished French one must not learn that French exists. A list without
+   * French would make the page look single-language to a caller that binds a
+   * path-only language, so the preimage reports no list at all. The owner, who
+   * may view its own unpublished translation, still gets the complete list.
+   */
+  public function testPreimageOmitsTranslationLanguagesWhenOneIsNotViewable(): void {
+    NodeType::create(['type' => 'plain', 'name' => 'Plain'])->save();
+    $node = Node::create([
+      'type' => 'plain', 'langcode' => 'en', 'uid' => $this->editor->id(),
+      'title' => 'Published English page', 'status' => TRUE,
+    ]);
+    $node->save();
+    $node->addTranslation('fr', [
+      'title' => 'Unpublished French page', 'uid' => $this->editor->id(), 'status' => FALSE,
+    ])->save();
+    $nid = (int) $node->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+    $this->assertSame(['en', 'fr'], $preimage['translation_languages'] ?? NULL, 'The owner may view every translation.');
+    $role = Role::create(['id' => 'page_viewer', 'label' => 'Page viewer']);
+    $role->grantPermission('access content');
+    $role->save();
+    $viewer = User::create(['uid' => 4, 'name' => 'viewer', 'status' => TRUE, 'roles' => [$role->id()]]);
+    $viewer->save();
+    $this->nodeStorage()->resetCache([$nid]);
+    $node = $this->nodeStorage()->load($nid);
+    $this->container->get('entity_type.manager')->getAccessControlHandler('node')->resetCache();
+    $this->assertTrue($node->getTranslation('en')->access('view', $viewer));
+    $this->assertFalse($node->getTranslation('fr')->access('view', $viewer));
+    $this->container->get('current_user')->setAccount($viewer);
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+    $this->assertSame('en', $preimage['language']);
+    $this->assertArrayNotHasKey('translation_languages', $preimage);
+  }
+
+  /**
    * Tests unavailable translation refuses before save.
    */
   public function testUnavailableTranslationRefusesBeforeSave(): void {
