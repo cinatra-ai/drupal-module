@@ -911,6 +911,27 @@ final class DevSiteEnsureTest extends KernelTestBase {
   }
 
   /**
+   * The log line of a failed migration names only a fixed reason.
+   *
+   * The result keeps only the code migration_failed:<nid>. The log line adds
+   * the migrator's reason: a refusal's fixed text, or unexpected_error for
+   * any other throwable, whose message may carry private data. The test
+   * hook's change fails the comparison with a RuntimeException.
+   */
+  public function testFailedMigrationLogsFixedReason(): void {
+    $nid = $this->page(TRUE);
+    PageMutation::$field = 'promote';
+
+    $result = $this->ensure()->ensure();
+
+    $this->assertFalse($result['ok']);
+    $this->assertSame(['migration_failed:' . $nid], $result['refused']);
+    $this->assertArrayNotHasKey('error', $result);
+    $this->assertArrayNotHasKey('reason', $result);
+    $this->assertSame(['4 ensure() did not arm; steps: workflow:created, workflow:bound; refused: migration_failed:' . $nid . '; error: unexpected_error'], EnsureFault::$lines);
+  }
+
+  /**
    * A migration failure after a saved page keeps the binding; it resumes.
    */
   public function testFailedLaterPageKeepsTheBindingAndResumes(): void {

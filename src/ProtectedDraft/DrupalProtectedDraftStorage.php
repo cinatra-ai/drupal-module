@@ -739,13 +739,45 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
 
   /**
    * Requires transactional InnoDB tables for protected MySQL writes.
+   *
+   * SHOW CREATE TABLE still opens the target table first, as this check
+   * always did. The engine is read from information_schema.TABLES instead
+   * of that statement's text: Drupal runs MySQL and MariaDB connections in
+   * the ANSI sql_mode, and in that mode MariaDB prints SHOW CREATE TABLE
+   * without its ENGINE= option. The table is the one Drupal expands the
+   * placeholder to, in its schema or the current database. The dictionary
+   * compares names without regard to case, so exactly one row must match
+   * the schema and the table name byte for byte.
    */
   private function assertInnoDb(string $table): void {
     if (!preg_match('/\A[a-zA-Z0-9_]+\z/', $table)) {
       throw new ProtectedDraftRefusal('The table mapping is not supported.');
     }
-    $row = $this->database->query('SHOW CREATE TABLE {' . $table . '}')->fetchAssoc();
-    if (!$row || !preg_match('/\bENGINE=InnoDB\b/i', (string) array_values($row)[1])) {
+    $expanded = str_replace(['"', '`'], '', $this->database->prefixTables('{' . $table . '}'));
+    if (!preg_match('/\A(?:([a-zA-Z0-9_]+)\.)?([a-zA-Z0-9_]+)\z/', $expanded, $parts)) {
+      throw new ProtectedDraftRefusal('The table mapping is not supported.');
+    }
+    $schema = $parts[1] === '' ? NULL : $parts[1];
+    $name = $parts[2];
+    if (!$this->database->query('SHOW CREATE TABLE {' . $table . '}')->fetchAssoc()) {
+      throw new ProtectedDraftRefusal('Protected revisions require transactional InnoDB tables.');
+    }
+    $statement = $this->database->query('SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS table_name, ENGINE AS table_engine, DATABASE() AS current_db FROM information_schema.TABLES WHERE TABLE_SCHEMA = COALESCE(:schema, DATABASE()) AND TABLE_NAME = :name', [
+      ':schema' => $schema,
+      ':name' => $name,
+    ]);
+    $matches = [];
+    // One row at a time: fetchAll() takes a PDO mode on Drupal 10 and a
+    // FetchAs enum on Drupal 11.4, while fetchAssoc() is the same on both.
+    while (is_array($row = $statement->fetchAssoc())) {
+      $expected_schema = $schema ?? ($row['current_db'] ?? NULL);
+      if (is_string($expected_schema) && $expected_schema !== ''
+        && ($row['schema_name'] ?? NULL) === $expected_schema && ($row['table_name'] ?? NULL) === $name) {
+        $matches[] = $row;
+      }
+    }
+    $engine = count($matches) === 1 ? ($matches[0]['table_engine'] ?? NULL) : NULL;
+    if (!is_string($engine) || strcasecmp($engine, 'InnoDB') !== 0) {
       throw new ProtectedDraftRefusal('Protected revisions require transactional InnoDB tables.');
     }
   }

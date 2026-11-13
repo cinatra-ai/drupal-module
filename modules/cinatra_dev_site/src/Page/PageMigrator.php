@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\cinatra_dev_site\Page;
 
+use Drupal\cinatra\ProtectedDraft\ProtectedDraftRefusal;
 use Drupal\cinatra\ProtectedDraft\ProtectedDraftStorageInterface;
 use Drupal\cinatra_dev_site\CinatraDevSite;
 use Drupal\content_moderation\Plugin\WorkflowType\ContentModerationInterface;
@@ -21,7 +22,9 @@ use Drupal\workflows\WorkflowInterface;
  * compares every field of every translation before that transaction commits.
  * Nothing in this class arms the site. The 'error' of a failed migration is
  * the raw failure message, which may carry storage details: a caller that
- * records it publicly must pass it through a leak gate first.
+ * records it publicly must pass it through a leak gate first. Its 'reason'
+ * is fixed text: a protected draft refusal's message, which is one of the
+ * module's fixed texts, or unexpected_error for any other throwable.
  */
 final class PageMigrator {
 
@@ -93,16 +96,16 @@ final class PageMigrator {
    *
    * @return array
    *   'ok', 'migrated' (the saved node ids), 'refused' (no_marker,
-   *   editorial_not_applied or migration_failed:<nid>) and 'error' (the
-   *   failure message).
+   *   editorial_not_applied or migration_failed:<nid>), 'error' (the
+   *   failure message) and 'reason' (a fixed text for a log, or '').
    */
   public function migrate(array $plans): array {
     $migrated = [];
     if (!CinatraDevSite::markerPresent()) {
-      return ['ok' => FALSE, 'migrated' => [], 'refused' => ['no_marker'], 'error' => ''];
+      return ['ok' => FALSE, 'migrated' => [], 'refused' => ['no_marker'], 'error' => '', 'reason' => ''];
     }
     if (!$this->applies()) {
-      return ['ok' => FALSE, 'migrated' => [], 'refused' => ['editorial_not_applied'], 'error' => ''];
+      return ['ok' => FALSE, 'migrated' => [], 'refused' => ['editorial_not_applied'], 'error' => '', 'reason' => ''];
     }
     foreach ($this->pageIds() as $nid) {
       $planned = $plans[$nid] ?? NULL;
@@ -115,6 +118,7 @@ final class PageMigrator {
           'migrated' => $migrated,
           'refused' => ['migration_failed:' . $nid],
           'error' => $e->getMessage(),
+          'reason' => $e instanceof ProtectedDraftRefusal ? $e->getMessage() : 'unexpected_error',
         ];
       }
       finally {
@@ -125,7 +129,7 @@ final class PageMigrator {
         $migrated[] = $nid;
       }
     }
-    return ['ok' => TRUE, 'migrated' => $migrated, 'refused' => [], 'error' => ''];
+    return ['ok' => TRUE, 'migrated' => $migrated, 'refused' => [], 'error' => '', 'reason' => ''];
   }
 
   /**

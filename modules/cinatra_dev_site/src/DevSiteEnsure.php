@@ -264,7 +264,7 @@ final class DevSiteEnsure {
         if ($migration['migrated'] === []) {
           $this->binder->undo($applied);
         }
-        return $this->finish(FALSE, $steps, $migration['refused'], $this->census->read());
+        return $this->finish(FALSE, $steps, $migration['refused'], $this->census->read(), (string) $migration['reason']);
       }
       $result = CinatraDevSite::verifying(function () use ($before, $steps): array {
         $this->configFactory->reset(self::SETTINGS);
@@ -448,6 +448,11 @@ final class DevSiteEnsure {
    *   The codes.
    * @param array $census
    *   The census.
+   * @param string $error
+   *   The migrator's fixed failure reason, or '' when there is none: a
+   *   protected draft refusal's fixed text or unexpected_error, never a raw
+   *   throwable message. It goes to the site's log line only, never into the
+   *   result.
    *
    * @return array
    *   The result of ensure().
@@ -456,13 +461,16 @@ final class DevSiteEnsure {
    *   When json_encode() cannot encode the result, as the connector encodes
    *   it; no log line is written then, and a passing run does not arm.
    */
-  private function finish(bool $ok, array $steps, array $refused, array $census): array {
+  private function finish(bool $ok, array $steps, array $refused, array $census, string $error = ''): array {
     $result = ['ok' => $ok, 'steps' => $steps, 'refused' => $refused, 'census' => $census];
     json_encode($result, JSON_THROW_ON_ERROR);
     $logger = $this->loggerFactory->get('cinatra_dev_site');
     $context = ['@steps' => implode(', ', $steps) ?: 'none', '@refused' => implode(', ', $refused)];
     if ($ok) {
       $logger->info('ensure() verified the exposure; the armed flag is set after this line unless a later step throws; steps: @steps.', $context);
+    }
+    elseif ($error !== '') {
+      $logger->warning('ensure() did not arm; steps: @steps; refused: @refused; error: @error', $context + ['@error' => $error]);
     }
     else {
       $logger->warning('ensure() did not arm; steps: @steps; refused: @refused.', $context);
