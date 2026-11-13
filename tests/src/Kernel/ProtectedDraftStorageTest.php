@@ -302,6 +302,41 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   }
 
   /**
+   * Tests an omitted language reads the original translation and reports it.
+   *
+   * A caller that does not yet know the page language (for example a generic
+   * node read) omits it. The reader binds the untranslated (original) language
+   * of the stored default revision, not the site default language, and runs
+   * the same view and field checks as an exact-language read.
+   */
+  public function testOmittedLanguageReadsTheOriginalTranslation(): void {
+    $preimage = $this->protectedDraft->prepare((int) $this->page->id(), NULL, ['title']);
+    $this->assertSame('en', $preimage['language']);
+    $this->assertSame('English live title', $preimage['fields']['title'][0]['value']);
+    $french = Node::create([
+      'type' => 'page', 'langcode' => 'fr', 'uid' => $this->editor->id(),
+      'title' => 'French original title', 'status' => TRUE, 'moderation_state' => 'published',
+    ]);
+    $french->save();
+    $french->addTranslation('en', [
+      'title' => 'English translated title', 'status' => TRUE, 'moderation_state' => 'published',
+    ])->save();
+    $preimage = $this->protectedDraft->prepare((int) $french->id(), NULL, ['title']);
+    $this->assertSame('fr', $preimage['language']);
+    $this->assertSame('French original title', $preimage['fields']['title'][0]['value']);
+    $this->assertSame(['en', 'fr'], $preimage['translation_languages']);
+    $this->container->get('current_user')->setAccount($this->deniedUser);
+    try {
+      $this->protectedDraft->prepare((int) $this->page->id(), NULL, ['title']);
+      $this->fail('An omitted language bypassed the view check.');
+    }
+    catch (ProtectedDraftRefusal $e) {
+      $this->assertStringContainsString('not readable', $e->getMessage());
+    }
+    $this->assertRootFinished();
+  }
+
+  /**
    * Tests the translation languages are sorted, not in core's list order.
    *
    * Core lists a node's translations in language weight order. With French
