@@ -264,7 +264,7 @@ final class DevSiteEnsure {
         if ($migration['migrated'] === []) {
           $this->binder->undo($applied);
         }
-        return $this->finish(FALSE, $steps, $migration['refused'], $this->census->read(), (string) $migration['error']);
+        return $this->finish(FALSE, $steps, $migration['refused'], $this->census->read(), (string) $migration['reason']);
       }
       $result = CinatraDevSite::verifying(function () use ($before, $steps): array {
         $this->configFactory->reset(self::SETTINGS);
@@ -449,9 +449,10 @@ final class DevSiteEnsure {
    * @param array $census
    *   The census.
    * @param string $error
-   *   The migrator's failure message, or '' when there is none. It goes to
-   *   the site's log line only, never into the result, because it may carry
-   *   storage details.
+   *   The migrator's fixed failure reason, or '' when there is none: a
+   *   protected draft refusal's fixed text or unexpected_error, never a raw
+   *   throwable message. It goes to the site's log line only, never into the
+   *   result.
    *
    * @return array
    *   The result of ensure().
