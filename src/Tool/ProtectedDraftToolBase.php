@@ -16,6 +16,7 @@ use Drupal\tool\ExecutableResult;
 use Drupal\tool\Tool\ToolBase;
 use Drupal\tool\Tool\ToolDefinition;
 use Drupal\tool\Tool\ToolOperation;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
 /**
@@ -47,6 +48,12 @@ abstract class ProtectedDraftToolBase extends ToolBase {
    * @var McpToolCallContext|null
    */
   protected ?McpToolCallContext $mcpContext = NULL;
+  /**
+   * Module log channel for failures that are not refusals, when available.
+   *
+   * @var LoggerInterface|null
+   */
+  protected ?LoggerInterface $protectedDraftLogger = NULL;
 
   /**
    * {@inheritdoc}
@@ -57,6 +64,19 @@ abstract class ProtectedDraftToolBase extends ToolBase {
     if ($container->has('mcp_tools.access_manager') && $container->has('mcp_tools.tool_call_context')) {
       $instance->mcpAccess = $container->get('mcp_tools.access_manager');
       $instance->mcpContext = $container->get('mcp_tools.tool_call_context');
+    }
+    // Logging is best effort: a missing or broken log channel leaves the
+    // logger unset and never prevents the tool from returning its result.
+    try {
+      if ($container->has('logger.factory')) {
+        $logger = $container->get('logger.factory')->get('cinatra');
+        if ($logger instanceof LoggerInterface) {
+          $instance->protectedDraftLogger = $logger;
+        }
+      }
+    }
+    catch (\Throwable) {
+      $instance->protectedDraftLogger = NULL;
     }
     return $instance;
   }
@@ -106,6 +126,17 @@ abstract class ProtectedDraftToolBase extends ToolBase {
     }
     catch (\Throwable $e) {
       // SQL/provider exceptions may contain private request or connection data.
+      // Log the class and location only, never the message or a full path.
+      try {
+        $this->protectedDraftLogger?->error('Protected draft operation failed: @class at @file:@line.', [
+          '@class' => self::loggedClassName($e),
+          '@file' => basename($e->getFile()),
+          '@line' => $e->getLine(),
+        ]);
+      }
+      catch (\Throwable) {
+        // A broken log channel must not change the private failure result.
+      }
       return ExecutableResult::failure(new TranslatableMarkup('The page revision could not be verified; inspect it before retrying.'));
     }
     finally {
@@ -117,5 +148,18 @@ abstract class ProtectedDraftToolBase extends ToolBase {
    * Runs the requested protected revision operation.
    */
   abstract protected function runProtectedOperation(array $values): array;
+
+  /**
+   * Returns the class name of a failure without a file path.
+   *
+   * PHP names an anonymous class "<parent>@anonymous", a NUL byte, and then
+   * its defining file path and line. Only the part up to "@anonymous" is
+   * returned for such a class.
+   */
+  private static function loggedClassName(\Throwable $e): string {
+    $class = explode("\0", $e::class, 2)[0];
+    $anonymous = strpos($class, '@anonymous');
+    return $anonymous === FALSE ? $class : substr($class, 0, $anonymous + strlen('@anonymous'));
+  }
 
 }
