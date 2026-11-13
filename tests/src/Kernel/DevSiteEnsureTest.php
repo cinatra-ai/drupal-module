@@ -911,13 +911,14 @@ final class DevSiteEnsureTest extends KernelTestBase {
   }
 
   /**
-   * The log line of a failed migration names the migrator's error.
+   * The log line of a failed migration names only a fixed reason.
    *
-   * The result keeps only the code migration_failed:<nid>; without the
-   * message in the site's log, a refusal such as the storage's InnoDB check
-   * cannot be told from a changed page.
+   * The result keeps only the code migration_failed:<nid>. The log line adds
+   * the migrator's reason: a refusal's fixed text, or unexpected_error for
+   * any other throwable, whose message may carry private data. The test
+   * hook's change fails the comparison with a RuntimeException.
    */
-  public function testFailedMigrationLogsItsError(): void {
+  public function testFailedMigrationLogsAFixedReason(): void {
     $nid = $this->page(TRUE);
     PageMutation::$field = 'promote';
 
@@ -926,9 +927,8 @@ final class DevSiteEnsureTest extends KernelTestBase {
     $this->assertFalse($result['ok']);
     $this->assertSame(['migration_failed:' . $nid], $result['refused']);
     $this->assertArrayNotHasKey('error', $result);
-    $this->assertCount(1, EnsureFault::$lines);
-    $this->assertStringStartsWith('4 ensure() did not arm; steps: workflow:created, workflow:bound; refused: migration_failed:' . $nid . '; error: page_changed:' . $nid . ':', EnsureFault::$lines[0]);
-    $this->assertStringContainsString(':en:promote', EnsureFault::$lines[0]);
+    $this->assertArrayNotHasKey('reason', $result);
+    $this->assertSame(['4 ensure() did not arm; steps: workflow:created, workflow:bound; refused: migration_failed:' . $nid . '; error: unexpected_error'], EnsureFault::$lines);
   }
 
   /**

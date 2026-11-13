@@ -560,6 +560,37 @@ final class DevSitePageMigrationTest extends KernelTestBase {
   }
 
   /**
+   * A failed migration gives a fixed reason besides its raw error.
+   *
+   * A protected draft refusal is one of the module's fixed texts and is the
+   * reason as it is. Any other throwable's message may carry private data:
+   * its reason is unexpected_error.
+   */
+  public function testFailedMigrationGivesAFixedReason(): void {
+    $nid = (int) $this->createPage('Reason page', TRUE)->id();
+    $this->bindPages();
+    $database = \Drupal::database();
+    $transaction = $database->startTransaction();
+    try {
+      $result = $this->runMigration();
+    }
+    finally {
+      $transaction->rollBack();
+      unset($transaction);
+    }
+    $this->assertSame(['migration_failed:' . $nid], $result['refused']);
+    $this->assertSame('A protected edit requires its own root transaction.', $result['reason']);
+
+    PageMutation::$field = 'promote';
+    $result = $this->runMigration();
+    $this->assertSame(['migration_failed:' . $nid], $result['refused']);
+    $this->assertStringContainsString('page_changed:' . $nid . ':en:promote', $result['error']);
+    $this->assertSame('unexpected_error', $result['reason']);
+
+    $this->assertMigrated([$nid], $this->runMigration());
+  }
+
+  /**
    * An outer transaction fails the migration; a normal run owns its own.
    */
   public function testOuterTransactionFailsMigration(): void {
