@@ -739,13 +739,20 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
 
   /**
    * Requires transactional InnoDB tables for protected MySQL writes.
+   *
+   * The engine is read from information_schema.TABLES. Drupal runs MySQL and
+   * MariaDB connections in the ANSI sql_mode, and in that mode MariaDB prints
+   * SHOW CREATE TABLE without its ENGINE= option.
    */
   private function assertInnoDb(string $table): void {
-    if (!preg_match('/\A[a-zA-Z0-9_]+\z/', $table)) {
+    $name = $this->database->getPrefix() . $table;
+    if (!preg_match('/\A[a-zA-Z0-9_]+\z/', $table) || !preg_match('/\A[a-zA-Z0-9_]+\z/', $name)) {
       throw new ProtectedDraftRefusal('The table mapping is not supported.');
     }
-    $row = $this->database->query('SHOW CREATE TABLE {' . $table . '}')->fetchAssoc();
-    if (!$row || !preg_match('/\bENGINE=InnoDB\b/i', (string) array_values($row)[1])) {
+    $engine = $this->database->query('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :name', [
+      ':name' => $name,
+    ])->fetchField();
+    if (!is_string($engine) || strcasecmp($engine, 'InnoDB') !== 0) {
       throw new ProtectedDraftRefusal('Protected revisions require transactional InnoDB tables.');
     }
   }
