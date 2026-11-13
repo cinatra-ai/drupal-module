@@ -911,6 +911,27 @@ final class DevSiteEnsureTest extends KernelTestBase {
   }
 
   /**
+   * The log line of a failed migration names the migrator's error.
+   *
+   * The result keeps only the code migration_failed:<nid>; without the
+   * message in the site's log, a refusal such as the storage's InnoDB check
+   * cannot be told from a changed page.
+   */
+  public function testFailedMigrationLogsItsError(): void {
+    $nid = $this->page(TRUE);
+    PageMutation::$field = 'promote';
+
+    $result = $this->ensure()->ensure();
+
+    $this->assertFalse($result['ok']);
+    $this->assertSame(['migration_failed:' . $nid], $result['refused']);
+    $this->assertArrayNotHasKey('error', $result);
+    $this->assertCount(1, EnsureFault::$lines);
+    $this->assertStringStartsWith('4 ensure() did not arm; steps: workflow:created, workflow:bound; refused: migration_failed:' . $nid . '; error: page_changed:' . $nid . ':', EnsureFault::$lines[0]);
+    $this->assertStringContainsString(':en:promote', EnsureFault::$lines[0]);
+  }
+
+  /**
    * A migration failure after a saved page keeps the binding; it resumes.
    */
   public function testFailedLaterPageKeepsTheBindingAndResumes(): void {
