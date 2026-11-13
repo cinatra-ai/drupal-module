@@ -410,6 +410,38 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   }
 
   /**
+   * Tests a last-installed snapshot without config dependencies still works.
+   *
+   * The field storage listener stores the installed definition before
+   * ConfigEntityBase::preSave() calculates dependencies. A later request
+   * unserializes that snapshot for the node storage handler, so its
+   * dependencies are empty while the active configuration keeps them.
+   */
+  public function testInstalledSnapshotWithoutConfigDependenciesReadsAndWrites(): void {
+    $this->replaceInstalledStorage('body', static function (FieldStorageConfig $installed): void {
+      $installed->set('dependencies', []);
+    });
+    $raw = $this->container->get('config.storage')->read('field.storage.node.body');
+    $this->assertNotEmpty($raw['dependencies']['module'] ?? [], 'The active configuration keeps the calculated dependencies.');
+    $preimage = $this->prepareTitle();
+    $this->assertSame('en', $preimage['language']);
+    $stored = $this->protectedDraft->write($this->titleRequest($preimage));
+    $this->assertSame('draft', $stored['moderation_state']);
+    $this->assertFalse($stored['is_default_revision']);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * Tests a schema-relevant installed difference still refuses.
+   */
+  public function testInstalledSnapshotSchemaDifferenceRefusesBeforeSave(): void {
+    $this->assertInstalledChangeRefuses('body', static fn(FieldStorageConfig $installed) => $installed->setCardinality(3));
+    $this->assertInstalledChangeRefuses('field_shared_note', static fn(FieldStorageConfig $installed) => $installed->setSetting('max_length', 64));
+    $this->assertInstalledChangeRefuses('field_shared_note', static fn(FieldStorageConfig $installed) => $installed->setIndexes(['value' => ['value']]));
+    $this->assertInstalledChangeRefuses('field_shared_note', static fn(FieldStorageConfig $installed) => $installed->setTranslatable(TRUE));
+  }
+
+  /**
    * Tests changed other translation preimage refuses before save.
    */
   public function testChangedOtherTranslationPreimageRefusesBeforeSave(): void {
@@ -785,6 +817,51 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     }
     ksort($published);
     return ['default' => $default, 'revisions' => $revisions, 'published' => $published];
+  }
+
+  /**
+   * Replaces one last-installed node field storage definition.
+   *
+   * The protected lock rebuilds the node storage handler, which reads its
+   * definitions from this repository. Kernel tests keep the repository in
+   * memory, so the definition is cloned before it is changed. Returns the
+   * original definitions for restoreInstalledStorage().
+   */
+  private function replaceInstalledStorage(string $field, callable $change): array {
+    $repository = $this->container->get('entity.last_installed_schema.repository');
+    $definitions = $repository->getLastInstalledFieldStorageDefinitions('node');
+    $original = $definitions;
+    $this->assertInstanceOf(FieldStorageConfig::class, $definitions[$field]);
+    $installed = clone $definitions[$field];
+    $change($installed);
+    $definitions[$field] = $installed;
+    $repository->setLastInstalledFieldStorageDefinitions('node', $definitions);
+    return $original;
+  }
+
+  /**
+   * Restores the last-installed node field storage definitions.
+   */
+  private function restoreInstalledStorage(array $original): void {
+    $this->container->get('entity.last_installed_schema.repository')->setLastInstalledFieldStorageDefinitions('node', $original);
+  }
+
+  /**
+   * Checks a changed last-installed field storage refuses before any save.
+   *
+   * Replaces one node field storage definition in the last-installed schema
+   * repository, requires the named freshness refusal on prepare, and restores
+   * the original definitions so the next difference starts from the same
+   * state.
+   */
+  private function assertInstalledChangeRefuses(string $field, callable $change): void {
+    $original = $this->replaceInstalledStorage($field, $change);
+    try {
+      $this->assertRefusedBeforeSave(fn() => $this->prepareTitle(), 'effective definitions differ from the locked configuration');
+    }
+    finally {
+      $this->restoreInstalledStorage($original);
+    }
   }
 
   /**

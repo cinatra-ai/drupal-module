@@ -1114,7 +1114,10 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       }
     }
     // Actual installed SQL definitions must agree too, including additions.
-    ProtectedDraftConfiguration::assertSameSet($raw_storages, $active_storages);
+    // The last-installed snapshot lacks config metadata such as dependencies,
+    // so only its schema-relevant properties are bound to the raw config.
+    // The complete raw config is still bound to the field manager above.
+    ProtectedDraftConfiguration::assertSameInstalledStorageSet($raw_storages, $active_storages);
     ProtectedDraftConfiguration::assertSameSet($raw_overrides, $overrides);
     $bundle_name = 'node.type.' . $node->bundle();
     $raw_bundle = $this->activeConfig->read($bundle_name);
