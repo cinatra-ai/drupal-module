@@ -81,6 +81,18 @@ final class CinatraMemoryProtectedDraftStorage implements ProtectedDraftStorageI
    * @var array
    */
   public array $saveArguments = [];
+  /**
+   * Native fixture original (untranslated) language of the page.
+   *
+   * @var string|null
+   */
+  public ?string $original = 'de';
+  /**
+   * Native fixture language of each default read.
+   *
+   * @var array
+   */
+  public array $readLanguages = [];
 
   public function __construct() {
     $this->snapshot = [
@@ -174,7 +186,18 @@ final class CinatraMemoryProtectedDraftStorage implements ProtectedDraftStorageI
     if (!$this->locked) {
       throw new \LogicException('Read outside transaction');
     }
+    $this->readLanguages[] = $language;
     return $this->saves ? $this->after : $this->snapshot;
+  }
+
+  /**
+   * Exercises original language.
+   */
+  public function originalLanguage(int $nid): ?string {
+    if (!$this->locked) {
+      throw new \LogicException('Original language read outside transaction');
+    }
+    return $this->original;
   }
 
   /**
@@ -368,6 +391,35 @@ $cases['preimage reports the node translation languages'] = static function (): 
   $store->snapshot['translation_languages'] = ['de', 'fr'];
   $result = (new ProtectedDraftService($store))->prepare(19, 'de', ['title']);
   require_true(($result['translation_languages'] ?? NULL) === ['de', 'fr'], 'Dropped the translation languages');
+};
+$cases['preimage with an omitted language reads the original translation and reports it'] = static function (): void {
+  $store = new CinatraMemoryProtectedDraftStorage();
+  $result = (new ProtectedDraftService($store))->prepare(19, NULL, ['title']);
+  require_true($store->readLanguages === ['de'], 'Did not read the original translation');
+  require_true(($result['language'] ?? NULL) === 'de', 'Did not report the resolved language');
+  require_true(array_keys($result['fields']) === ['title'], 'Exported unrequested field');
+};
+$cases['preimage with an omitted language refuses a page without an original language'] = static function (): void {
+  $store = new CinatraMemoryProtectedDraftStorage();
+  $store->original = NULL;
+  try {
+    (new ProtectedDraftService($store))->prepare(19, NULL, ['title']);
+    throw new \RuntimeException('Read without a resolved language');
+  }
+  catch (ProtectedDraftRefusal $e) {
+    require_true($store->readLanguages === [], 'Read a preimage without a language');
+  }
+};
+$cases['preimage with an omitted language keeps the exact identity check'] = static function (): void {
+  $store = new CinatraMemoryProtectedDraftStorage();
+  $store->snapshot['language'] = 'en';
+  try {
+    (new ProtectedDraftService($store))->prepare(19, NULL, ['title']);
+    throw new \RuntimeException('Accepted a foreign translation');
+  }
+  catch (ProtectedDraftRefusal $e) {
+    require_true($store->readLanguages === ['de'], 'Did not bind the resolved language');
+  }
 };
 
 $failed = 0;
