@@ -252,7 +252,13 @@ final class ProtectedDraftInnoDbCheckTest extends UnitTestCase {
             ];
           }
         }
-        $statement->method('fetchAll')->willReturn($rows);
+        // The rows are read one at a time: fetchAll() takes a PDO mode on
+        // Drupal 10 and a FetchAs enum on Drupal 11.4, so the check must not
+        // call it.
+        $statement->expects($this->never())->method('fetchAll');
+        $statement->method('fetchAssoc')->willReturnCallback(static function () use (&$rows): array|false {
+          return array_shift($rows) ?? FALSE;
+        });
         $statement->method('fetchField')->willReturn($rows === [] ? FALSE : $rows[0]['table_engine']);
       }
       elseif (stripos($query, 'SHOW CREATE TABLE') !== FALSE) {

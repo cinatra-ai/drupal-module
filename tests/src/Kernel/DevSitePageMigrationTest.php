@@ -566,7 +566,7 @@ final class DevSitePageMigrationTest extends KernelTestBase {
    * reason as it is. Any other throwable's message may carry private data:
    * its reason is unexpected_error.
    */
-  public function testFailedMigrationGivesAFixedReason(): void {
+  public function testFailedMigrationGivesFixedReason(): void {
     $nid = (int) $this->createPage('Reason page', TRUE)->id();
     $this->bindPages();
     $database = \Drupal::database();

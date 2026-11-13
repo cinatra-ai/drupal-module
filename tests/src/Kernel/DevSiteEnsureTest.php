@@ -918,7 +918,7 @@ final class DevSiteEnsureTest extends KernelTestBase {
    * any other throwable, whose message may carry private data. The test
    * hook's change fails the comparison with a RuntimeException.
    */
-  public function testFailedMigrationLogsAFixedReason(): void {
+  public function testFailedMigrationLogsFixedReason(): void {
     $nid = $this->page(TRUE);
     PageMutation::$field = 'promote';
 
