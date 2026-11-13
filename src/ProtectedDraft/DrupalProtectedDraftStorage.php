@@ -762,12 +762,14 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     if (!$this->database->query('SHOW CREATE TABLE {' . $table . '}')->fetchAssoc()) {
       throw new ProtectedDraftRefusal('Protected revisions require transactional InnoDB tables.');
     }
-    $rows = $this->database->query('SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS table_name, ENGINE AS table_engine, DATABASE() AS current_db FROM information_schema.TABLES WHERE TABLE_SCHEMA = COALESCE(:schema, DATABASE()) AND TABLE_NAME = :name', [
+    $statement = $this->database->query('SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS table_name, ENGINE AS table_engine, DATABASE() AS current_db FROM information_schema.TABLES WHERE TABLE_SCHEMA = COALESCE(:schema, DATABASE()) AND TABLE_NAME = :name', [
       ':schema' => $schema,
       ':name' => $name,
-    ])->fetchAll(\PDO::FETCH_ASSOC);
+    ]);
     $matches = [];
-    foreach ($rows as $row) {
+    // One row at a time: fetchAll() takes a PDO mode on Drupal 10 and a
+    // FetchAs enum on Drupal 11.4, while fetchAssoc() is the same on both.
+    while (is_array($row = $statement->fetchAssoc())) {
       $expected_schema = $schema ?? ($row['current_db'] ?? NULL);
       if (is_string($expected_schema) && $expected_schema !== ''
         && ($row['schema_name'] ?? NULL) === $expected_schema && ($row['table_name'] ?? NULL) === $name) {
