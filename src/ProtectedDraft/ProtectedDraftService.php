@@ -14,10 +14,20 @@ final class ProtectedDraftService {
 
   /**
    * Reads the protected preimage needed to bind a subsequent edit.
+   *
+   * A NULL language binds the untranslated (original) language of the stored
+   * default revision. The result reports the bound language in 'language'.
    */
-  public function prepare(int $nid, string $language, array $fields): array {
+  public function prepare(int $nid, ?string $language, array $fields): array {
     $this->validateIdentity($nid, $language, $fields);
     return $this->storage->withLockedNode($nid, function () use ($nid, $language, $fields): array {
+      if ($language === NULL) {
+        $language = $this->storage->originalLanguage($nid);
+        if ($language === NULL) {
+          throw new ProtectedDraftRefusal('The exact page translation is not available.');
+        }
+        $this->validateIdentity($nid, $language, $fields);
+      }
       $snapshot = $this->storage->readDefault($nid, $language, $fields);
       $this->assertReadableIdentity($snapshot, $nid, $language);
       $allowed = [
@@ -157,9 +167,13 @@ final class ProtectedDraftService {
 
   /**
    * Validates the node, exact language and requested field names.
+   *
+   * A NULL language is accepted only by prepare(), which resolves it to the
+   * original language and validates the result again.
    */
-  private function validateIdentity(int $nid, string $language, array $fields): void {
-    if ($nid < 1 || $language === '' || !preg_match('/\A[a-zA-Z0-9_-]+\z/', $language)
+  private function validateIdentity(int $nid, ?string $language, array $fields): void {
+    if ($nid < 1
+      || ($language !== NULL && ($language === '' || !preg_match('/\A[a-zA-Z0-9_-]+\z/', $language)))
       || !$fields || !array_is_list($fields)) {
       throw new ProtectedDraftRefusal('A page, its exact language and canonical field names are required.');
     }

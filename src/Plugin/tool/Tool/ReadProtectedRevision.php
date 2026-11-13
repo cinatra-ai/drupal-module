@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\cinatra\Plugin\tool\Tool;
 
+use Drupal\cinatra\ProtectedDraft\ProtectedDraftRefusal;
 use Drupal\cinatra\Tool\ProtectedDraftToolBase;
 use Drupal\Core\Plugin\Context\ContextDefinition;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
@@ -17,7 +18,7 @@ use Drupal\tool\TypedData\InputDefinition;
 #[Tool(
   id: 'cinatra_read_protected_revision',
   label: new TranslatableMarkup('Read protected page revision'),
-  description: new TranslatableMarkup('Read exact stored fields in the requested language. Omit revision_id to read the published default preimage and its revision/workflow/content binding. Supply revision_id to read that exact revision; never substitutes the default or latest.'),
+  description: new TranslatableMarkup('Read exact stored fields in the requested language. Omit revision_id to read the published default preimage and its revision/workflow/content binding; omit language there too to read the original translation, whose code the result reports in language. Supply revision_id to read that exact revision; never substitutes the default or latest.'),
   operation: ToolOperation::Read,
   input_definitions: [
     'nid' => new InputDefinition(
@@ -29,8 +30,8 @@ use Drupal\tool\TypedData\InputDefinition;
     'language' => new InputDefinition(
       data_type: 'string',
       label: new TranslatableMarkup('Exact language code'),
-      description: new TranslatableMarkup('Exact language code of an existing page translation; no fallback language is used.'),
-      required: TRUE,
+      description: new TranslatableMarkup('Exact language code of an existing page translation; no fallback language is used. Omit it, without revision_id, to read the original translation.'),
+      required: FALSE,
     ),
     'fields' => new InputDefinition(
       data_type: 'list',
@@ -56,10 +57,14 @@ final class ReadProtectedRevision extends ProtectedDraftToolBase {
    * Runs the requested protected revision operation.
    */
   protected function runProtectedOperation(array $values): array {
+    $language = $values['language'] ?? NULL;
     if (isset($values['revision_id'])) {
-      return $this->protectedDraft->read($values['nid'], $values['revision_id'], $values['language'], $values['fields']);
+      if ($language === NULL) {
+        throw new ProtectedDraftRefusal('An exact stored revision needs its exact language.');
+      }
+      return $this->protectedDraft->read($values['nid'], $values['revision_id'], $language, $values['fields']);
     }
-    return $this->protectedDraft->prepare($values['nid'], $values['language'], $values['fields']);
+    return $this->protectedDraft->prepare($values['nid'], $language, $values['fields']);
   }
 
 }

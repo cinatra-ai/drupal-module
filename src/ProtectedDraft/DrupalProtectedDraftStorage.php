@@ -358,6 +358,19 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
   /**
    * {@inheritdoc}
    */
+  public function originalLanguage(int $nid): ?string {
+    $this->assertLocked($nid);
+    $node = $this->hydrateDefault($this->nodeStorage(), $nid);
+    if (!$node instanceof NodeInterface) {
+      return NULL;
+    }
+    $language = $node->getUntranslated()->language()->getId();
+    return is_string($language) && $language !== '' ? $language : NULL;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   public function saveDraft(int $nid, string $language, string $state, array $updates): int {
     $this->assertLocked($nid);
     if (!$this->preimage || (int) $this->preimage->id() !== $nid

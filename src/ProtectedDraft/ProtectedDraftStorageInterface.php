@@ -26,6 +26,16 @@ interface ProtectedDraftStorageInterface {
   public function readDefault(int $nid, string $language, array $fields): array;
 
   /**
+   * Returns the untranslated (original) language of the stored default.
+   *
+   * It is called only inside withLockedNode(). It returns NULL when the page
+   * does not exist or has no original language. It makes no access decision:
+   * the caller then reads that language through readDefault(), which runs the
+   * view and field checks of an exact-language read.
+   */
+  public function originalLanguage(int $nid): ?string;
+
+  /**
    * Saves one validated non-default draft of the same node and translation.
    */
   public function saveDraft(int $nid, string $language, string $state, array $updates): int;
