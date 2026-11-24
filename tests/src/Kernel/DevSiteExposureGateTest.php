@@ -386,8 +386,11 @@ final class DevSiteExposureGateTest extends KernelTestBase {
    * While active, the upstream create() gets every one of its ids.
    *
    * The ids in the order of McpToolsRemoteController::create() of
-   * drupal/mcp_tools 1.0.0-beta18. The kernel fixture has no MCP Tools
-   * module, so a stand-in goes under each of its five service ids first.
+   * drupal/mcp_tools 1.0.0-beta19, which added the schema cache and the tool
+   * call context to the 1.0.0-beta18 ids. Both are served absent: without
+   * them every remote request was refused before its profile was read. The
+   * kernel fixture has no MCP Tools module, so a stand-in goes under each of
+   * its five service ids first.
    */
   public function testUpstreamCreateGetsEveryId(): void {
     $upstream = [
@@ -404,6 +407,8 @@ final class DevSiteExposureGateTest extends KernelTestBase {
       'event_dispatcher',
       'logger.channel.mcp_tools_remote',
       'mcp_tools.client_bridge',
+      'cache.default',
+      'mcp_tools.tool_call_context',
     ];
     $served = [
       'plugin.manager.tool',
@@ -411,6 +416,8 @@ final class DevSiteExposureGateTest extends KernelTestBase {
       'mcp_tools.resource_registry',
       'mcp_tools.prompt_registry',
       'mcp_tools.client_bridge',
+      'cache.default',
+      'mcp_tools.tool_call_context',
     ];
     // Every upstream id is either passed through or served, and no other.
     $known = array_merge(AllowListContainer::PASS_THROUGH, $served);
@@ -440,6 +447,8 @@ final class DevSiteExposureGateTest extends KernelTestBase {
     $this->assertSame([], ProbeController::$seen['mcp_tools.resource_registry']);
     $this->assertSame([], ProbeController::$seen['mcp_tools.prompt_registry']);
     $this->assertNull(ProbeController::$seen['mcp_tools.client_bridge']);
+    $this->assertNull(ProbeController::$seen['cache.default']);
+    $this->assertNull(ProbeController::$seen['mcp_tools.tool_call_context']);
     $this->assertInstanceOf(ScopedToolManager::class, ProbeController::$seen['plugin.manager.tool']);
     $this->assertInstanceOf(ExecutionGate::class, ProbeController::$seen['account_switcher']);
   }

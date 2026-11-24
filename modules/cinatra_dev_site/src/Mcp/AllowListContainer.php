@@ -19,8 +19,9 @@ final class AllowListContainer implements ContainerInterface {
    * The ids of McpToolsRemoteController::create() served unchanged.
    *
    * The tool manager, the account switcher, the resource and prompt
-   * registries and the client bridge are deliberately absent: the endpoint
-   * serves those itself, or they are refused.
+   * registries, the client bridge, the schema cache (cache.default) and the
+   * tool call context are deliberately absent: the endpoint serves those
+   * itself, or they are refused.
    */
   public const PASS_THROUGH = [
     'config.factory',
