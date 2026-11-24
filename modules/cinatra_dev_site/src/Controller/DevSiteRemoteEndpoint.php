@@ -86,7 +86,14 @@ final class DevSiteRemoteEndpoint implements ContainerInjectionInterface {
     if (!$active) {
       return $inner::create($this->container)->handle($request);
     }
-    $served = ['mcp_tools.client_bridge' => NULL];
+    // Served absent: the client bridge, and the schema cache and tool call
+    // context that drupal/mcp_tools 1.0.0-beta19 added to create(). The
+    // upstream controller accepts NULL for each of them.
+    $served = [
+      'mcp_tools.client_bridge' => NULL,
+      'cache.default' => NULL,
+      'mcp_tools.tool_call_context' => NULL,
+    ];
     foreach (self::EMPTY_REGISTRIES as $id) {
       $class = $this->registryClasses[$id] ?? NULL;
       if (!is_string($class) || !class_exists($class)) {
