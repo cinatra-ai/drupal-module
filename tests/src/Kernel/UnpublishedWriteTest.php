@@ -18,6 +18,11 @@ use Drupal\node\NodeStorageInterface;
 use Drupal\Tests\content_moderation\Traits\ContentModerationTestTrait;
 use Drupal\user\Entity\Role;
 use Drupal\user\Entity\User;
+use GuzzleHttp\Client;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Response;
 
 /**
  * Writes and publishes an unpublished page only while it is unchanged.
@@ -362,6 +367,75 @@ final class UnpublishedWriteTest extends KernelTestBase {
     $after = $this->snapshot($nid);
     $this->assertSame('fr', $result['language']);
     $this->assertSame(['en' => 'Unpublished page', 'fr' => 'Titre revu'], $after['titles']);
+    // Core moves only the edited translation's timestamp.
+    $this->assertSame($snapshot['changed']['en'], $after['changed']['en']);
+    $this->assertGreaterThan($snapshot['changed']['fr'], $after['changed']['fr']);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A hook moving another translation's timestamp during a write rolls back.
+   */
+  public function testWriteRollsBackWhenSaveHookChangesOtherTranslationTimestamp(): void {
+    $this->assertOtherTranslationTimestampChangeRollsBack(TRUE);
+  }
+
+  /**
+   * A hook marking another translation affected during a write rolls back.
+   */
+  public function testWriteRollsBackWhenSaveHookMarksOtherTranslationAffected(): void {
+    $this->assertOtherTranslationTimestampChangeRollsBack(TRUE, 'other_affected');
+  }
+
+  /**
+   * The same during the publish step.
+   */
+  public function testPublishRollsBackWhenSaveHookChangesOtherTranslationTimestamp(): void {
+    $this->assertOtherTranslationTimestampChangeRollsBack(FALSE);
+  }
+
+  /**
+   * The same for the affected flag during the publish step.
+   */
+  public function testPublishRollsBackWhenSaveHookMarksOtherTranslationAffected(): void {
+    $this->assertOtherTranslationTimestampChangeRollsBack(FALSE, 'other_affected');
+  }
+
+  /**
+   * English is written, a hook moves the French timestamp: the save is undone.
+   *
+   * The timestamps are per translation and snapshotted per language, so the
+   * comparison with the state before shows the French one back as it was.
+   */
+  private function assertOtherTranslationTimestampChangeRollsBack(bool $write, string $mode = 'other_changed'): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $node = $this->plainPage();
+    $node->addTranslation('fr', [
+      'title' => 'Titre', 'status' => FALSE, 'changed' => $this->oldChanged,
+    ])->save();
+    $nid = (int) $node->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, $mode);
+    try {
+      if ($write) {
+        $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+          'updates' => ['title' => [['value' => 'Reviewed title']]],
+        ]);
+      }
+      else {
+        $this->protectedDraft->publishUnpublished($this->binding($preimage));
+      }
+      $this->fail('Another translation bookkeeping moved by a hook must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored draft changed an unrequested field or another translation', $expected->getMessage());
+      $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede the rollback.');
+    }
+    ProtectedDraftProbe::reset();
+    $after = $this->snapshot($nid);
+    $this->assertSame($before['changed']['fr'], $after['changed']['fr']);
+    $this->assertSame($before, $after);
     $this->assertRootFinished();
   }
 
@@ -749,125 +823,240 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
-   * A publish in a rolled-back savepoint queues no webhook, root commit or not.
+   * Runs a scenario, then sends what it queued; returns the webhooks sent.
    *
-   * The root transaction commits, so a commit callback alone reports success;
-   * only a fresh read of the stored state shows the publish never persisted.
-   * The same publish in a savepoint that is kept queues exactly one.
+   * The sender is a recording client, so each event is seen as the host would
+   * see it: its webhook-id and its payload.
+   *
+   * @return array
+   *   One entry per request: id (the webhook-id) and body (the payload).
    */
-  public function testPublishWebhookNotQueuedForRolledBackSavepointInCommittedRoot(): void {
+  private function webhooksSentBy(callable $scenario): array {
     $this->config('cinatra.settings')
-      ->set('cinatra_url', 'https://cinatra.example.test')
+      ->set('cinatra_url', 'http://localhost:3000')
       ->set('webhook_secret', 'whsec_' . base64_encode(str_repeat('k', 32)))
       ->set('webhook_binding_id', 'binding-1')
       ->save();
     $this->container->get('current_user')->setAccount($this->publisher);
-    $database = $this->container->get('database');
+    $history = [];
+    $stack = HandlerStack::create(new MockHandler(array_fill(0, 10, new Response(202))));
+    $stack->push(Middleware::history($history));
+    $this->container->set('http_client', new Client(['handler' => $stack]));
     $callbacks = &drupal_register_shutdown_function();
-    $initial = $count = count($callbacks);
+    $initial = count($callbacks);
     try {
-      foreach ([FALSE, TRUE] as $keep) {
-        $nid = (int) $this->plainPage()->id();
-        $root = $database->startTransaction();
-        $savepoint = $database->startTransaction();
-        $node = $this->nodeStorage()->load($nid);
-        $node->setPublished();
-        $node->setNewRevision(TRUE);
-        $node->save();
-        if (!$keep) {
-          $savepoint->rollBack();
-        }
-        unset($savepoint);
-        // The caller catches the failure and commits the outer transaction.
-        unset($root);
-        $this->nodeStorage()->resetCache([$nid]);
-        $this->assertSame($keep, $this->nodeStorage()->load($nid)->isPublished());
-        $this->assertCount($count + ($keep ? 1 : 0), $callbacks, $keep ? 'A stored publish queues its webhook once.' : 'A publish rolled back inside a committed root must queue nothing.');
-        $count = count($callbacks);
+      $scenario();
+      foreach (array_slice($callbacks, $initial) as $queued) {
+        call_user_func_array($queued['callback'], $queued['arguments']);
       }
     }
     finally {
       // Never send from the test process.
       array_splice($callbacks, $initial);
     }
+    return array_map(static fn(array $sent): array => [
+      'id' => $sent['request']->getHeaderLine('webhook-id'),
+      'body' => json_decode((string) $sent['request']->getBody(), TRUE),
+    ], $history);
   }
 
   /**
-   * Only the publish whose revision was stored queues a webhook.
-   *
-   * A publish in a savepoint is rolled back, another page takes its revision
-   * number, and the page is published again in the same root. Both saves
-   * registered a callback and the page is published when the root commits, but
-   * the first publish's revision does not exist for this page: one webhook.
+   * The webhook-id of a node's revision, as the emitter derives it.
    */
-  public function testPublishWebhookQueuedOnlyForTheStoredRevision(): void {
-    $this->config('cinatra.settings')
-      ->set('cinatra_url', 'https://cinatra.example.test')
-      ->set('webhook_secret', 'whsec_' . base64_encode(str_repeat('k', 32)))
-      ->set('webhook_binding_id', 'binding-1')
-      ->save();
-    $this->container->get('current_user')->setAccount($this->publisher);
-    $database = $this->container->get('database');
-    $callbacks = &drupal_register_shutdown_function();
-    $initial = count($callbacks);
-    try {
+  private function webhookId(int $nid, int $revision_id): string {
+    $instance = (string) $this->config('cinatra.settings')->get('instance_id');
+    return 'drupal-' . hash('sha256', $instance . ':' . $nid . ':' . $revision_id);
+  }
+
+  /**
+   * Saves the page in one step of a webhook scenario; returns its revision.
+   *
+   * @param int $nid
+   *   The page.
+   * @param bool $published
+   *   The published state to save.
+   * @param bool $new_revision
+   *   FALSE saves the default revision in place.
+   * @param string $title
+   *   The title to save.
+   */
+  private function savePage(int $nid, bool $published, bool $new_revision, string $title): int {
+    $this->nodeStorage()->resetCache([$nid]);
+    $node = $this->nodeStorage()->load($nid);
+    $node->set('status', $published);
+    $node->setTitle($title);
+    $node->setNewRevision($new_revision);
+    $node->save();
+    return (int) $node->getRevisionId();
+  }
+
+  /**
+   * A publish in a rolled-back savepoint sends nothing, root commit or not.
+   */
+  public function testPublishWebhookNotSentForRolledBackSavepointInCommittedRoot(): void {
+    $sent = $this->webhooksSentBy(function (): void {
+      $database = $this->container->get('database');
       $nid = (int) $this->plainPage()->id();
       $root = $database->startTransaction();
       $savepoint = $database->startTransaction();
-      $node = $this->nodeStorage()->load($nid);
-      $node->setPublished();
-      $node->setNewRevision(TRUE);
-      $node->save();
+      $this->savePage($nid, TRUE, TRUE, 'Lost');
       $savepoint->rollBack();
       unset($savepoint);
-      $this->nodeStorage()->resetCache([$nid]);
-      // Another unpublished page takes the revision number the rollback freed,
-      // on databases that hand it out again.
-      $this->plainPage();
-      $node = $this->nodeStorage()->load($nid);
-      $node->setPublished();
-      $node->setNewRevision(TRUE);
-      $node->save();
-      unset($root);
-      $this->nodeStorage()->resetCache([$nid]);
-      $this->assertTrue($this->nodeStorage()->load($nid)->isPublished());
-      $this->assertCount($initial + 1, $callbacks, 'The rolled-back publish must not queue a webhook of its own.');
-    }
-    finally {
-      array_splice($callbacks, $initial);
-    }
-  }
-
-  /**
-   * A publish that a later save in the same root unpublished queues nothing.
-   */
-  public function testPublishWebhookNotQueuedWhenUnpublishedInTheSameRoot(): void {
-    $this->config('cinatra.settings')
-      ->set('cinatra_url', 'https://cinatra.example.test')
-      ->set('webhook_secret', 'whsec_' . base64_encode(str_repeat('k', 32)))
-      ->set('webhook_binding_id', 'binding-1')
-      ->save();
-    $this->container->get('current_user')->setAccount($this->publisher);
-    $database = $this->container->get('database');
-    $callbacks = &drupal_register_shutdown_function();
-    $initial = count($callbacks);
-    try {
-      $nid = (int) $this->plainPage()->id();
-      $root = $database->startTransaction();
-      foreach ([TRUE, FALSE] as $published) {
-        $node = $this->nodeStorage()->load($nid);
-        $node->set('status', $published);
-        $node->setNewRevision(TRUE);
-        $node->save();
-      }
+      // The caller catches the failure and commits the outer transaction.
       unset($root);
       $this->nodeStorage()->resetCache([$nid]);
       $this->assertFalse($this->nodeStorage()->load($nid)->isPublished());
-      $this->assertCount($initial, $callbacks, 'A page that is not published when the root commits queues no webhook.');
-    }
-    finally {
-      array_splice($callbacks, $initial);
-    }
+    });
+    $this->assertSame([], $sent);
+  }
+
+  /**
+   * A kept publish in a savepoint sends exactly one event, for its revision.
+   */
+  public function testPublishWebhookSentOnceForKeptSavepoint(): void {
+    $revision = 0;
+    $nid = 0;
+    $sent = $this->webhooksSentBy(function () use (&$revision, &$nid): void {
+      $database = $this->container->get('database');
+      $nid = (int) $this->plainPage()->id();
+      $root = $database->startTransaction();
+      $savepoint = $database->startTransaction();
+      $revision = $this->savePage($nid, TRUE, TRUE, 'Kept');
+      unset($savepoint);
+      unset($root);
+    });
+    $this->assertCount(1, $sent);
+    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertSame('Kept', $sent[0]['body']['title']);
+  }
+
+  /**
+   * An in-place publish rolled back, then a real publish: one event, the real.
+   *
+   * The rolled-back publish was on an existing revision, which still exists
+   * and is published when the root commits; only the stored state of its own
+   * save tells them apart.
+   */
+  public function testInPlacePublishRolledBackThenRealPublishSendsOneEvent(): void {
+    $revision = 0;
+    $nid = 0;
+    $sent = $this->webhooksSentBy(function () use (&$revision, &$nid): void {
+      $database = $this->container->get('database');
+      $nid = (int) $this->plainPage()->id();
+      $root = $database->startTransaction();
+      $savepoint = $database->startTransaction();
+      $in_place = $this->savePage($nid, TRUE, FALSE, 'Lost in place');
+      $savepoint->rollBack();
+      unset($savepoint);
+      $revision = $this->savePage($nid, TRUE, TRUE, 'Real publish');
+      $this->assertNotSame($in_place, $revision);
+      unset($root);
+    });
+    $this->assertCount(1, $sent);
+    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertSame('Real publish', $sent[0]['body']['title']);
+  }
+
+  /**
+   * Two publishes in one root, with an unpublish between: one event, the last.
+   */
+  public function testTwoPublishesInOneRootSendOneEvent(): void {
+    $revision = 0;
+    $nid = 0;
+    $sent = $this->webhooksSentBy(function () use (&$revision, &$nid): void {
+      $database = $this->container->get('database');
+      $nid = (int) $this->plainPage()->id();
+      $root = $database->startTransaction();
+      $this->savePage($nid, TRUE, TRUE, 'First publish');
+      $this->savePage($nid, FALSE, TRUE, 'Unpublished between');
+      $revision = $this->savePage($nid, TRUE, TRUE, 'Second publish');
+      unset($root);
+    });
+    $this->assertCount(1, $sent);
+    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertSame('Second publish', $sent[0]['body']['title']);
+  }
+
+  /**
+   * A later save that keeps the page published leaves one event, for it.
+   *
+   * The publishing save is superseded; the page is published in the stored
+   * default revision, so the single event describes that revision.
+   */
+  public function testSupersededPublishSendsOneEventForTheStoredRevision(): void {
+    $revision = 0;
+    $nid = 0;
+    $sent = $this->webhooksSentBy(function () use (&$revision, &$nid): void {
+      $database = $this->container->get('database');
+      $nid = (int) $this->plainPage()->id();
+      $root = $database->startTransaction();
+      $this->savePage($nid, TRUE, TRUE, 'Publishing save');
+      $revision = $this->savePage($nid, TRUE, TRUE, 'Later save');
+      unset($root);
+    });
+    $this->assertCount(1, $sent);
+    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertSame('Later save', $sent[0]['body']['title']);
+  }
+
+  /**
+   * A publish that a later save in the same root unpublished sends nothing.
+   */
+  public function testPublishThenUnpublishInOneRootSendsNothing(): void {
+    $sent = $this->webhooksSentBy(function (): void {
+      $database = $this->container->get('database');
+      $nid = (int) $this->plainPage()->id();
+      $root = $database->startTransaction();
+      $this->savePage($nid, TRUE, TRUE, 'Published');
+      $this->savePage($nid, FALSE, TRUE, 'Unpublished');
+      unset($root);
+      $this->nodeStorage()->resetCache([$nid]);
+      $this->assertFalse($this->nodeStorage()->load($nid)->isPublished());
+    });
+    $this->assertSame([], $sent);
+  }
+
+  /**
+   * A root that falls back to the earlier published state sends nothing.
+   *
+   * The page is published before the root. Inside it a savepoint unpublishes
+   * and publishes again, and is rolled back as a whole: the stored state is
+   * the old published revision, which no save of this root produced.
+   */
+  public function testFallbackToEarlierPublishedStateSendsNothing(): void {
+    $nid = (int) $this->plainPage()->id();
+    // Before any webhook is configured, so this publish registers nothing.
+    $this->savePage($nid, TRUE, TRUE, 'Published before the root');
+    $sent = $this->webhooksSentBy(function () use ($nid): void {
+      $database = $this->container->get('database');
+      $root = $database->startTransaction();
+      $savepoint = $database->startTransaction();
+      $this->savePage($nid, FALSE, TRUE, 'Unpublished');
+      $this->savePage($nid, TRUE, TRUE, 'Published again');
+      $savepoint->rollBack();
+      unset($savepoint);
+      unset($root);
+      $this->nodeStorage()->resetCache([$nid]);
+      $this->assertSame('Published before the root', $this->nodeStorage()->load($nid)->label());
+    });
+    $this->assertSame([], $sent);
+  }
+
+  /**
+   * Each root transaction sends its own event: publish, unpublish, publish.
+   */
+  public function testEachRootSendsItsOwnEvent(): void {
+    $sent = $this->webhooksSentBy(function (): void {
+      $database = $this->container->get('database');
+      $nid = (int) $this->plainPage()->id();
+      foreach ([TRUE, FALSE, TRUE] as $published) {
+        $root = $database->startTransaction();
+        $this->savePage($nid, $published, TRUE, $published ? 'Published' : 'Unpublished');
+        unset($root);
+      }
+    });
+    $this->assertCount(2, $sent);
+    $this->assertNotSame($sent[0]['id'], $sent[1]['id']);
   }
 
   /**

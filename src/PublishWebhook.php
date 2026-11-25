@@ -6,6 +6,7 @@ namespace Drupal\cinatra;
 
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Database\Connection;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\node\NodeInterface;
 use GuzzleHttp\ClientInterface;
 use Psr\Log\LoggerInterface;
@@ -81,12 +82,22 @@ final class PublishWebhook {
    */
   private const TIMEOUT_SECONDS = 4;
 
+  /**
+   * The webhooks already queued in the root transaction now ending.
+   *
+   * One object per root transaction, shared by every registration made inside
+   * it; the first commit callback that runs marks it ended, so the next
+   * registration after that belongs to a new root and gets a new one.
+   */
+  private static ?\stdClass $root = NULL;
+
   public function __construct(
     private readonly ClientInterface $httpClient,
     private readonly ConfigFactoryInterface $configFactory,
     private readonly LoggerInterface $logger,
     private readonly RequestStack $requestStack,
     private readonly ?Connection $database = NULL,
+    private readonly ?EntityTypeManagerInterface $entityTypeManager = NULL,
   ) {
   }
 
@@ -100,6 +111,7 @@ final class PublishWebhook {
       \Drupal::logger('cinatra'),
       \Drupal::requestStack(),
       \Drupal::database(),
+      \Drupal::entityTypeManager(),
     );
   }
 
@@ -110,7 +122,8 @@ final class PublishWebhook {
    * be mutated later in the request), but the network call happens in a
    * shutdown callback so the node save is never transport-blocked. Inside a
    * database transaction it is registered only once that transaction has
-   * committed and a fresh read shows the publish as stored. A quiet
+   * committed, and then at most one event per node and language is queued,
+   * for the stored published state (see the semantics note below). A quiet
    * no-op when the connection is not fully configured.
    *
    * @param \Drupal\node\NodeInterface $node
@@ -126,21 +139,46 @@ final class PublishWebhook {
         $this->send($emission);
       });
     };
-    // An event is emitted only for a publish that is stored. Inside a
-    // transaction the send is registered when the root transaction ends, and
-    // only if that root committed AND a fresh read shows this publish stored.
-    // A root commit alone does not prove it: a publish inside a savepoint
-    // that a later hook rolled back, with the root then committed by a caller
-    // that caught the error, leaves nothing published.
+    // SEMANTICS: per root transaction, node and language, AT MOST ONE webhook,
+    // queued only when the root committed and the stored state is published,
+    // and describing the stored default revision. A root commit alone proves
+    // nothing about the publishing save: it may have been in a savepoint that a
+    // later hook rolled back, or in place on an existing revision that was
+    // rolled back, with the root then committed by a caller that caught the
+    // error. So each registration is checked against the stored state, and all
+    // registrations of one node and language collapse into one event.
     // fromContainer() always passes the site database.
     if ($this->database !== NULL && $this->database->inTransaction()) {
+      if (self::$root === NULL || self::$root->ended) {
+        self::$root = (object) ['ended' => FALSE, 'queued' => []];
+      }
+      $state = self::$root;
       $nid = (int) $node->id();
       $revision_id = (int) $node->getRevisionId();
       $langcode = $node->language()->getId();
-      $check = function (bool $committed) use ($register, $nid, $revision_id, $langcode): void {
-        if ($committed && $this->publishIsStored($nid, $revision_id, $langcode)) {
-          $register();
+      $check = function (bool $committed) use ($state, $emission, $nid, $revision_id, $langcode): void {
+        $state->ended = TRUE;
+        if (!$committed) {
+          return;
         }
+        $stored = $this->storedPublishedRevision($nid, $langcode);
+        // A stored revision older than this save's own is a state the root
+        // fell back to (everything since was rolled back): not this publish.
+        if ($stored === NULL || $stored < $revision_id) {
+          return;
+        }
+        $key = $nid . ':' . $langcode;
+        if (isset($state->queued[$key])) {
+          return;
+        }
+        $final = $stored === $revision_id ? $emission : $this->emissionForStored($nid, $langcode);
+        if ($final === NULL) {
+          return;
+        }
+        $state->queued[$key] = TRUE;
+        drupal_register_shutdown_function(function () use ($final): void {
+          $this->send($final);
+        });
       };
       $this->database->transactionManager()->addPostTransactionCallback($check);
       return;
@@ -149,45 +187,67 @@ final class PublishWebhook {
   }
 
   /**
-   * Tells whether the publish of a revision is stored, read fresh.
+   * Reads the stored default revision of a translation if it is published.
    *
-   * Reads straight from the database, never from the entity cache, which
-   * still holds the object whose save was rolled back. True only when the
-   * revision the publishing save produced exists for this node, so it was not
-   * rolled back, and the translation's default revision is published now. A
-   * later save that kept the page published does not hide the earlier
-   * publish; a later unpublish, or a lost revision, does.
+   * Straight from the database, never the entity cache, which still holds
+   * objects whose save was rolled back. The translation's default revision
+   * (node_field_data) must be published AND its own stored row
+   * (node_field_revision, that revision and language) must be published.
    *
    * @param int $nid
    *   The node ID.
-   * @param int $revision_id
-   *   The revision the publishing save produced (0 when it has none).
    * @param string $langcode
-   *   The translation that was published.
+   *   The translation.
+   *
+   * @return int|null
+   *   The stored default revision ID, or NULL when it is not published.
    */
-  private function publishIsStored(int $nid, int $revision_id, string $langcode): bool {
+  private function storedPublishedRevision(int $nid, string $langcode): ?int {
     try {
-      $status = $this->database->select('node_field_data', 'n')
-        ->fields('n', ['status'])
+      $row = $this->database->select('node_field_data', 'n')
+        ->fields('n', ['vid', 'status'])
         ->condition('nid', $nid)
         ->condition('langcode', $langcode)
         ->execute()
-        ->fetchField();
-      if ($status === FALSE || (int) $status !== 1) {
-        return FALSE;
+        ->fetchAssoc();
+      if (!is_array($row) || (int) $row['status'] !== 1) {
+        return NULL;
       }
-      if ($revision_id === 0) {
-        return TRUE;
-      }
-      return $this->database->select('node_revision', 'r')
-        ->fields('r', ['vid'])
-        ->condition('vid', $revision_id)
-        ->condition('nid', $nid)
+      $revision_status = $this->database->select('node_field_revision', 'r')
+        ->fields('r', ['status'])
+        ->condition('vid', (int) $row['vid'])
+        ->condition('langcode', $langcode)
         ->execute()
-        ->fetchField() !== FALSE;
+        ->fetchField();
+      return $revision_status !== FALSE && (int) $revision_status === 1 ? (int) $row['vid'] : NULL;
     }
     catch (\Throwable) {
-      return FALSE;
+      return NULL;
+    }
+  }
+
+  /**
+   * Builds the emission of the stored default revision, loaded fresh.
+   *
+   * Used when the save that registered a callback is not the stored one (a
+   * later save kept the page published): the one event describes the stored
+   * state. NULL when that cannot be built.
+   */
+  private function emissionForStored(int $nid, string $langcode): ?array {
+    if ($this->entityTypeManager === NULL) {
+      return NULL;
+    }
+    try {
+      $storage = $this->entityTypeManager->getStorage('node');
+      $storage->resetCache([$nid]);
+      $stored = $storage->load($nid);
+      if (!$stored instanceof NodeInterface) {
+        return NULL;
+      }
+      return $this->buildEmission($stored->hasTranslation($langcode) ? $stored->getTranslation($langcode) : $stored);
+    }
+    catch (\Throwable) {
+      return NULL;
     }
   }
 

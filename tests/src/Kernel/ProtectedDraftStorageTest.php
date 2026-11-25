@@ -422,6 +422,44 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   }
 
   /**
+   * A shared field change moves the French timestamp, as core does; kept.
+   *
+   * Core marks every translation affected and moves its timestamp when an
+   * untranslatable field changes, so that movement is not a hook's.
+   */
+  public function testSharedFieldWriteMovesOtherTranslationTimestampAsCoreDoes(): void {
+    $nid = (int) $this->page->id();
+    $old = (int) $this->page->getTranslation('fr')->getChangedTime() - 100;
+    $this->page->getTranslation('fr')->setChangedTime($old);
+    $this->page->save();
+    $this->nodeStorage()->resetCache([$nid]);
+    $this->assertSame($old, (int) $this->nodeStorage()->load($nid)->getTranslation('fr')->getChangedTime());
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_shared_note']);
+    $stored = $this->protectedDraft->write($this->request($preimage, [
+      'field_shared_note' => [['value' => 'A new shared note']],
+    ]));
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id']);
+    $this->assertGreaterThan($old, (int) $draft->getTranslation('fr')->getChangedTime());
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A hook moving the French timestamp while English is written rolls back.
+   *
+   * The timestamp is per translation: only the edited translation's may move.
+   */
+  public function testSaveHookChangingOtherTranslationTimestampRollsBack(): void {
+    $this->assertSaveHookRollsBack('other_changed', ['title' => [['value' => 'Draft title']]], 'The stored draft changed an unrequested field or another translation');
+  }
+
+  /**
+   * A save hook marking the French translation affected rolls back as well.
+   */
+  public function testSaveHookMarkingOtherTranslationAffectedRollsBack(): void {
+    $this->assertSaveHookRollsBack('other_affected', ['title' => [['value' => 'Draft title']]], 'The stored draft changed an unrequested field or another translation');
+  }
+
+  /**
    * Tests unmoderated node refuses before save.
    */
   public function testUnmoderatedNodeRefusesBeforeSave(): void {

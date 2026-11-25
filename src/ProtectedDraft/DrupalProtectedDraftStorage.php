@@ -404,7 +404,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       || $this->preimage->language()->getId() !== $language) {
       throw new ProtectedDraftRefusal('The edit is not bound to its authorized preimage.');
     }
-    $before_content = $this->draftContent($this->preimage);
+    $before_content = $this->draftContent($this->preimage, TRUE);
     $shared_fields = [];
     $reviewed = [];
     $node = clone $this->preimage;
@@ -487,7 +487,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         throw new ProtectedDraftRefusal('This page is published; edit it through the protected draft instead.');
       }
     }
-    $before_content = $this->draftContent($this->preimage);
+    $before_content = $this->draftContent($this->preimage, TRUE);
     $shared_fields = [];
     $reviewed = [];
     $node = clone $this->preimage;
@@ -647,26 +647,45 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
    * Internal only: includes unreadable fields without exporting their values.
    *
    * Every stored field of every translation counts, revisionable or not, so a
-   * save hook changing a field nobody asked to write is seen. Only computed
-   * fields (never stored) and the per-save bookkeeping below are left out.
+   * save hook changing a field nobody asked to write is seen. Left out:
+   * - computed fields, which are never stored;
+   * - the metadata of the REVISION, one value for all translations and set by
+   *   every save: vid, revision_uid, revision_timestamp, revision_log,
+   *   revision_default;
+   * - the metadata of one TRANSLATION, which the save changes only for the
+   *   translation it edits: changed, and revision_translation_affected. The
+   *   scope check removes both for the edited translation alone. For every
+   *   other translation "changed" is compared as it was, and the affected
+   *   flag is compared as a boolean: core sets it only for a translation with
+   *   changes, so an untouched one holds no flag after the save, whatever the
+   *   previous revision held ($as_new_revision says so for the before side).
+   *
+   * @param \Drupal\node\NodeInterface $node
+   *   The node whose translations are read.
+   * @param bool $as_new_revision
+   *   TRUE for the before side: the flag an untouched translation holds in the
+   *   revision about to be saved.
    */
-  private function draftContent(NodeInterface $node): array {
-    $volatile = [
+  private function draftContent(NodeInterface $node, bool $as_new_revision = FALSE): array {
+    $per_revision = [
       'vid',
       'revision_uid',
       'revision_timestamp',
       'revision_log',
       'revision_default',
-      'revision_translation_affected',
-      'changed',
     ];
     $content = [];
     foreach ($node->getTranslationLanguages() as $language => $unused) {
       $translation = $node->getTranslation($language);
       foreach ($translation->getFieldDefinitions() as $name => $definition) {
-        if (!$definition->isComputed() && !in_array($name, $volatile, TRUE)) {
-          $content[$language][$name] = $translation->get($name)->getValue();
+        if ($definition->isComputed() || in_array($name, $per_revision, TRUE)) {
+          continue;
         }
+        $value = $translation->get($name)->getValue();
+        if ($name === 'revision_translation_affected') {
+          $value = !$as_new_revision && !empty($value[0]['value']);
+        }
+        $content[$language][$name] = $value;
       }
     }
     return $content;

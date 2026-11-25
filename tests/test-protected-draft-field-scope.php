@@ -79,6 +79,65 @@ $test('translation disappeared', $changed, FALSE);
 $changed = $after;
 $changed['de'] = $before['en'];
 $test('translation added', $changed, FALSE);
+// Per-translation bookkeeping moves only for the edited translation (fr).
+$stamped_before = $before;
+$stamped_before['en']['changed'] = [['value' => 100]];
+$stamped_before['fr']['changed'] = [['value' => 200]];
+$stamped_before['en']['revision_translation_affected'] = FALSE;
+$stamped_before['fr']['revision_translation_affected'] = FALSE;
+$stamp_test = function (string $name, array $after, bool $allowed) use ($stamped_before, &$passed): void {
+  try {
+    ProtectedDraftFieldScope::assertMatches($stamped_before, $after, 'fr', ['title']);
+    if (!$allowed) {
+      throw new RuntimeException($name . ' incorrectly accepted');
+    }
+  }
+  catch (ProtectedDraftRefusal $error) {
+    if ($allowed) {
+      throw $error;
+    }
+  }
+  $passed++;
+  echo "PASS $name\n";
+};
+$stamped = $stamped_before;
+$stamped['fr']['changed'] = [['value' => 999]];
+$stamped['fr']['revision_translation_affected'] = TRUE;
+$stamp_test('the edited translation timestamp and affected flag may move', $stamped, TRUE);
+$stamped = $stamped_before;
+$stamped['en']['changed'] = [['value' => 999]];
+$stamp_test('another translation timestamp may not move', $stamped, FALSE);
+$stamped = $stamped_before;
+$stamped['en']['revision_translation_affected'] = TRUE;
+$stamp_test('another translation may not be marked affected', $stamped, FALSE);
+$stamped = $stamped_before;
+unset($stamped['en']['changed']);
+$stamp_test('another translation timestamp may not disappear', $stamped, FALSE);
+// An untranslatable (shared) field in the write: core moves every translation's
+// timestamp and affected flag with it.
+$stamp_shared_test = function (string $name, array $after, bool $allowed) use ($stamped_before, &$passed): void {
+  try {
+    ProtectedDraftFieldScope::assertMatches($stamped_before, $after, 'fr', ['title'], ['title']);
+    if (!$allowed) {
+      throw new RuntimeException($name . ' incorrectly accepted');
+    }
+  }
+  catch (ProtectedDraftRefusal $error) {
+    if ($allowed) {
+      throw $error;
+    }
+  }
+  $passed++;
+  echo "PASS $name\n";
+};
+$stamped = $stamped_before;
+$stamped['fr']['title'] = [['value' => 'Shared title']];
+$stamped['en']['title'] = [['value' => 'Shared title']];
+$stamped['en']['changed'] = [['value' => 999]];
+$stamped['en']['revision_translation_affected'] = TRUE;
+$stamp_shared_test('a shared write moves the other translation bookkeeping', $stamped, TRUE);
+$stamped['en']['body'][0]['value'] = 'Out of scope';
+$stamp_shared_test('a shared write still refuses another translation content', $stamped, FALSE);
 $shared_before = $before;
 $shared_before['en']['field_shared_note'] = [['value' => 'Shared live note']];
 $shared_before['fr']['field_shared_note'] = [['value' => 'Shared live note']];

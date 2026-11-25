@@ -399,6 +399,8 @@ namespace {
     'unrevisioned' => new CinatraNativeConfigurableField(new CinatraNativeFieldStorage(FALSE)),
     'computed' => new CinatraNativeConfigurableField(new CinatraNativeFieldStorage(), TRUE, TRUE),
     'changed' => new CinatraNativeBaseField(new CinatraNativeFieldStorage()),
+    'revision_translation_affected' => new CinatraNativeBaseField(new CinatraNativeFieldStorage()),
+    'revision_log' => new CinatraNativeBaseField(new CinatraNativeFieldStorage()),
   ];
   $en = new CinatraNativeFieldNode($definitions, [
     'body' => [
@@ -416,6 +418,9 @@ namespace {
         'value' => 'English unrevisioned',
       ],
     ],
+    'changed' => [['value' => 100]],
+    'revision_translation_affected' => [['value' => 1]],
+    'revision_log' => [['value' => 'English log']],
   ]);
   $fr = new CinatraNativeFieldNode($definitions, [
     'body' => [
@@ -433,6 +438,9 @@ namespace {
         'value' => 'French unrevisioned',
       ],
     ],
+    'changed' => [['value' => 200]],
+    'revision_translation_affected' => [['value' => NULL]],
+    'revision_log' => [['value' => 'French log']],
   ], 'fr');
   $en->translations = $fr->translations = ['en' => $en, 'fr' => $fr];
   $actual = $content->invoke($adapter, $en);
@@ -453,6 +461,8 @@ namespace {
           'value' => 'English unrevisioned',
         ],
       ],
+      'changed' => [['value' => 100]],
+      'revision_translation_affected' => TRUE,
     ],
     'fr' => [
       'body' => [
@@ -470,10 +480,16 @@ namespace {
           'value' => 'French unrevisioned',
         ],
       ],
+      'changed' => [['value' => 200]],
+      'revision_translation_affected' => FALSE,
     ],
   ];
+  $as_new = $content->invoke($adapter, $en, TRUE);
+  if ($as_new['en']['revision_translation_affected'] !== FALSE || $as_new['fr']['revision_translation_affected'] !== FALSE) {
+    throw new RuntimeException('The before side must hold no affected flag.');
+  }
   if ($actual !== $expected) {
-    throw new RuntimeException('Stored scope must include every stored field, revisionable or not, and skip computed and per-save fields.');
+    throw new RuntimeException('Stored scope must include every stored field and each translation timestamp, skip computed fields and per-revision metadata, and read the affected flag as a boolean.');
   }
   $passed++;
   echo "PASS stored content scope covers revisionable and unrevisioned fields across actual supplied translations\n";

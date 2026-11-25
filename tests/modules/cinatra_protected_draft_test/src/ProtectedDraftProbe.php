@@ -87,6 +87,18 @@ final class ProtectedDraftProbe {
         $node->getTranslation($other)->setTitle('A save hook changed the other translation.');
         break;
 
+      case 'other_changed':
+        // A save hook moving another translation's timestamp.
+        $other = $node->language()->getId() === 'en' ? 'fr' : 'en';
+        $node->getTranslation($other)->setChangedTime(time() + 1000);
+        break;
+
+      case 'other_affected':
+        // A save hook marking another translation as affected by this revision.
+        $other = $node->language()->getId() === 'en' ? 'fr' : 'en';
+        $node->getTranslation($other)->setRevisionTranslationAffected(TRUE);
+        break;
+
       case 'replace_title':
         // A valid value the person never reviewed.
         $node->setTitle('Replaced by a save hook');

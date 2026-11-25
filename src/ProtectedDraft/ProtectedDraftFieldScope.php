@@ -36,8 +36,17 @@ final class ProtectedDraftFieldScope {
         }
         unset($expected[$field], $stored[$field]);
       }
+      if ($shared_fields) {
+        // Core itself marks every translation as affected, and moves its
+        // timestamp, when an untranslatable field changes: such a write
+        // legitimately touches all translations' bookkeeping.
+        unset($expected['changed'], $stored['changed']);
+        unset($expected['revision_translation_affected'], $stored['revision_translation_affected']);
+      }
       if ($code === $language) {
-        foreach (array_merge($updated_fields, ['status']) as $field) {
+        // The edited translation's own bookkeeping: the save moves its
+        // timestamp and marks it affected. No other translation's may move.
+        foreach (array_merge($updated_fields, ['status', 'changed', 'revision_translation_affected']) as $field) {
           unset($expected[$field], $stored[$field]);
         }
       }
