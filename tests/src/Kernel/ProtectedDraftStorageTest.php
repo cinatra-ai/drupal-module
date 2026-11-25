@@ -40,7 +40,7 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
    */
   protected static $modules = [
     'system', 'user', 'field', 'text', 'filter', 'node', 'language',
-    'file', 'image', 'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
+    'file', 'image', 'link', 'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
   ];
 
   /**
@@ -128,6 +128,7 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
       'label' => 'Price', 'translatable' => TRUE,
     ])->save();
     $this->createImageField(['page']);
+    $this->createClearableFields(['page']);
     $workflow = $this->createEditorialWorkflow();
     $this->addEntityTypeAndBundleToWorkflow($workflow, 'node', 'page');
     $role = Role::create(['id' => 'protected_editor', 'label' => 'Protected editor']);
@@ -333,6 +334,34 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertSame('Reviewed body', $draft->get('body')->value);
     $this->assertSame('plain_text', $draft->get('body')->format);
     $this->assertRootFinished();
+  }
+
+  /**
+   * Every clear of a formatted text, link or reference field is stored empty.
+   *
+   * An item the field treats as empty is dropped before any check reads it, so
+   * a clear needs no text format and is not examined as a value.
+   */
+  public function testClearOfFormattedTextLinkAndReferenceIsStored(): void {
+    foreach ($this->clearCases() as $field => $case) {
+      foreach ($case['clears'] as $form => $clear) {
+        // One pending draft per page: each clear gets its own page.
+        $page = Node::create([
+          'type' => 'page', 'langcode' => 'en', 'uid' => $this->editor->id(),
+          'title' => 'Clear page', 'status' => TRUE, 'moderation_state' => 'published',
+        ]);
+        $page->set($field, $case['initial']);
+        $page->save();
+        $nid = (int) $page->id();
+        $preimage = $this->protectedDraft->prepare($nid, 'en', [$field]);
+        $this->assertNotSame([], $preimage['fields'][$field], "$field starts filled");
+        $stored = $this->protectedDraft->write($this->request($preimage, [$field => $clear]));
+        $this->assertSame([], $stored['fields'][$field], "$field, $form");
+        $draft = $this->nodeStorage()->loadRevision($stored['revision_id'])->getTranslation('en');
+        $this->assertTrue($draft->get($field)->isEmpty(), "$field, $form is stored empty");
+        $this->assertRootFinished();
+      }
+    }
   }
 
   /**

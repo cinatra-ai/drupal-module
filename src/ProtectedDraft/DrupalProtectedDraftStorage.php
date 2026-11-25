@@ -416,6 +416,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $node->get($field)->setValue($items);
+      // The candidate holds the field's own normalised items from here on: an
+      // item the field treats as empty is gone, so no check below (text format,
+      // validation, field access) examines it, and the save sees the same
+      // items as the reviewed value does.
+      $node->get($field)->filterEmptyItems();
       $reviewed[$field] = $this->reviewedItems($node, $field);
     }
     $node->setNewRevision(TRUE);
@@ -494,6 +499,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $node->get($field)->setValue($items);
+      // The candidate holds the field's own normalised items from here on: an
+      // item the field treats as empty is gone, so no check below (text format,
+      // validation, field access) examines it, and the save sees the same
+      // items as the reviewed value does.
+      $node->get($field)->filterEmptyItems();
       $reviewed[$field] = $this->reviewedItems($node, $field);
     }
     $node->setNewRevision(TRUE);
@@ -900,7 +910,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
     $this->bindFilterSettings();
     $this->entityTypeManager->getAccessControlHandler('filter_format')->resetCache();
-    foreach ($node->get($field)->getValue() as $item) {
+    // The normalised items only: an item the field treats as empty (a clear)
+    // has no format to require.
+    foreach ($this->reviewedItems($node, $field) as $item) {
       $format_id = $item['format'] ?? NULL;
       if (!is_string($format_id) || $format_id === '') {
         throw new ProtectedDraftRefusal('An explicit permitted text format is required.');

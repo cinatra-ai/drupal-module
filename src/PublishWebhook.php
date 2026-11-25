@@ -110,7 +110,8 @@ final class PublishWebhook {
    * be mutated later in the request), but the network call happens in a
    * shutdown callback so the node save is never transport-blocked. Inside a
    * database transaction it is registered only once that transaction has
-   * committed. A quiet no-op when the connection is not fully configured.
+   * committed and a fresh read shows the publish as stored. A quiet
+   * no-op when the connection is not fully configured.
    *
    * @param \Drupal\node\NodeInterface $node
    *   The node that just transitioned into the published state.
@@ -125,19 +126,69 @@ final class PublishWebhook {
         $this->send($emission);
       });
     };
-    // An event is emitted only for a committed save. Inside a transaction the
-    // send is registered when the root transaction ends, and only if it
-    // committed; a rolled-back save never reports a publish.
+    // An event is emitted only for a publish that is stored. Inside a
+    // transaction the send is registered when the root transaction ends, and
+    // only if that root committed AND a fresh read shows this publish stored.
+    // A root commit alone does not prove it: a publish inside a savepoint
+    // that a later hook rolled back, with the root then committed by a caller
+    // that caught the error, leaves nothing published.
     // fromContainer() always passes the site database.
     if ($this->database !== NULL && $this->database->inTransaction()) {
-      $this->database->transactionManager()->addPostTransactionCallback(static function (bool $committed) use ($register): void {
-        if ($committed) {
+      $nid = (int) $node->id();
+      $revision_id = (int) $node->getRevisionId();
+      $langcode = $node->language()->getId();
+      $check = function (bool $committed) use ($register, $nid, $revision_id, $langcode): void {
+        if ($committed && $this->publishIsStored($nid, $revision_id, $langcode)) {
           $register();
         }
-      });
+      };
+      $this->database->transactionManager()->addPostTransactionCallback($check);
       return;
     }
     $register();
+  }
+
+  /**
+   * Tells whether the publish of a revision is stored, read fresh.
+   *
+   * Reads straight from the database, never from the entity cache, which
+   * still holds the object whose save was rolled back. True only when the
+   * revision the publishing save produced exists for this node, so it was not
+   * rolled back, and the translation's default revision is published now. A
+   * later save that kept the page published does not hide the earlier
+   * publish; a later unpublish, or a lost revision, does.
+   *
+   * @param int $nid
+   *   The node ID.
+   * @param int $revision_id
+   *   The revision the publishing save produced (0 when it has none).
+   * @param string $langcode
+   *   The translation that was published.
+   */
+  private function publishIsStored(int $nid, int $revision_id, string $langcode): bool {
+    try {
+      $status = $this->database->select('node_field_data', 'n')
+        ->fields('n', ['status'])
+        ->condition('nid', $nid)
+        ->condition('langcode', $langcode)
+        ->execute()
+        ->fetchField();
+      if ($status === FALSE || (int) $status !== 1) {
+        return FALSE;
+      }
+      if ($revision_id === 0) {
+        return TRUE;
+      }
+      return $this->database->select('node_revision', 'r')
+        ->fields('r', ['vid'])
+        ->condition('vid', $revision_id)
+        ->condition('nid', $nid)
+        ->execute()
+        ->fetchField() !== FALSE;
+    }
+    catch (\Throwable) {
+      return FALSE;
+    }
   }
 
   /**

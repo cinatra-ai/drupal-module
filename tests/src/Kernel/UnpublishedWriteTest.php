@@ -37,7 +37,7 @@ final class UnpublishedWriteTest extends KernelTestBase {
    */
   protected static $modules = [
     'system', 'user', 'field', 'text', 'filter', 'node', 'language',
-    'file', 'image', 'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
+    'file', 'image', 'link', 'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
   ];
 
   /**
@@ -120,6 +120,17 @@ final class UnpublishedWriteTest extends KernelTestBase {
       ])->save();
     }
     $this->createImageField(['plain', 'page']);
+    $this->createClearableFields(['plain']);
+    $body_storage = FieldStorageConfig::loadByName('node', 'body') ?? FieldStorageConfig::create([
+      'entity_type' => 'node', 'field_name' => 'body', 'type' => 'text_with_summary',
+      'revisionable' => TRUE, 'translatable' => TRUE,
+    ]);
+    $body_storage->setTranslatable(TRUE)->save();
+    $body_field = FieldConfig::loadByName('node', 'plain', 'body') ?? FieldConfig::create([
+      'entity_type' => 'node', 'bundle' => 'plain', 'field_name' => 'body',
+      'label' => 'Body', 'translatable' => TRUE,
+    ]);
+    $body_field->setTranslatable(TRUE)->save();
     $workflow = $this->createEditorialWorkflow();
     $this->addEntityTypeAndBundleToWorkflow($workflow, 'node', 'page');
 
@@ -589,6 +600,33 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
+   * Every clear of a formatted text, link or reference field is stored empty.
+   *
+   * An item the field treats as empty is dropped before any check reads it, so
+   * a clear needs no text format and is not examined as a value.
+   */
+  public function testClearOfFormattedTextLinkAndReferenceIsStored(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    foreach ($this->clearCases() as $field => $case) {
+      foreach ($case['clears'] as $form => $clear) {
+        $page = $this->plainPage();
+        $page->set($field, $case['initial'])->save();
+        $nid = (int) $page->id();
+        $this->assertFalse($this->nodeStorage()->load($nid)->get($field)->isEmpty(), "$field starts filled");
+        $preimage = $this->protectedDraft->prepare($nid, 'en', [$field]);
+        $result = $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+          'updates' => [$field => $clear],
+          'publish' => TRUE,
+        ]);
+        $this->assertSame([$field => []], $result['fields'], "$field, $form");
+        $this->nodeStorage()->resetCache([$nid]);
+        $this->assertTrue($this->nodeStorage()->load($nid)->get($field)->isEmpty(), "$field, $form is stored empty");
+        $this->assertRootFinished();
+      }
+    }
+  }
+
+  /**
    * A clear sent as [] or as an empty item is stored empty; a refill refuses.
    */
   public function testClearIsStoredAndRefillRefuses(): void {
@@ -707,6 +745,128 @@ final class UnpublishedWriteTest extends KernelTestBase {
     finally {
       // Never send from the test process.
       array_splice($callbacks, $count);
+    }
+  }
+
+  /**
+   * A publish in a rolled-back savepoint queues no webhook, root commit or not.
+   *
+   * The root transaction commits, so a commit callback alone reports success;
+   * only a fresh read of the stored state shows the publish never persisted.
+   * The same publish in a savepoint that is kept queues exactly one.
+   */
+  public function testPublishWebhookNotQueuedForRolledBackSavepointInCommittedRoot(): void {
+    $this->config('cinatra.settings')
+      ->set('cinatra_url', 'https://cinatra.example.test')
+      ->set('webhook_secret', 'whsec_' . base64_encode(str_repeat('k', 32)))
+      ->set('webhook_binding_id', 'binding-1')
+      ->save();
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $database = $this->container->get('database');
+    $callbacks = &drupal_register_shutdown_function();
+    $initial = $count = count($callbacks);
+    try {
+      foreach ([FALSE, TRUE] as $keep) {
+        $nid = (int) $this->plainPage()->id();
+        $root = $database->startTransaction();
+        $savepoint = $database->startTransaction();
+        $node = $this->nodeStorage()->load($nid);
+        $node->setPublished();
+        $node->setNewRevision(TRUE);
+        $node->save();
+        if (!$keep) {
+          $savepoint->rollBack();
+        }
+        unset($savepoint);
+        // The caller catches the failure and commits the outer transaction.
+        unset($root);
+        $this->nodeStorage()->resetCache([$nid]);
+        $this->assertSame($keep, $this->nodeStorage()->load($nid)->isPublished());
+        $this->assertCount($count + ($keep ? 1 : 0), $callbacks, $keep ? 'A stored publish queues its webhook once.' : 'A publish rolled back inside a committed root must queue nothing.');
+        $count = count($callbacks);
+      }
+    }
+    finally {
+      // Never send from the test process.
+      array_splice($callbacks, $initial);
+    }
+  }
+
+  /**
+   * Only the publish whose revision was stored queues a webhook.
+   *
+   * A publish in a savepoint is rolled back, another page takes its revision
+   * number, and the page is published again in the same root. Both saves
+   * registered a callback and the page is published when the root commits, but
+   * the first publish's revision does not exist for this page: one webhook.
+   */
+  public function testPublishWebhookQueuedOnlyForTheStoredRevision(): void {
+    $this->config('cinatra.settings')
+      ->set('cinatra_url', 'https://cinatra.example.test')
+      ->set('webhook_secret', 'whsec_' . base64_encode(str_repeat('k', 32)))
+      ->set('webhook_binding_id', 'binding-1')
+      ->save();
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $database = $this->container->get('database');
+    $callbacks = &drupal_register_shutdown_function();
+    $initial = count($callbacks);
+    try {
+      $nid = (int) $this->plainPage()->id();
+      $root = $database->startTransaction();
+      $savepoint = $database->startTransaction();
+      $node = $this->nodeStorage()->load($nid);
+      $node->setPublished();
+      $node->setNewRevision(TRUE);
+      $node->save();
+      $savepoint->rollBack();
+      unset($savepoint);
+      $this->nodeStorage()->resetCache([$nid]);
+      // Another unpublished page takes the revision number the rollback freed,
+      // on databases that hand it out again.
+      $this->plainPage();
+      $node = $this->nodeStorage()->load($nid);
+      $node->setPublished();
+      $node->setNewRevision(TRUE);
+      $node->save();
+      unset($root);
+      $this->nodeStorage()->resetCache([$nid]);
+      $this->assertTrue($this->nodeStorage()->load($nid)->isPublished());
+      $this->assertCount($initial + 1, $callbacks, 'The rolled-back publish must not queue a webhook of its own.');
+    }
+    finally {
+      array_splice($callbacks, $initial);
+    }
+  }
+
+  /**
+   * A publish that a later save in the same root unpublished queues nothing.
+   */
+  public function testPublishWebhookNotQueuedWhenUnpublishedInTheSameRoot(): void {
+    $this->config('cinatra.settings')
+      ->set('cinatra_url', 'https://cinatra.example.test')
+      ->set('webhook_secret', 'whsec_' . base64_encode(str_repeat('k', 32)))
+      ->set('webhook_binding_id', 'binding-1')
+      ->save();
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $database = $this->container->get('database');
+    $callbacks = &drupal_register_shutdown_function();
+    $initial = count($callbacks);
+    try {
+      $nid = (int) $this->plainPage()->id();
+      $root = $database->startTransaction();
+      foreach ([TRUE, FALSE] as $published) {
+        $node = $this->nodeStorage()->load($nid);
+        $node->set('status', $published);
+        $node->setNewRevision(TRUE);
+        $node->save();
+      }
+      unset($root);
+      $this->nodeStorage()->resetCache([$nid]);
+      $this->assertFalse($this->nodeStorage()->load($nid)->isPublished());
+      $this->assertCount($initial, $callbacks, 'A page that is not published when the root commits queues no webhook.');
+    }
+    finally {
+      array_splice($callbacks, $initial);
     }
   }
 
