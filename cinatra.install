@@ -69,6 +69,6 @@ function cinatra_uninstall(): void {
   foreach (['cinatra.settings', 'cinatra_widget.settings'] as $name) {
     $config_factory->getEditable($name)->delete();
   }
-  // The publish webhook's per-node event sequence numbers.
-  \Drupal::keyValue(PublishWebhook::SEQUENCE_COLLECTION)->deleteAll();
+  // The publish webhook's outbox markers (inert leftovers only).
+  \Drupal::keyValue(PublishWebhook::COLLECTION)->deleteAll();
 }

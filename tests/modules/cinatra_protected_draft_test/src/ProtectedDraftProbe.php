@@ -59,7 +59,7 @@ final class ProtectedDraftProbe {
    * Another request's save, run after the next root commits.
    *
    * Registered from the first node pre-save of a root, so it runs after the
-   * root has committed and before the publish webhook's commit check.
+   * root has committed and before the queued webhook is sent.
    *
    * @var callable|null
    */

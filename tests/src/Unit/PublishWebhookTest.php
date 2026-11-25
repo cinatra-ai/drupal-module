@@ -199,17 +199,13 @@ final class PublishWebhookTest extends UnitTestCase {
     $this->assertSame('https://news.example.com', $payload['siteUrl']);
     $this->assertArrayNotHasKey('url', $payload);
     $this->assertNotEmpty($payload['issuedAt']);
-    // The idempotency id is STABLE per event: the same inputs give the same id.
+    $this->assertMatchesRegularExpression('/^drupal-[0-9a-f]{64}$/', $emission['messageId']);
+    // Each built emission is one event: another event of the same revision,
+    // with no shared store at all, never gets the same id. A retry re-sends
+    // the built emission, and so keeps its id.
     $again = $emitter->buildEmission($node);
     $this->assertNotNull($again);
-    $this->assertSame($emission['messageId'], $again['messageId']);
-    $this->assertMatchesRegularExpression('/^drupal-[0-9a-f]{64}$/', $emission['messageId']);
-    // Another publish event of the same revision has another sequence number,
-    // and so another id.
-    $next = $emitter->buildEmission($node, 1);
-    $this->assertNotNull($next);
-    $this->assertNotSame($emission['messageId'], $next['messageId']);
-    $this->assertSame($next['messageId'], $emitter->buildEmission($node, 1)['messageId']);
+    $this->assertNotSame($emission['messageId'], $again['messageId']);
     // The secret rides internally to the shutdown sender, never the payload.
     $this->assertStringNotContainsString(self::VECTOR_SECRET, $emission['body']);
   }

@@ -929,25 +929,6 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
-   * The webhook-id of a publish event, as the emitter derives it.
-   *
-   * @param int $nid
-   *   The page.
-   * @param int $revision_id
-   *   The published revision.
-   * @param int $sequence
-   *   The event's sequence number for the page language.
-   * @param string $langcode
-   *   The language.
-   */
-  private function webhookId(int $nid, int $revision_id, int $sequence = 1, string $langcode = 'en'): string {
-    $instance = (string) $this->config('cinatra.settings')->get('instance_id');
-    $this->nodeStorage()->resetCache([$nid]);
-    $changed = (int) $this->nodeStorage()->loadRevision($revision_id)->getTranslation($langcode)->getChangedTime();
-    return 'drupal-' . hash('sha256', implode(':', [$instance, $nid, $revision_id, $langcode, $changed, $sequence]));
-  }
-
-  /**
    * Saves the page in one step of a webhook scenario; returns its revision.
    *
    * @param int $nid
@@ -1005,7 +986,7 @@ final class UnpublishedWriteTest extends KernelTestBase {
       unset($root);
     });
     $this->assertCount(1, $sent);
-    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertMatchesRegularExpression('/^drupal-[0-9a-f]{64}$/', $sent[0]['id']);
     $this->assertSame('Kept', $sent[0]['body']['title']);
   }
 
@@ -1032,7 +1013,7 @@ final class UnpublishedWriteTest extends KernelTestBase {
       unset($root);
     });
     $this->assertCount(1, $sent);
-    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertMatchesRegularExpression('/^drupal-[0-9a-f]{64}$/', $sent[0]['id']);
     $this->assertSame('Real publish', $sent[0]['body']['title']);
   }
 
@@ -1052,7 +1033,7 @@ final class UnpublishedWriteTest extends KernelTestBase {
       unset($root);
     });
     $this->assertCount(1, $sent);
-    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertMatchesRegularExpression('/^drupal-[0-9a-f]{64}$/', $sent[0]['id']);
     $this->assertSame('Second publish', $sent[0]['body']['title']);
   }
 
@@ -1074,7 +1055,7 @@ final class UnpublishedWriteTest extends KernelTestBase {
       unset($root);
     });
     $this->assertCount(1, $sent);
-    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertMatchesRegularExpression('/^drupal-[0-9a-f]{64}$/', $sent[0]['id']);
     $this->assertSame('Later save', $sent[0]['body']['title']);
   }
 
@@ -1162,7 +1143,7 @@ final class UnpublishedWriteTest extends KernelTestBase {
       $revision = $this->savePage($nid, TRUE, FALSE, 'Published in place');
     });
     $this->assertCount(1, $sent);
-    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertMatchesRegularExpression('/^drupal-[0-9a-f]{64}$/', $sent[0]['id']);
   }
 
   /**
@@ -1201,7 +1182,7 @@ final class UnpublishedWriteTest extends KernelTestBase {
     });
     $this->assertNotSame($first, $revision);
     $this->assertCount(1, $sent);
-    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertMatchesRegularExpression('/^drupal-[0-9a-f]{64}$/', $sent[0]['id']);
     $this->assertSame('Republished', $sent[0]['body']['title']);
   }
 
@@ -1268,22 +1249,24 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
-   * Another request unpublishes the page in place before the commit check.
+   * Another request unpublishes the page in place after this commit.
    *
-   * The stored state is not published: nothing is sent.
+   * This transaction did publish: its event is sent, with what it stored,
+   * although it arrives after the later unpublish.
    */
-  public function testInterleavedUnpublishSendsNothing(): void {
+  public function testInterleavedUnpublishLeavesThisTransactionsEvent(): void {
     $sent = $this->webhooksSentBy(function (): void {
       $nid = (int) $this->plainPage()->id();
       $this->publishWithInterleavedWriter($nid, function () use ($nid): void {
         $this->savePage($nid, FALSE, FALSE, 'Unpublished by another request');
       });
     });
-    $this->assertSame([], $sent);
+    $this->assertCount(1, $sent);
+    $this->assertSame('Published by this transaction', $sent[0]['body']['title']);
   }
 
   /**
-   * Another request saves a new draft revision before the commit check.
+   * Another request saves a new draft revision after this commit.
    *
    * The published default revision is still this transaction's: one event,
    * with this transaction's title and revision, never the draft's.
@@ -1308,16 +1291,15 @@ final class UnpublishedWriteTest extends KernelTestBase {
     $this->assertNotSame($revision, $draft);
     $this->assertCount(1, $sent);
     $this->assertSame('Published by this transaction', $sent[0]['body']['title']);
-    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertMatchesRegularExpression('/^drupal-[0-9a-f]{64}$/', $sent[0]['id']);
   }
 
   /**
-   * Another request publishes a different revision before the commit check.
+   * Another request saves a different published revision after this commit.
    *
-   * That revision is not this transaction's: this transaction sends nothing,
-   * never an event carrying the other revision. The other request's save of
-   * an already published page is not a publish step, so it sends nothing
-   * either.
+   * This transaction's event carries this transaction's revision and title,
+   * never the other revision. The other request's save of an already
+   * published page is not a publish step, so it sends nothing.
    */
   public function testInterleavedPublishOfAnotherRevisionIsNotSent(): void {
     $revision = 0;
@@ -1329,7 +1311,70 @@ final class UnpublishedWriteTest extends KernelTestBase {
       });
     });
     $this->assertNotSame($revision, $other);
-    $this->assertSame([], $sent);
+    $this->assertCount(1, $sent);
+    $this->assertSame('Published by this transaction', $sent[0]['body']['title']);
+  }
+
+  /**
+   * Another request edits the published revision in place after the commit.
+   *
+   * The event says what this transaction published: its title, never the
+   * later in-place edit of the same revision.
+   */
+  public function testInterleavedInPlaceEditOfTheSameRevisionIsNotSent(): void {
+    $sent = $this->webhooksSentBy(function (): void {
+      $nid = (int) $this->plainPage()->id();
+      $this->publishWithInterleavedWriter($nid, function () use ($nid): void {
+        $this->nodeStorage()->resetCache([$nid]);
+        $node = $this->nodeStorage()->load($nid);
+        $node->setTitle('Edited in place by another request');
+        $node->setChangedTime((int) $node->getChangedTime() + 500);
+        $node->setNewRevision(FALSE);
+        $node->save();
+      });
+      $this->nodeStorage()->resetCache([$nid]);
+      $this->assertSame('Edited in place by another request', $this->nodeStorage()->load($nid)->label());
+    });
+    $this->assertCount(1, $sent);
+    $this->assertSame('Published by this transaction', $sent[0]['body']['title']);
+  }
+
+  /**
+   * A savepoint rolled back restores the capture of the save before it.
+   */
+  public function testRolledBackSavepointRestoresTheEarlierCapture(): void {
+    $sent = $this->webhooksSentBy(function (): void {
+      $database = $this->container->get('database');
+      $nid = (int) $this->plainPage()->id();
+      $root = $database->startTransaction();
+      $this->savePage($nid, TRUE, FALSE, 'Kept publish');
+      $savepoint = $database->startTransaction();
+      $this->savePage($nid, TRUE, FALSE, 'Lost in the savepoint');
+      $savepoint->rollBack();
+      unset($savepoint);
+      unset($root);
+    });
+    $this->assertCount(1, $sent);
+    $this->assertSame('Kept publish', $sent[0]['body']['title']);
+  }
+
+  /**
+   * An unpublish in a rolled-back savepoint leaves the earlier publish.
+   */
+  public function testRolledBackUnpublishLeavesTheEarlierPublish(): void {
+    $sent = $this->webhooksSentBy(function (): void {
+      $database = $this->container->get('database');
+      $nid = (int) $this->plainPage()->id();
+      $root = $database->startTransaction();
+      $this->savePage($nid, TRUE, FALSE, 'Kept publish');
+      $savepoint = $database->startTransaction();
+      $this->savePage($nid, FALSE, FALSE, 'Unpublish rolled back');
+      $savepoint->rollBack();
+      unset($savepoint);
+      unset($root);
+    });
+    $this->assertCount(1, $sent);
+    $this->assertSame('Kept publish', $sent[0]['body']['title']);
   }
 
   /**

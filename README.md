@@ -105,7 +105,11 @@ over the per-site secret the connect exchange provisions. Unlike the
 WordPress plugin (whose in-field fleet keeps a legacy HMAC bridge), the
 Drupal module signs Standard-Webhooks from day one — there is no legacy arm.
 Emission is deferred to request shutdown, so saving a node is never blocked
-by webhook delivery.
+by webhook delivery. The event is sent only after the publishing transaction
+commits, and it carries what that transaction stored. It can arrive after a
+later request has already changed or unpublished the page; the event still
+says exactly what was published, and a later publish sends its own event.
+Each event has its own `webhook-id`, and a retried delivery keeps it.
 
 ## Development
 
