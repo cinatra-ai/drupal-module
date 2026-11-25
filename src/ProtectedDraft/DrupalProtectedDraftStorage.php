@@ -419,6 +419,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $this->assertItemShapes($node, $field, $items);
+      $this->assertImageDimensions($node, $field, $items);
       $node->get($field)->setValue($items);
       // What was reviewed is the request itself, as sent: its items that the
       // field does not treat as empty, with their supplied property values
@@ -519,6 +520,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $this->assertItemShapes($node, $field, $items);
+      $this->assertImageDimensions($node, $field, $items);
       $node->get($field)->setValue($items);
       // What was reviewed is the request itself, as sent: its items that the
       // field does not treat as empty, with their supplied property values
@@ -755,7 +757,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         foreach ($names as $name) {
           $expected[$name] = array_key_exists($name, $item) ? $item[$name] : ($before[$name] ?? NULL);
         }
-        $reviewed[$field][] = $this->derivedProperties($stored, $field, $item, $before) + $expected;
+        $reviewed[$field][] = $this->derivedProperties($stored, $field, $item) + $expected;
       }
     }
     return $reviewed;
@@ -767,7 +769,10 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
    * Of the field types a write accepts, only the image type fills stored
    * properties from the supplied ones (ImageItem::preSave()): when the item
    * holds no width or no height, both become the referenced image file's real
-   * dimensions, or stay empty when the file is no valid image. Every other
+   * dimensions, or stay empty when the file is no valid image. Supplied
+   * dimensions must already be the file's own (assertImageDimensions()), so
+   * an image item's width and height are always expected to be the file's
+   * real dimensions. Every other
    * core type derives nothing a write can store: a text item's processed
    * value is computed, not stored; file, link, string, number and reference
    * items keep what they are given (a decimal is refused before the save if
@@ -777,13 +782,45 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
    * @return array
    *   The derived property values to expect, keyed by property name.
    */
-  private function derivedProperties(NodeInterface $stored, string $field, array $item, array $before): array {
-    if ($stored->getFieldDefinition($field)->getType() !== 'image'
-      || (($before['width'] ?? NULL) !== NULL && ($before['height'] ?? NULL) !== NULL)) {
-      return [];
+  private function derivedProperties(NodeInterface $stored, string $field, array $item): array {
+    return $stored->getFieldDefinition($field)->getType() === 'image'
+      ? $this->imageDimensions($item['target_id'] ?? NULL)
+      : [];
+  }
+
+  /**
+   * Refuses supplied image dimensions that are not the file's own.
+   *
+   * Runs before the save. An image item's width and height, when supplied,
+   * must equal the referenced file's real dimensions, so a new file with
+   * stale or made-up dimensions is not stored.
+   */
+  private function assertImageDimensions(NodeInterface $node, string $field, array $items): void {
+    if ($node->getFieldDefinition($field)->getType() !== 'image') {
+      return;
     }
+    foreach ($items as $item) {
+      if (!is_array($item) || (!isset($item['width']) && !isset($item['height']))) {
+        continue;
+      }
+      $real = $this->imageDimensions($item['target_id'] ?? NULL);
+      foreach (['width', 'height'] as $name) {
+        if ((string) ($item[$name] ?? '') !== (string) ($real[$name] ?? '')) {
+          throw new ProtectedDraftRefusal("An image's width and height must be the file's own dimensions; nothing was written.");
+        }
+      }
+    }
+  }
+
+  /**
+   * Reads the real dimensions of a referenced image file.
+   *
+   * @return array
+   *   The width and height, both NULL when the file is missing or no valid
+   *   image.
+   */
+  private function imageDimensions(mixed $target): array {
     $file_storage = $this->entityTypeManager->getStorage('file');
-    $target = $item['target_id'] ?? NULL;
     $file = $file_storage instanceof SqlContentEntityStorage && is_numeric($target)
       ? $this->hydrateDefault($file_storage, (int) $target)
       : NULL;

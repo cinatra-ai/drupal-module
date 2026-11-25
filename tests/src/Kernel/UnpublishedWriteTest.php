@@ -645,6 +645,27 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
+   * Supplied image dimensions must be the file's own; wrong ones refuse.
+   */
+  public function testSuppliedImageDimensionsMustBeTheFiles(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $file = $this->createImageFile('sized.png', 3, 2);
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_image']);
+    $this->assertRefusedBeforeSave($nid, fn() => $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+      'updates' => ['field_image' => [['target_id' => $file->id(), 'alt' => 'Sized', 'width' => 640, 'height' => 480]]],
+    ]), "image's width and height must be the file's own dimensions");
+    $result = $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+      'updates' => ['field_image' => [['target_id' => $file->id(), 'alt' => 'Sized', 'width' => 3, 'height' => 2]]],
+    ]);
+    $stored = $this->nodeStorage()->loadRevision($result['revision_id'])->get('field_image');
+    $this->assertEquals($file->id(), $stored->target_id);
+    $this->assertEquals(3, $stored->width);
+    $this->assertEquals(2, $stored->height);
+    $this->assertRootFinished();
+  }
+
+  /**
    * A save hook swapping the image file for another valid one rolls back.
    */
   public function testSaveHookSwappingImageTargetRollsBack(): void {

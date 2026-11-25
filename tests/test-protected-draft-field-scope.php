@@ -522,7 +522,8 @@ foreach ($range_rows as [$value, $column, $exact]) {
 foreach ([[TRUE, TRUE], [0, TRUE], ['1', TRUE], ['true', FALSE], [2, FALSE], [1.0, FALSE]] as [$value, $exact]) {
   $name = sprintf('the boolean %s is %s', json_encode($value), $exact ? 'kept' : 'refused');
   try {
-    ProtectedDraftFieldScope::assertNumbersExact([['value' => $value]], ['value' => 'boolean'], [], ['value' => ['type' => 'int', 'size' => 'tiny']]);
+    $tiny = ['value' => ['type' => 'int', 'size' => 'tiny']];
+    ProtectedDraftFieldScope::assertNumbersExact([['value' => $value]], ['value' => 'boolean'], [], $tiny);
     $accepted = TRUE;
   }
   catch (ProtectedDraftRefusal $error) {
