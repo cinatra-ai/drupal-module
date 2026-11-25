@@ -43,6 +43,16 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
   private const WRITE = 'cinatra_write_protected_draft';
 
   /**
+   * The unpublished write tool id.
+   */
+  private const WRITE_UNPUBLISHED = 'cinatra_write_unpublished';
+
+  /**
+   * The unpublished publish tool id.
+   */
+  private const PUBLISH_UNPUBLISHED = 'cinatra_publish_unpublished';
+
+  /**
    * The State key of the test alter's mode.
    */
   private const MODE = 'cinatra_dev_site_verify_test.mode';
@@ -90,6 +100,8 @@ final class DevSiteExposureVerifierTest extends KernelTestBase {
     VerifyToolManager::$definitions = [
       self::READ => new ToolDefinition(['id' => self::READ, 'provider' => 'cinatra']),
       self::WRITE => new ToolDefinition(['id' => self::WRITE, 'provider' => 'cinatra']),
+      self::WRITE_UNPUBLISHED => new ToolDefinition(['id' => self::WRITE_UNPUBLISHED, 'provider' => 'cinatra']),
+      self::PUBLISH_UNPUBLISHED => new ToolDefinition(['id' => self::PUBLISH_UNPUBLISHED, 'provider' => 'cinatra']),
       'other_tool' => new ToolDefinition(['id' => 'other_tool', 'provider' => 'other']),
     ];
     $this->container->get('config.storage')->write('mcp_tools_remote.settings', ['enabled' => TRUE, 'server_id' => '']);

@@ -33,13 +33,14 @@ use Drupal\user\Entity\User;
 final class ProtectedDraftStorageTest extends KernelTestBase {
 
   use ContentModerationTestTrait;
+  use ImageFieldFixtureTrait;
 
   /**
    * {@inheritdoc}
    */
   protected static $modules = [
     'system', 'user', 'field', 'text', 'filter', 'node', 'language',
-    'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
+    'file', 'image', 'link', 'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
   ];
 
   /**
@@ -117,6 +118,18 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
       'entity_type' => 'node', 'bundle' => 'page', 'field_name' => 'field_shared_note',
       'label' => 'Shared note', 'translatable' => FALSE,
     ])->save();
+    FieldStorageConfig::create([
+      'entity_type' => 'node', 'field_name' => 'field_price', 'type' => 'decimal',
+      'revisionable' => TRUE, 'translatable' => TRUE,
+      'settings' => ['precision' => 10, 'scale' => 2],
+    ])->save();
+    FieldConfig::create([
+      'entity_type' => 'node', 'bundle' => 'page', 'field_name' => 'field_price',
+      'label' => 'Price', 'translatable' => TRUE,
+    ])->save();
+    $this->createImageField(['page']);
+    $this->createClearableFields(['page']);
+    $this->createNumberFields(['page']);
     $workflow = $this->createEditorialWorkflow();
     $this->addEntityTypeAndBundleToWorkflow($workflow, 'node', 'page');
     $role = Role::create(['id' => 'protected_editor', 'label' => 'Protected editor']);
@@ -251,6 +264,368 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $preimage = $this->prepareTitle();
     $this->assertNotSame($preimage['default_revision_id'], $preimage['latest_revision_id']);
     $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($this->titleRequest($preimage)), 'draft already waits for review');
+  }
+
+  /**
+   * A draft is never saved with a value the person did not review.
+   */
+  public function testSaveHookReplacingRequestedValueRollsBack(): void {
+    $this->assertSaveHookRollsBack('replace_title', ['title' => [['value' => 'Draft title']]], 'The stored value differs from the reviewed value');
+  }
+
+  /**
+   * A decimal sent with leading zeroes is the stored decimal, not a mismatch.
+   *
+   * Drupal stores "01.50" in a scale 2 column as 1.50: one number, so the
+   * draft is kept instead of rolled back.
+   */
+  public function testDecimalWithLeadingZeroesIsNotRolledBack(): void {
+    $nid = (int) $this->page->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_price']);
+    $stored = $this->protectedDraft->write($this->request($preimage, ['field_price' => [['value' => '01.50']]]));
+    $this->assertEquals(1.5, (float) $stored['fields']['field_price'][0]['value']);
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id']);
+    $this->assertEquals(1.5, (float) $draft->get('field_price')->value);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * An image given as a file and alt text is stored with the derived size.
+   *
+   * The field computes width and height during the save. The reviewed value is
+   * what the field itself stores for the request, so the draft is kept.
+   */
+  public function testImageWithoutDimensionsIsNotRolledBack(): void {
+    $file = $this->createImageFile('reviewed.png', 3, 2);
+    $nid = (int) $this->page->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_image']);
+    $stored = $this->protectedDraft->write($this->request($preimage, [
+      'field_image' => [['target_id' => $file->id(), 'alt' => 'A reviewed alt']],
+    ]));
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id'])->getTranslation('en');
+    $this->assertEquals($file->id(), $draft->get('field_image')->target_id);
+    $this->assertSame('A reviewed alt', $draft->get('field_image')->alt);
+    $this->assertEquals(3, $draft->get('field_image')->width);
+    $this->assertEquals(2, $draft->get('field_image')->height);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A save hook swapping the image file for another valid one rolls back.
+   */
+  public function testSaveHookSwappingImageTargetRollsBack(): void {
+    $reviewed = $this->createImageFile('reviewed.png', 3, 2);
+    $other = $this->createImageFile('other.png', 5, 4);
+    ProtectedDraftProbe::$swapFile = (int) $other->id();
+    $this->assertSaveHookRollsBack('swap_image', [
+      'field_image' => [['target_id' => $reviewed->id(), 'alt' => 'A reviewed alt']],
+    ], 'The stored value differs from the reviewed value');
+  }
+
+  /**
+   * A save hook moving the French moderation state rolls back.
+   *
+   * The new state has the same publication flags as the old one, so only
+   * the moderation state records show the change.
+   */
+  public function testSaveHookMovingOtherModerationStateRollsBack(): void {
+    $workflow = $this->container->get('entity_type.manager')->getStorage('workflow')->load('editorial');
+    $type = $workflow->getTypePlugin();
+    $type->addState('featured', 'Featured');
+    $configuration = $type->getConfiguration();
+    $configuration['states']['featured']['published'] = TRUE;
+    $configuration['states']['featured']['default_revision'] = TRUE;
+    $type->setConfiguration($configuration);
+    $workflow->save();
+    $this->assertSaveHookRollsBack('other_moderation', ['title' => [['value' => 'Draft title']]], 'The stored draft changed an unrequested field or another translation');
+  }
+
+  /**
+   * A draft's field save logic runs once per write, and not when refused.
+   */
+  public function testDraftFieldSaveLogicRunsOncePerWrite(): void {
+    $this->createCountingField('page');
+    $nid = (int) $this->page->id();
+    // A draft that validation refuses runs it not at all.
+    $updates = [
+      'field_counted' => [['value' => 'Never saved']],
+      'title' => [['value' => str_repeat('x', 300)]],
+    ];
+    $preimage = $this->protectedDraft->prepare($nid, 'en', array_keys($updates));
+    ProtectedDraftProbe::$fieldPreSaves = 0;
+    try {
+      $this->protectedDraft->write($this->request($preimage, $updates));
+      $this->fail('An invalid title must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The draft field values are invalid', $expected->getMessage());
+    }
+    $this->assertSame(0, ProtectedDraftProbe::$fieldPreSaves, 'A refused draft runs no field save logic.');
+    $this->assertRootFinished();
+    // One stored draft runs it once.
+    $updates = ['field_counted' => [['value' => 'Counted once']]];
+    $preimage = $this->protectedDraft->prepare($nid, 'en', array_keys($updates));
+    ProtectedDraftProbe::$fieldPreSaves = 0;
+    $stored = $this->protectedDraft->write($this->request($preimage, $updates));
+    $this->assertSame(1, ProtectedDraftProbe::$fieldPreSaves, 'One write runs the field save logic once.');
+    $this->assertSame('Counted once', $this->nodeStorage()->loadRevision($stored['revision_id'])->get('field_counted')->value);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A text field given with a format, without a summary, is stored as sent.
+   */
+  public function testTextWithFormatIsStoredAsSent(): void {
+    $nid = (int) $this->page->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['body']);
+    $stored = $this->protectedDraft->write($this->request($preimage, [
+      'body' => [['value' => 'Reviewed body', 'format' => 'plain_text']],
+    ]));
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id'])->getTranslation('en');
+    $this->assertSame('Reviewed body', $draft->get('body')->value);
+    $this->assertSame('plain_text', $draft->get('body')->format);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * Every clear of a formatted text, link or reference field is stored empty.
+   *
+   * An item the field treats as empty is dropped before any check reads it, so
+   * a clear needs no text format and is not examined as a value.
+   */
+  public function testClearOfFormattedTextLinkAndReferenceIsStored(): void {
+    foreach ($this->clearCases() as $field => $case) {
+      foreach ($case['clears'] as $form => $clear) {
+        // One pending draft per page: each clear gets its own page.
+        $page = Node::create([
+          'type' => 'page', 'langcode' => 'en', 'uid' => $this->editor->id(),
+          'title' => 'Clear page', 'status' => TRUE, 'moderation_state' => 'published',
+        ]);
+        $page->set($field, $case['initial']);
+        $page->save();
+        $nid = (int) $page->id();
+        $preimage = $this->protectedDraft->prepare($nid, 'en', [$field]);
+        $this->assertNotSame([], $preimage['fields'][$field], "$field starts filled");
+        $stored = $this->protectedDraft->write($this->request($preimage, [$field => $clear]));
+        $this->assertSame([], $stored['fields'][$field], "$field, $form");
+        $draft = $this->nodeStorage()->loadRevision($stored['revision_id'])->getTranslation('en');
+        $this->assertTrue($draft->get($field)->isEmpty(), "$field, $form is stored empty");
+        $this->assertRootFinished();
+      }
+    }
+  }
+
+  /**
+   * A number the field cannot store exactly is refused before the save.
+   */
+  public function testNumbersTheFieldCannotStoreExactlyRefuseBeforeTheSave(): void {
+    $nid = (int) $this->page->id();
+    foreach (array_values($this->inexactNumbers()) as [$field, $value]) {
+      $preimage = $this->protectedDraft->prepare($nid, 'en', [$field]);
+      $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($this->request($preimage, [
+        $field => [['value' => $value]],
+      ])), 'cannot be stored exactly by its field');
+    }
+  }
+
+  /**
+   * Numbers a field stores exactly are kept as sent, spelling aside.
+   */
+  public function testNumbersTheFieldStoresExactlyAreKept(): void {
+    foreach ($this->exactNumbers() as $name => [$field, $value, $stored]) {
+      $page = Node::create([
+        'type' => 'page', 'langcode' => 'en', 'uid' => $this->editor->id(),
+        'title' => 'Number page', 'status' => TRUE, 'moderation_state' => 'published',
+      ]);
+      $page->save();
+      $nid = (int) $page->id();
+      $preimage = $this->protectedDraft->prepare($nid, 'en', [$field]);
+      $result = $this->protectedDraft->write($this->request($preimage, [$field => [['value' => $value]]]));
+      $draft = $this->nodeStorage()->loadRevision($result['revision_id'])->getTranslation('en');
+      $this->assertEquals($stored, $draft->get($field)->value, $name);
+      $this->assertRootFinished();
+    }
+  }
+
+  /**
+   * A clear sent as an empty list is reviewed as empty and stored empty.
+   */
+  public function testClearByEmptyListIsStored(): void {
+    $this->assertClearIsStored([]);
+  }
+
+  /**
+   * A clear sent as an item with an empty value ends in the same state.
+   */
+  public function testClearByEmptyItemIsStored(): void {
+    $this->assertClearIsStored([['value' => '']]);
+  }
+
+  /**
+   * A save hook putting a value back into a cleared field rolls back.
+   */
+  public function testSaveHookRefillingClearedFieldRollsBack(): void {
+    $this->assertSaveHookRollsBack('refill_cleared', ['field_shared_note' => []], 'The stored value differs from the reviewed value');
+  }
+
+  /**
+   * Writes a draft that clears the shared note and checks it is stored empty.
+   */
+  private function assertClearIsStored(array $clear): void {
+    $nid = (int) $this->page->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_shared_note']);
+    $this->assertSame([['value' => 'Shared live note']], $preimage['fields']['field_shared_note']);
+    $stored = $this->protectedDraft->write($this->request($preimage, ['field_shared_note' => $clear]));
+    $this->assertSame([], $stored['fields']['field_shared_note']);
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id']);
+    $this->assertTrue($draft->get('field_shared_note')->isEmpty());
+    $this->assertTrue($draft->getTranslation('fr')->get('field_shared_note')->isEmpty());
+    $this->assertSame([['value' => 'Shared live note']], $this->snapshot()['published']['en']['field_shared_note']);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * The draft sets moderation_state, so its field edit access must allow it.
+   */
+  public function testDeniedModerationStateEditRefusesBeforeSave(): void {
+    $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($this->titleRequest($this->prepareTitle())), 'Changing the workflow state of this page is not permitted', NULL, 'moderation_state');
+  }
+
+  /**
+   * The binding names its translation, also when the translations look alike.
+   *
+   * The French translation of the fixture page shares the English changed
+   * time; an English binding sent for French must not write French.
+   */
+  public function testBindingOfOneTranslationCannotWriteAnother(): void {
+    $this->assertSame($this->page->getTranslation('en')->getChangedTime(), $this->page->getTranslation('fr')->getChangedTime());
+    $request = $this->titleRequest($this->prepareTitle());
+    $request['language'] = 'fr';
+    $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($request), 'The live page values changed');
+  }
+
+  /**
+   * A shared field change moves the French timestamp, as core does; kept.
+   *
+   * Core marks every translation affected and moves its timestamp when an
+   * untranslatable field changes, so that movement is not a hook's.
+   */
+  public function testSharedFieldWriteMovesOtherTranslationTimestampAsCoreDoes(): void {
+    $nid = (int) $this->page->id();
+    $old = (int) $this->page->getTranslation('fr')->getChangedTime() - 100;
+    $this->page->getTranslation('fr')->setChangedTime($old);
+    $this->page->save();
+    $this->nodeStorage()->resetCache([$nid]);
+    $this->assertSame($old, (int) $this->nodeStorage()->load($nid)->getTranslation('fr')->getChangedTime());
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_shared_note']);
+    $stored = $this->protectedDraft->write($this->request($preimage, [
+      'field_shared_note' => [['value' => 'A new shared note']],
+    ]));
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id']);
+    // Exactly what core sets: the request time and the affected flag.
+    $this->assertSame((int) $this->container->get('datetime.time')->getRequestTime(), (int) $draft->getTranslation('fr')->getChangedTime());
+    $this->assertTrue((bool) $draft->getTranslation('fr')->isRevisionTranslationAffected());
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A shared field write: a hook moving the French timestamp elsewhere fails.
+   *
+   * Core moves it to the request time; any other value is the hook's.
+   */
+  public function testSharedFieldWriteRollsBackWhenHookMovesOtherTimestampElsewhere(): void {
+    $this->assertSaveHookRollsBack('other_changed', ['field_shared_note' => [['value' => 'A new shared note']]], 'The stored draft changed an unrequested field or another translation');
+  }
+
+  /**
+   * A shared field write: a hook clearing the French affected flag fails.
+   *
+   * Core marks the French translation affected; a cleared flag is the hook's.
+   */
+  public function testSharedFieldWriteRollsBackWhenHookClearsOtherAffectedFlag(): void {
+    $this->assertSaveHookRollsBack('other_unaffected', ['field_shared_note' => [['value' => 'A new shared note']]], 'The stored draft changed an unrequested field or another translation');
+  }
+
+  /**
+   * Shared fields that affect only the default translation leave French alone.
+   *
+   * Core then neither moves the French timestamp nor marks French affected,
+   * so the write is kept with French unchanged, and a hook moving French's
+   * timestamp to the request time rolls back.
+   */
+  public function testSharedFieldAffectingOnlyDefaultTranslationKeepsOtherBookkeeping(): void {
+    $nid = (int) $this->page->id();
+    $old = (int) $this->page->getTranslation('fr')->getChangedTime() - 100;
+    $this->page->getTranslation('fr')->setChangedTime($old);
+    $this->page->save();
+    $updates = ['field_shared_note' => [['value' => 'A new shared note']]];
+    $preimage = $this->protectedDraft->prepare($nid, 'en', array_keys($updates));
+    $before = $this->snapshot();
+    ProtectedDraftProbe::arm($nid, 'other_changed_to_request_time');
+    $this->defaultTranslationAffectedOnly();
+    try {
+      $this->protectedDraft->write($this->request($preimage, $updates));
+      $this->fail('A hook moving the French timestamp must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored draft changed an unrequested field or another translation', $expected->getMessage());
+      $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede rollback.');
+    }
+    $this->assertSame($before, $this->snapshot());
+    $this->assertRootFinished();
+    ProtectedDraftProbe::reset();
+    $this->defaultTranslationAffectedOnly();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', array_keys($updates));
+    $stored = $this->protectedDraft->write($this->request($preimage, $updates));
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id']);
+    $this->assertSame($old, (int) $draft->getTranslation('fr')->getChangedTime());
+    $this->assertFalse((bool) $draft->getTranslation('fr')->isRevisionTranslationAffected());
+    $this->assertRootFinished();
+  }
+
+  /**
+   * Adds the counting test field to a bundle; its save logic is counted.
+   */
+  private function createCountingField(string $bundle): void {
+    FieldStorageConfig::create([
+      'entity_type' => 'node',
+      'field_name' => 'field_counted',
+      'type' => 'cinatra_test_counting_string',
+      'revisionable' => TRUE,
+      'translatable' => TRUE,
+    ])->save();
+    FieldConfig::create([
+      'entity_type' => 'node',
+      'bundle' => $bundle,
+      'field_name' => 'field_counted',
+      'label' => 'Counted',
+      'translatable' => TRUE,
+    ])->save();
+  }
+
+  /**
+   * Makes untranslatable page fields affect only the default translation.
+   */
+  private function defaultTranslationAffectedOnly(): void {
+    ProtectedDraftProbe::$defaultTranslationAffectedOnly = TRUE;
+    $this->container->get('entity_type.bundle.info')->clearCachedBundles();
+    $this->assertTrue($this->nodeStorage()->load((int) $this->page->id())->isDefaultTranslationAffectedOnly());
+  }
+
+  /**
+   * A hook moving the French timestamp while English is written rolls back.
+   *
+   * The timestamp is per translation: only the edited translation's may move.
+   */
+  public function testSaveHookChangingOtherTranslationTimestampRollsBack(): void {
+    $this->assertSaveHookRollsBack('other_changed', ['title' => [['value' => 'Draft title']]], 'The stored draft changed an unrequested field or another translation');
+  }
+
+  /**
+   * A save hook marking the French translation affected rolls back as well.
+   */
+  public function testSaveHookMarkingOtherTranslationAffectedRollsBack(): void {
+    $this->assertSaveHookRollsBack('other_affected', ['title' => [['value' => 'Draft title']]], 'The stored draft changed an unrequested field or another translation');
   }
 
   /**

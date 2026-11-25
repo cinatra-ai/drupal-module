@@ -1,0 +1,6 @@
+# The counting test field type stores what a string field stores.
+field.storage_settings.cinatra_test_counting_string:
+  type: field.storage_settings.string
+
+field.value.cinatra_test_counting_string:
+  type: field.value.string

@@ -18,7 +18,7 @@ use Drupal\tool\TypedData\InputDefinition;
 #[Tool(
   id: 'cinatra_read_protected_revision',
   label: new TranslatableMarkup('Read protected page revision'),
-  description: new TranslatableMarkup('Read exact stored fields in the requested language. Omit revision_id to read the published default preimage and its revision/workflow/content binding; omit language there too to read the original translation, whose code the result reports in language. Supply revision_id to read that exact revision; never substitutes the default or latest.'),
+  description: new TranslatableMarkup('Read exact stored fields in the requested language. Omit revision_id to read the default preimage of a published or unpublished page and its revision/changed-time/workflow/content binding, which cinatra_write_protected_draft, cinatra_write_unpublished and cinatra_publish_unpublished compare; omit language there too to read the original translation, whose code the result reports in language. Supply revision_id to read that exact revision; never substitutes the default or latest.'),
   operation: ToolOperation::Read,
   input_definitions: [
     'nid' => new InputDefinition(
@@ -42,7 +42,7 @@ use Drupal\tool\TypedData\InputDefinition;
     'revision_id' => new InputDefinition(
       data_type: 'integer',
       label: new TranslatableMarkup('Exact revision ID'),
-      description: new TranslatableMarkup('Exact stored revision to read. Omit to prepare the published default preimage.'),
+      description: new TranslatableMarkup('Exact stored revision to read. Omit to prepare the default preimage.'),
       required: FALSE,
     ),
   ],
