@@ -25,7 +25,7 @@ use Symfony\Component\HttpFoundation\Session\Storage\MockArraySessionStorage;
 /**
  * Tests the profile binding, the scoped tools, the gate and the profile.
  *
- * The cinatra profile serves the two protected tools only: no resources, no
+ * The cinatra profile serves the four cinatra page tools only: no resources, no
  * prompts, public components only. The gate and the profile guard ask the
  * one exposure guard, so a flag without the marker serves nothing.
  *
@@ -42,6 +42,16 @@ final class DevSiteScopedToolTest extends KernelTestBase {
    * The write tool id.
    */
   private const WRITE = 'cinatra_write_protected_draft';
+
+  /**
+   * The unpublished write tool id.
+   */
+  private const WRITE_UNPUBLISHED = 'cinatra_write_unpublished';
+
+  /**
+   * The unpublished publish tool id.
+   */
+  private const PUBLISH_UNPUBLISHED = 'cinatra_publish_unpublished';
 
   /**
    * {@inheritdoc}
@@ -68,16 +78,16 @@ final class DevSiteScopedToolTest extends KernelTestBase {
   }
 
   /**
-   * The profile serves tools only, and only the two protected ones.
+   * The profile serves tools only, and only the four cinatra page tools.
    */
-  public function testProfileServesTheTwoToolsOnly(): void {
+  public function testProfileServesTheCinatraToolsOnly(): void {
     $profile = CinatraDevSite::PROFILE;
     $this->assertFalse($profile['enable_resources']);
     $this->assertFalse($profile['enable_prompts']);
     $this->assertTrue($profile['component_public_only']);
     $this->assertFalse($profile['include_all_tools']);
     $this->assertFalse($profile['gateway_mode']);
-    $this->assertSame([self::READ, self::WRITE], CinatraDevSite::EXPOSED_TOOLS);
+    $this->assertSame([self::READ, self::WRITE, self::WRITE_UNPUBLISHED, self::PUBLISH_UNPUBLISHED], CinatraDevSite::EXPOSED_TOOLS);
     $this->assertSame(CinatraDevSite::EXPOSED_TOOLS, $profile['tools']);
     $this->assertSame('cinatra', CinatraDevSite::PROFILE_ID);
     $this->assertSame(CinatraDevSite::PROFILE_ID, $profile['id']);
@@ -241,6 +251,8 @@ final class DevSiteScopedToolTest extends KernelTestBase {
     $inner = $this->inner([
       self::READ => $this->tool(self::READ, 'cinatra'),
       self::WRITE => $this->tool(self::WRITE, 'cinatra'),
+      self::WRITE_UNPUBLISHED => $this->tool(self::WRITE_UNPUBLISHED, 'cinatra'),
+      self::PUBLISH_UNPUBLISHED => $this->tool(self::PUBLISH_UNPUBLISHED, 'cinatra'),
     ]);
     $binding = new ProfileBinding(Request::create('/_mcp_tools'));
     $scoped = new ScopedToolManager($inner, $binding);
@@ -248,8 +260,9 @@ final class DevSiteScopedToolTest extends KernelTestBase {
     $this->assertFalse($scoped->hasDefinition(self::READ));
     $binding->noteRead();
     $this->assertTrue($binding->bind(CinatraDevSite::PROFILE));
-    $this->assertSame([self::READ, self::WRITE], array_keys($scoped->getDefinitions()));
+    $this->assertSame([self::READ, self::WRITE, self::WRITE_UNPUBLISHED, self::PUBLISH_UNPUBLISHED], array_keys($scoped->getDefinitions()));
     $this->assertTrue($scoped->hasDefinition(self::READ));
+    $this->assertTrue($scoped->hasDefinition(self::PUBLISH_UNPUBLISHED));
     $this->assertSame([['getDefinitions', []]], $inner->calls);
   }
 

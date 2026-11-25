@@ -273,9 +273,13 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $raw_translation = $node->getTranslation($language);
     $stored_fields = $this->values($raw_translation, $fields);
     $published = [];
+    $published_languages = [];
     foreach ($node->getTranslationLanguages() as $langcode => $lang) {
       // INTERNAL SQL-hydrated equality snapshot, never a load-hook echo.
       $published[$langcode] = $node->getTranslation($langcode)->toArray();
+      if ($node->getTranslation($langcode)->isPublished()) {
+        $published_languages[] = (string) $langcode;
+      }
     }
     $this->entityTypeManager->getAccessControlHandler('node')->resetCache();
     // Access hooks inspect a clone; they cannot mutate stored return values.
@@ -331,12 +335,22 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       'latest_revision_id' => $this->latestRevisionId($storage, $nid),
       'is_default_revision' => $node->isDefaultRevision(),
       'is_published' => $raw_translation->isPublished(),
+      // The stored changed time of this translation, for the unpublished
+      // write binding. The content fingerprint covers it as well.
+      'changed' => (int) $raw_translation->getChangedTime(),
+      // INTERNAL: the published translations of the default revision. An
+      // unpublished write refuses a page with any published translation.
+      'published_languages' => $published_languages,
       'moderated' => $workflow !== NULL,
+      // INTERNAL: the stored workflow state of this translation, or NULL.
+      'moderation_state' => $workflow !== NULL ? $raw_translation->get('moderation_state')->value : NULL,
       'canonical_moderation_field' => $canonical,
       'workflow_fingerprint' => $this->workflowFingerprint($definitions),
       'preimage_fingerprint' => $this->fingerprint($published),
       'can_read' => TRUE,
       'can_update' => $translation->access('update', $this->account, TRUE)->isAllowed(),
+      // The core check behind the editor's Published checkbox.
+      'can_publish' => $translation->get('status')->access('edit', $this->account, TRUE)->isAllowed(),
       'draft_states' => $states,
       'allowed_draft_states' => array_values(array_unique($allowed)),
       'field_access' => $access,
@@ -422,6 +436,118 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields);
     $this->assertDraftAccess(clone $stored->getTranslation($language), array_keys($updates));
     return (int) $node->getRevisionId();
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function saveUnpublished(int $nid, string $language, array $updates, bool $publish, ?string $state): int {
+    $this->assertLocked($nid);
+    if (!$this->preimage || (int) $this->preimage->id() !== $nid
+      || $this->preimage->language()->getId() !== $language) {
+      throw new ProtectedDraftRefusal('The edit is not bound to its authorized preimage.');
+    }
+    if (!$updates && !$publish) {
+      throw new ProtectedDraftRefusal('An unpublished write needs field values or the publish step.');
+    }
+    // The service chose $state from the same locked read; the raw locked
+    // configuration must still agree on whether the page is moderated, and
+    // the state must exist in its workflow.
+    $workflow = $this->workflowFor($this->preimage);
+    if (($workflow === NULL) !== ($state === NULL)
+      || ($workflow !== NULL && !$workflow->getTypePlugin()->hasState($state))) {
+      throw new ProtectedDraftRefusal('The page workflow changed; read it again before editing.');
+    }
+    foreach ($this->preimage->getTranslationLanguages() as $langcode => $unused) {
+      if ($this->preimage->getTranslation($langcode)->isPublished()) {
+        throw new ProtectedDraftRefusal('This page is published; edit it through the protected draft instead.');
+      }
+    }
+    $before_content = $this->draftContent($this->preimage);
+    $shared_fields = [];
+    $node = clone $this->preimage;
+    foreach ($updates as $field => $items) {
+      if (!is_string($field) || !$this->editableField($node, $field) || !is_array($items) || !array_is_list($items)) {
+        throw new ProtectedDraftRefusal('Updates must use editable revisioned fields and structured item values.');
+      }
+      if (!$node->getFieldDefinition($field)->isTranslatable()) {
+        $shared_fields[] = $field;
+      }
+      $node->get($field)->setValue($items);
+    }
+    $node->setNewRevision(TRUE);
+    $node->isDefaultRevision(TRUE);
+    if ($publish) {
+      $node->setPublished();
+    }
+    if ($state !== NULL) {
+      // Core moderation sets status and the default flag from this state; the
+      // service verifies the stored result.
+      $node->set('moderation_state', $state);
+    }
+    $node->setRevisionTranslationAffected(TRUE);
+    $node->setRevisionUserId((int) $this->account->id());
+    $node->setRevisionCreationTime(time());
+    $node->setRevisionLogMessage($publish ? 'Reviewed change published.' : 'Reviewed change saved.');
+    $this->assertUnpublishedWriteAccess($node, array_keys($updates), $publish && $state === NULL);
+    $fingerprint = $this->workflowFingerprint($node->getFieldDefinitions());
+    $this->workflowFor($node);
+    $this->assertFreshFieldConfiguration($node);
+    if (!hash_equals($fingerprint, $this->workflowFingerprint($node->getFieldDefinitions()))) {
+      throw new ProtectedDraftRefusal('The workflow or field configuration changed before saving.');
+    }
+    $storage = $this->nodeStorage();
+    $this->assertActiveTransaction();
+    $storage->save($node);
+    $this->assertActiveTransaction();
+    $stored = $this->hydrateRevision($storage, (int) $node->getRevisionId());
+    if (!$stored instanceof NodeInterface || (int) $stored->id() !== $nid
+      || $stored->uuid() !== $this->preimage->uuid() || !$stored->hasTranslation($language)) {
+      throw new ProtectedDraftRefusal('The stored revision identity could not be verified.');
+    }
+    $stored_workflow = $this->workflowFor($stored);
+    if (($stored_workflow === NULL) !== ($state === NULL)) {
+      throw new ProtectedDraftRefusal('The page workflow changed during the save; the write was rolled back.');
+    }
+    $this->assertFreshFieldConfiguration($stored);
+    $this->bindStoredModeration($stored, $stored_workflow);
+    // Save hooks can rewrite values after the candidate passed access. The
+    // scope check excludes only the requested fields and this translation's
+    // status; the service checks that status against the publish step.
+    ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields);
+    $this->assertUnpublishedWriteAccess(clone $stored->getTranslation($language), array_keys($updates), $publish && $state === NULL);
+    return (int) $node->getRevisionId();
+  }
+
+  /**
+   * Checks the edit, publish, field and text-format access of the write.
+   *
+   * These are the checks of an editor's own save: update access on the page,
+   * edit access on the status field to publish an unmoderated page, and view
+   * and edit access on every written field. A moderated page is published by a
+   * workflow transition, whose permission the service checked.
+   */
+  private function assertUnpublishedWriteAccess(NodeInterface $node, array $fields, bool $check_status): void {
+    foreach ($fields as $field) {
+      $this->assertTextFormatAccess($node, $field);
+    }
+    $this->entityTypeManager->getAccessControlHandler('node')->resetCache();
+    if (!$node->access('view', $this->account, TRUE)->isAllowed()
+      || !$node->access('update', $this->account, TRUE)->isAllowed()) {
+      throw new ProtectedDraftRefusal('Editing this page is not permitted.');
+    }
+    if ($check_status && !$node->get('status')->access('edit', $this->account, TRUE)->isAllowed()) {
+      throw new ProtectedDraftRefusal('Publishing this page is not permitted.');
+    }
+    foreach ($fields as $field) {
+      if (!$node->get($field)->access('view', $this->account, TRUE)->isAllowed()
+        || !$node->get($field)->access('edit', $this->account, TRUE)->isAllowed()) {
+        throw new ProtectedDraftRefusal('A requested field cannot be edited in this translation.');
+      }
+    }
+    if (count($node->validate())) {
+      throw new ProtectedDraftRefusal('The field values are invalid; nothing was written.');
+    }
   }
 
   /**
@@ -931,8 +1057,10 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       throw new ProtectedDraftRefusal('The page preimage is not readable in this language.');
     }
     foreach ($fields as $field) {
-      if (!$translation->hasField($field)
-        || !$translation->get($field)->access('view', $this->account, TRUE)->isAllowed()) {
+      if (!$translation->hasField($field)) {
+        throw new ProtectedDraftRefusal('A requested field does not exist on this page.');
+      }
+      if (!$translation->get($field)->access('view', $this->account, TRUE)->isAllowed()) {
         throw new ProtectedDraftRefusal('A requested stored field is not readable.');
       }
     }
