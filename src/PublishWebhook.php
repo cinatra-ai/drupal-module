@@ -83,11 +83,13 @@ final class PublishWebhook {
   private const TIMEOUT_SECONDS = 4;
 
   /**
-   * The webhooks already queued in the root transaction now ending.
+   * What the root transaction now running knows.
    *
-   * One object per root transaction, shared by every registration made inside
-   * it; the first commit callback that runs marks it ended, so the next
-   * registration after that belongs to a new root and gets a new one.
+   * The published state it started with, per node and language, and the
+   * webhooks already queued. One object per root transaction, shared by
+   * everything registered inside it; a boundary callback marks it ended when
+   * the root finishes, so the next use belongs to a new root and gets a new
+   * one.
    */
   private static ?\stdClass $root = NULL;
 
@@ -139,32 +141,35 @@ final class PublishWebhook {
         $this->send($emission);
       });
     };
-    // SEMANTICS: per root transaction, node and language, AT MOST ONE webhook,
-    // queued only when the root committed and the stored state is published,
-    // and describing the stored default revision. A root commit alone proves
-    // nothing about the publishing save: it may have been in a savepoint that a
-    // later hook rolled back, or in place on an existing revision that was
-    // rolled back, with the root then committed by a caller that caught the
-    // error. So each registration is checked against the stored state, and all
-    // registrations of one node and language collapse into one event.
-    // fromContainer() always passes the site database.
+    // SEMANTICS. A publish event is a CHANGE of the stored state across one
+    // root transaction, not a root commit. Per root, node and language: at
+    // most one webhook, queued only if the root committed, the stored default
+    // revision is published, and either the page was not published when the
+    // root began or its published default revision is a different one now. It
+    // describes the stored default revision. A root that ends where it began
+    // (a savepoint rolled back, in place or as a new revision, the root then
+    // committed by a caller that caught the error) queues nothing; so does a
+    // publish later undone. A save of an already published page registers
+    // nothing, as before: only the unpublished-to-published step of a save
+    // registers. The state at the root's start is recorded by
+    // recordPreRootState() from hook_node_presave, before the first write of
+    // the node in the root. fromContainer() always passes the site database.
     if ($this->database !== NULL && $this->database->inTransaction()) {
-      if (self::$root === NULL || self::$root->ended) {
-        self::$root = (object) ['ended' => FALSE, 'queued' => []];
-      }
-      $state = self::$root;
+      $state = $this->rootState();
       $nid = (int) $node->id();
-      $revision_id = (int) $node->getRevisionId();
       $langcode = $node->language()->getId();
+      $revision_id = (int) $node->getRevisionId();
       $check = function (bool $committed) use ($state, $emission, $nid, $revision_id, $langcode): void {
-        $state->ended = TRUE;
         if (!$committed) {
           return;
         }
         $stored = $this->storedPublishedRevision($nid, $langcode);
-        // A stored revision older than this save's own is a state the root
-        // fell back to (everything since was rolled back): not this publish.
-        if ($stored === NULL || $stored < $revision_id) {
+        if ($stored === NULL) {
+          return;
+        }
+        // Unknown (a new page, or no recording) counts as not published.
+        $before = $state->before[$nid][$langcode] ?? NULL;
+        if ($before !== NULL && $before['published'] && $before['vid'] === $stored) {
           return;
         }
         $key = $nid . ':' . $langcode;
@@ -184,6 +189,64 @@ final class PublishWebhook {
       return;
     }
     $register();
+  }
+
+  /**
+   * Returns the state shared by everything registered in the current root.
+   *
+   * The first call in a root creates it and registers a boundary callback
+   * that marks it ended when the root finishes, so the next root gets its own.
+   * Later callbacks of the same root keep the object they captured.
+   */
+  private function rootState(): \stdClass {
+    if (self::$root === NULL || self::$root->ended) {
+      $state = (object) ['ended' => FALSE, 'queued' => [], 'before' => []];
+      self::$root = $state;
+      $this->database->transactionManager()->addPostTransactionCallback(static function (bool $committed) use ($state): void {
+        $state->ended = TRUE;
+      });
+    }
+    return self::$root;
+  }
+
+  /**
+   * Records, once per root and node, the published state the root started with.
+   *
+   * Called from hook_node_presave, which runs before the save's own write: the
+   * first call for a node in a root therefore reads the state the root began
+   * with, from the same connection, before any write of that node in it. Later
+   * calls in the root (a second save, one inside a savepoint) keep the first
+   * record. A new node has no stored state and records nothing. A quiet no-op
+   * outside a transaction or when webhooks are not configured.
+   */
+  public function recordPreRootState(NodeInterface $node): void {
+    $nid = (int) $node->id();
+    if ($nid === 0 || $this->database === NULL || !$this->database->inTransaction()) {
+      return;
+    }
+    $config = $this->configFactory->get('cinatra.settings');
+    if ((string) $config->get('cinatra_url') === '' || (string) $config->get('webhook_secret') === '' || (string) $config->get('webhook_binding_id') === '') {
+      return;
+    }
+    $state = $this->rootState();
+    if (isset($state->before[$nid])) {
+      return;
+    }
+    $before = [];
+    try {
+      $rows = $this->database->select('node_field_data', 'n')
+        ->fields('n', ['langcode', 'vid', 'status'])
+        ->condition('nid', $nid)
+        ->execute()
+        ->fetchAll();
+    }
+    catch (\Throwable) {
+      return;
+    }
+    foreach ($rows as $row) {
+      $before[$row->langcode] = ['published' => (int) $row->status === 1, 'vid' => (int) $row->vid];
+    }
+    $state->before[$nid] = $before;
   }
 
   /**

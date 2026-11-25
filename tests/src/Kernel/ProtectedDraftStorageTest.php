@@ -129,6 +129,7 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     ])->save();
     $this->createImageField(['page']);
     $this->createClearableFields(['page']);
+    $this->createNumberFields(['page']);
     $workflow = $this->createEditorialWorkflow();
     $this->addEntityTypeAndBundleToWorkflow($workflow, 'node', 'page');
     $role = Role::create(['id' => 'protected_editor', 'label' => 'Protected editor']);
@@ -361,6 +362,38 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
         $this->assertTrue($draft->get($field)->isEmpty(), "$field, $form is stored empty");
         $this->assertRootFinished();
       }
+    }
+  }
+
+  /**
+   * A number the field cannot store exactly is refused before the save.
+   */
+  public function testNumbersTheFieldCannotStoreExactlyRefuseBeforeTheSave(): void {
+    $nid = (int) $this->page->id();
+    foreach (array_values($this->inexactNumbers()) as [$field, $value]) {
+      $preimage = $this->protectedDraft->prepare($nid, 'en', [$field]);
+      $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($this->request($preimage, [
+        $field => [['value' => $value]],
+      ])), 'cannot be stored exactly by its field');
+    }
+  }
+
+  /**
+   * Numbers a field stores exactly are kept as sent, spelling aside.
+   */
+  public function testNumbersTheFieldStoresExactlyAreKept(): void {
+    foreach ($this->exactNumbers() as $name => [$field, $value, $stored]) {
+      $page = Node::create([
+        'type' => 'page', 'langcode' => 'en', 'uid' => $this->editor->id(),
+        'title' => 'Number page', 'status' => TRUE, 'moderation_state' => 'published',
+      ]);
+      $page->save();
+      $nid = (int) $page->id();
+      $preimage = $this->protectedDraft->prepare($nid, 'en', [$field]);
+      $result = $this->protectedDraft->write($this->request($preimage, [$field => [['value' => $value]]]));
+      $draft = $this->nodeStorage()->loadRevision($result['revision_id'])->getTranslation('en');
+      $this->assertEquals($stored, $draft->get($field)->value, $name);
+      $this->assertRootFinished();
     }
   }
 

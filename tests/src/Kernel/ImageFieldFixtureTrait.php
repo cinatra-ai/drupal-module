@@ -38,6 +38,65 @@ trait ImageFieldFixtureTrait {
   }
 
   /**
+   * Adds a float and an integer field to the given bundles.
+   *
+   * The decimal field (precision 10, scale 2) is created by each test class.
+   */
+  protected function createNumberFields(array $bundles): void {
+    foreach (['field_float' => 'float', 'field_int' => 'integer'] as $name => $type) {
+      FieldStorageConfig::create([
+        'entity_type' => 'node',
+        'field_name' => $name,
+        'type' => $type,
+        'cardinality' => 1,
+        'translatable' => TRUE,
+      ])->save();
+      foreach ($bundles as $bundle) {
+        FieldConfig::create([
+          'entity_type' => 'node',
+          'bundle' => $bundle,
+          'field_name' => $name,
+          'label' => $name,
+          'translatable' => TRUE,
+        ])->save();
+      }
+    }
+  }
+
+  /**
+   * Numbers a field cannot store exactly, as [field, value] pairs.
+   *
+   * @return array
+   *   Named pairs, each refused before the save.
+   */
+  protected function inexactNumbers(): array {
+    return [
+      'float beyond double precision' => ['field_float', '9007199254740993'],
+      'float in exponent form' => ['field_float', '1e3'],
+      'decimal with more digits than its scale' => ['field_price', '1.239'],
+      'decimal with more integer digits than its precision' => ['field_price', '12345678901234567890.1'],
+      'integer given with a fraction' => ['field_int', '3.0'],
+    ];
+  }
+
+  /**
+   * Numbers a field stores exactly, as [field, value, stored] triples.
+   *
+   * @return array
+   *   Named triples, each kept as sent.
+   */
+  protected function exactNumbers(): array {
+    return [
+      'float with a trailing zero' => ['field_float', '1.10', 1.1],
+      'float 0.1' => ['field_float', '0.1', 0.1],
+      'float 2.5' => ['field_float', '2.50', 2.5],
+      'integer with a plus sign' => ['field_int', '+3', 3],
+      'decimal with a leading zero' => ['field_price', '01.50', 1.5],
+      'decimal given as a bare fraction' => ['field_price', '.5', 0.5],
+    ];
+  }
+
+  /**
    * Adds a link field and an entity reference field to the given bundles.
    *
    * Together with the body field they are the stored shapes whose empty item

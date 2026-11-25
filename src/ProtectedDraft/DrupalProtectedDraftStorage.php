@@ -416,12 +416,17 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $node->get($field)->setValue($items);
+      // What was reviewed is the request itself, as sent: its items that the
+      // field does not treat as empty, with their supplied property values
+      // untouched by any setter, rounding or save normalisation.
+      $requested = $this->requestedItems($node, $field, $items);
       // The candidate holds the field's own normalised items from here on: an
       // item the field treats as empty is gone, so no check below (text format,
       // validation, field access) examines it, and the save sees the same
       // items as the reviewed value does.
       $node->get($field)->filterEmptyItems();
-      $reviewed[$field] = $this->reviewedItems($node, $field);
+      $this->assertNumbersExact($node, $field, $requested);
+      $reviewed[$field] = $this->reviewedItems($node, $field, $requested);
     }
     $node->setNewRevision(TRUE);
     $node->isDefaultRevision(FALSE);
@@ -499,12 +504,17 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $node->get($field)->setValue($items);
+      // What was reviewed is the request itself, as sent: its items that the
+      // field does not treat as empty, with their supplied property values
+      // untouched by any setter, rounding or save normalisation.
+      $requested = $this->requestedItems($node, $field, $items);
       // The candidate holds the field's own normalised items from here on: an
       // item the field treats as empty is gone, so no check below (text format,
       // validation, field access) examines it, and the save sees the same
       // items as the reviewed value does.
       $node->get($field)->filterEmptyItems();
-      $reviewed[$field] = $this->reviewedItems($node, $field);
+      $this->assertNumbersExact($node, $field, $requested);
+      $reviewed[$field] = $this->reviewedItems($node, $field, $requested);
     }
     $node->setNewRevision(TRUE);
     $node->isDefaultRevision(TRUE);
@@ -625,22 +635,90 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
   }
 
   /**
-   * Reads the value a requested field must hold after the save.
+   * Reads a field's items as the save would store them, on a detached copy.
    *
-   * The caller's items are run through the field's own save normalisation on a
-   * detached copy: FieldItemList::preSave(), which is what the real save calls.
-   * It removes empty items and lets each item type derive its own properties:
-   * an image's width and height, a decimal's rounding. The stored value is
-   * then compared property by property with this one. A property the caller
-   * did not supply is therefore derived only where the field type derives it;
-   * a save hook that sets or changes any other property, or any supplied one,
-   * leaves a difference and the write rolls back. The copy never reaches
-   * storage, and items built from plain values hold no new entity to save.
+   * Used for checks that read what the field holds (the text format of each
+   * item): empty items are dropped and derived properties are filled in.
    */
-  private function reviewedItems(NodeInterface $node, string $field): array {
+  private function normalisedItems(NodeInterface $node, string $field): array {
     $list = clone $node->get($field);
     $list->preSave();
     return $list->getValue();
+  }
+
+  /**
+   * Returns the requested items that the field does not treat as empty.
+   *
+   * Called right after setValue(), before the empty items are dropped. The
+   * values are the request's own, never read back from the field.
+   *
+   * @param \Drupal\node\NodeInterface $node
+   *   The candidate, whose field was just set to $items.
+   * @param string $field
+   *   The field name.
+   * @param array $items
+   *   The requested items, a list.
+   */
+  private function requestedItems(NodeInterface $node, string $field, array $items): array {
+    $requested = [];
+    foreach ($items as $delta => $item) {
+      if (!$node->get($field)->get($delta)->isEmpty()) {
+        $requested[] = $item;
+      }
+    }
+    return $requested;
+  }
+
+  /**
+   * Refuses a requested number that its field cannot store exactly.
+   *
+   * Checked before the save, from the request's own values and the field
+   * type's settings, so the reason is clear and nothing is written. The same
+   * difference would also roll the write back after the save, because the
+   * stored value is compared with the requested one.
+   */
+  private function assertNumbersExact(NodeInterface $node, string $field, array $requested): void {
+    $storage = $node->getFieldDefinition($field)->getFieldStorageDefinition();
+    $settings = $storage->getSettings();
+    $types = [];
+    foreach ($storage->getPropertyDefinitions() as $name => $property) {
+      $types[$name] = $property->getDataType();
+    }
+    ProtectedDraftFieldScope::assertNumbersExact($requested, $types, $settings);
+  }
+
+  /**
+   * Reads the value a requested field must hold after the save.
+   *
+   * The reviewed value is the request as sent: every property the caller
+   * supplied keeps exactly the value the caller sent, so a field that rounds,
+   * coerces or truncates a supplied value on the way to storage leaves a
+   * difference and the write rolls back (a number the field cannot hold
+   * exactly is refused even before the save, see assertNumbersExact()). Only a
+   * property the caller did NOT supply is taken from the field's own save
+   * normalisation on a detached copy, FieldItemList::preSave(), the call the
+   * real save makes: an image's width and height are derived there. A save
+   * hook that sets or changes any other property, or any supplied one, leaves
+   * a difference. The copy never reaches storage, and items built from plain
+   * values hold no new entity to save.
+   *
+   * @param \Drupal\node\NodeInterface $node
+   *   The candidate, its field set to the non-empty requested items.
+   * @param string $field
+   *   The field name.
+   * @param array $requested
+   *   The request's own non-empty items, from requestedItems().
+   */
+  private function reviewedItems(NodeInterface $node, string $field, array $requested): array {
+    $list = clone $node->get($field);
+    $list->preSave();
+    $normalised = $list->getValue();
+    $reviewed = [];
+    foreach ($requested as $delta => $item) {
+      // Supplied properties as sent; the rest as the field derives them.
+      $reviewed[] = $item + ($normalised[$delta] ?? []);
+    }
+    return $reviewed;
   }
 
   /**
@@ -931,7 +1009,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $this->entityTypeManager->getAccessControlHandler('filter_format')->resetCache();
     // The normalised items only: an item the field treats as empty (a clear)
     // has no format to require.
-    foreach ($this->reviewedItems($node, $field) as $item) {
+    foreach ($this->normalisedItems($node, $field) as $item) {
       $format_id = $item['format'] ?? NULL;
       if (!is_string($format_id) || $format_id === '') {
         throw new ProtectedDraftRefusal('An explicit permitted text format is required.');

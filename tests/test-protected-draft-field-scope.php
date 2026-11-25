@@ -348,6 +348,68 @@ $numeric_test('a PHP float 1.5 is not the stored "1.05"', 'decimal', 1.5, '1.05'
 $mixed = $reviewed;
 $mixed['field_price'] = [['value' => ['1.50']]];
 $reviewed_test('an array is not a decimal numeral', $mixed, $stored, FALSE);
+// What the field rounds or coerces differs from what was reviewed.
+$numeric_test('a float 9007199254740993 stored as the double 9007199254740992', 'float', '9007199254740993', 9007199254740992.0, FALSE);
+$numeric_test('a decimal 1.239 stored rounded as 1.24', 'decimal', '1.239', '1.24', FALSE);
+$numeric_test('a decimal 1.239 stored rounded as the float 1.24', 'decimal', '1.239', 1.24, FALSE);
+$numeric_test('an integer 3.0 stored as 3', 'integer', '3.0', 3, FALSE);
+$numeric_test('a float 1e3 stored as 1000.0', 'float', '1e3', 1000.0, FALSE);
+$numeric_test('a float 1.10 stored as 1.1', 'float', '1.10', 1.1, TRUE);
+$numeric_test('two different doubles are not the same number', 'float', 0.30000000000000004, 0.3, FALSE);
+$numeric_test('the same double is the same number', 'float', 0.30000000000000004, 0.30000000000000004, TRUE);
+// A request a field cannot store exactly is refused before the save.
+$exact_rows = [
+  ['float', '9007199254740993', [], FALSE],
+  ['float', '1e3', [], FALSE],
+  ['float', '0.1234567890123456789', [], FALSE],
+  ['float', '100000000000000000000', [], FALSE],
+  ['float', '1.10', [], TRUE],
+  ['float', '0.1', [], TRUE],
+  ['float', '-0.0', [], TRUE],
+  ['float', '123456789012345', [], TRUE],
+  ['integer', '3.0', [], FALSE],
+  ['integer', '1e3', [], FALSE],
+  ['integer', '9223372036854775808', [], FALSE],
+  ['integer', '03', [], TRUE],
+  ['integer', '+3', [], TRUE],
+  ['integer', '-9223372036854775808', [], TRUE],
+  ['decimal', '1.239', ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', '1.230', ['precision' => 10, 'scale' => 2], TRUE],
+  ['decimal', '01.50', ['precision' => 10, 'scale' => 2], TRUE],
+  ['decimal', '.5', ['precision' => 10, 'scale' => 2], TRUE],
+  ['decimal', '12345678901234567890.1', ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', '12345678.12', ['precision' => 10, 'scale' => 2], TRUE],
+  ['decimal', '123456789.12', ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', '1e3', ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', 'abc', ['precision' => 10, 'scale' => 2], FALSE],
+];
+foreach ($exact_rows as [$type, $value, $settings, $exact]) {
+  $name = sprintf('a %s %s is %s', $type, json_encode($value), $exact ? 'exact' : 'refused before the save');
+  try {
+    ProtectedDraftFieldScope::assertNumbersExact([['value' => $value]], ['value' => $type], $settings);
+    $accepted = TRUE;
+  }
+  catch (ProtectedDraftRefusal $error) {
+    if ($error->getMessage() !== 'A requested number cannot be stored exactly by its field; nothing was written.') {
+      throw new RuntimeException($name . ' refused with another reason');
+    }
+    $accepted = FALSE;
+  }
+  if ($accepted !== $exact) {
+    throw new RuntimeException($name . ' gave the wrong answer');
+  }
+  $passed++;
+  echo "PASS $name\n";
+}
+// PHP numbers and other types are not examined.
+ProtectedDraftFieldScope::assertNumbersExact(
+  [['value' => 1.5, 'format' => '3.0x']],
+  ['value' => 'float', 'format' => 'string'],
+  []
+);
+ProtectedDraftFieldScope::assertNumbersExact([['value' => '1e3']], ['value' => 'string'], []);
+$passed++;
+echo "PASS PHP numbers and strings of other types are not examined\n";
 $cleared = $reviewed;
 $cleared['title'] = [];
 $cleared_stored = $stored;

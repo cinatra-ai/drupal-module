@@ -126,6 +126,7 @@ final class UnpublishedWriteTest extends KernelTestBase {
     }
     $this->createImageField(['plain', 'page']);
     $this->createClearableFields(['plain']);
+    $this->createNumberFields(['plain']);
     $body_storage = FieldStorageConfig::loadByName('node', 'body') ?? FieldStorageConfig::create([
       'entity_type' => 'node', 'field_name' => 'body', 'type' => 'text_with_summary',
       'revisionable' => TRUE, 'translatable' => TRUE,
@@ -701,6 +702,70 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
+   * A number the field cannot store exactly is refused before the save.
+   *
+   * The values go through the real setter: the field would round, coerce or
+   * truncate each of them, so what it stores is not what was reviewed.
+   */
+  public function testNumbersTheFieldCannotStoreExactlyRefuseBeforeTheSave(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    foreach (array_values($this->inexactNumbers()) as [$field, $value]) {
+      $nid = (int) $this->plainPage()->id();
+      $preimage = $this->protectedDraft->prepare($nid, 'en', [$field]);
+      $this->assertRefusedBeforeSave($nid, fn() => $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => [$field => [['value' => $value]]],
+        'publish' => TRUE,
+      ]), 'cannot be stored exactly by its field');
+    }
+  }
+
+  /**
+   * A float the database does not hold as sent rolls back after the save.
+   *
+   * 123456789012345 is a double, so the request passes the check before the
+   * save; the float column returns it to 14 digits. What is stored is not what
+   * was reviewed, so the existing refusal undoes the save.
+   */
+  public function testFloatTheDatabaseDoesNotHoldAsSentRollsBack(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_float']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, 'observe');
+    try {
+      $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['field_float' => [['value' => '123456789012345']]],
+      ]);
+      $this->fail('A float stored with fewer digits than reviewed must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored value differs from the reviewed value', $expected->getMessage());
+      $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede the rollback.');
+    }
+    ProtectedDraftProbe::reset();
+    $this->assertSame($before, $this->snapshot($nid));
+    $this->assertRootFinished();
+  }
+
+  /**
+   * Numbers a field stores exactly are written as sent, spelling aside.
+   */
+  public function testNumbersTheFieldStoresExactlyAreWritten(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    foreach ($this->exactNumbers() as $name => [$field, $value, $stored]) {
+      $nid = (int) $this->plainPage()->id();
+      $preimage = $this->protectedDraft->prepare($nid, 'en', [$field]);
+      $result = $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => [$field => [['value' => $value]]],
+      ]);
+      $this->assertEquals($stored, $result['fields'][$field][0]['value'], $name);
+      $this->nodeStorage()->resetCache([$nid]);
+      $this->assertEquals($stored, $this->nodeStorage()->load($nid)->get($field)->value, $name);
+      $this->assertRootFinished();
+    }
+  }
+
+  /**
    * A clear sent as [] or as an empty item is stored empty; a refill refuses.
    */
   public function testClearIsStoredAndRefillRefuses(): void {
@@ -1040,6 +1105,90 @@ final class UnpublishedWriteTest extends KernelTestBase {
       $this->assertSame('Published before the root', $this->nodeStorage()->load($nid)->label());
     });
     $this->assertSame([], $sent);
+  }
+
+  /**
+   * A root that ends on the revision it began with sends nothing.
+   *
+   * The page is published in revision R before the root. A savepoint
+   * unpublishes and republishes R in place, then is rolled back, and the outer
+   * transaction commits: the database is back at the published R, so the
+   * registered publish did not change the stored state.
+   */
+  public function testRootEndingOnTheSamePublishedRevisionSendsNothing(): void {
+    $nid = (int) $this->plainPage()->id();
+    // Before any webhook is configured, so this publish registers nothing.
+    $this->savePage($nid, TRUE, TRUE, 'Published before the root');
+    $sent = $this->webhooksSentBy(function () use ($nid): void {
+      $database = $this->container->get('database');
+      $root = $database->startTransaction();
+      $savepoint = $database->startTransaction();
+      $this->savePage($nid, FALSE, FALSE, 'Unpublished in place');
+      $this->savePage($nid, TRUE, FALSE, 'Republished in place');
+      $savepoint->rollBack();
+      unset($savepoint);
+      unset($root);
+      $this->nodeStorage()->resetCache([$nid]);
+      $this->assertSame('Published before the root', $this->nodeStorage()->load($nid)->label());
+    });
+    $this->assertSame([], $sent);
+  }
+
+  /**
+   * An unpublished page published in place sends one event.
+   *
+   * The revision does not change, but the page was not published when the root
+   * began, so the stored state did change.
+   */
+  public function testInPlacePublishOfAnUnpublishedPageSendsOneEvent(): void {
+    $revision = 0;
+    $nid = 0;
+    $sent = $this->webhooksSentBy(function () use (&$revision, &$nid): void {
+      $nid = (int) $this->plainPage()->id();
+      $revision = $this->savePage($nid, TRUE, FALSE, 'Published in place');
+    });
+    $this->assertCount(1, $sent);
+    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+  }
+
+  /**
+   * Saving a published page again sends nothing, as before.
+   *
+   * The page was published and is published: no publish step, no event.
+   */
+  public function testResaveOfPublishedPageSendsNothing(): void {
+    $nid = (int) $this->plainPage()->id();
+    $this->savePage($nid, TRUE, TRUE, 'Published before the root');
+    $sent = $this->webhooksSentBy(function () use ($nid): void {
+      $database = $this->container->get('database');
+      $root = $database->startTransaction();
+      $this->savePage($nid, TRUE, TRUE, 'Saved again');
+      unset($root);
+    });
+    $this->assertSame([], $sent);
+  }
+
+  /**
+   * Unpublish and publish again in one root: one event, a new revision.
+   *
+   * The page was published in R0 and is published in another revision when the
+   * root commits: the published default revision changed.
+   */
+  public function testRepublishInOneRootSendsOneEventForTheNewRevision(): void {
+    $nid = (int) $this->plainPage()->id();
+    $first = $this->savePage($nid, TRUE, TRUE, 'Published before the root');
+    $revision = 0;
+    $sent = $this->webhooksSentBy(function () use ($nid, &$revision): void {
+      $database = $this->container->get('database');
+      $root = $database->startTransaction();
+      $this->savePage($nid, FALSE, TRUE, 'Unpublished');
+      $revision = $this->savePage($nid, TRUE, TRUE, 'Republished');
+      unset($root);
+    });
+    $this->assertNotSame($first, $revision);
+    $this->assertCount(1, $sent);
+    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+    $this->assertSame('Republished', $sent[0]['body']['title']);
   }
 
   /**

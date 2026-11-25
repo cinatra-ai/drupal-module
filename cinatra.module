@@ -216,6 +216,22 @@ function cinatra_page_bottom(array &$page_bottom): void {
 }
 
 /**
+ * Implements hook_ENTITY_TYPE_presave() for node entities.
+ *
+ * Records the published state the surrounding transaction started with, before
+ * this save writes anything, so the publish webhook can tell a real change of
+ * the stored state from a root that ends where it began. Fully non-fatal.
+ */
+function cinatra_node_presave(NodeInterface $node): void {
+  try {
+    PublishWebhook::fromContainer()->recordPreRootState($node);
+  }
+  catch (\Throwable) {
+    // Quiet by design (see cinatra_node_insert()).
+  }
+}
+
+/**
  * Implements hook_ENTITY_TYPE_insert() for node entities.
  *
  * A node created directly in the published state is a publish event

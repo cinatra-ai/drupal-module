@@ -99,6 +99,68 @@ final class ProtectedDraftFieldScope {
   }
 
   /**
+   * Refuses a requested number that its field cannot store exactly.
+   *
+   * Runs on the request's own values, before the save, so a value that the
+   * field would round, coerce or truncate is an invalid input with a clear
+   * reason instead of a rollback after the fact. Only a numeric property
+   * given as a STRING is examined; a PHP int or float is already the value
+   * the field would hold. Per type, a string must be a plain decimal numeral
+   * (no exponent, space, hex or empty) and then:
+   * - integer: no fraction, and within the PHP integer range;
+   * - decimal: no more fraction digits than the field's scale and no more
+   *   integer digits than precision minus scale;
+   * - float (a double when stored): it must survive a round trip through a
+   *   double, so a value beyond double precision, or one a double prints in
+   *   exponent form (from 1e15), is refused.
+   *
+   * @param array $items
+   *   The requested items, a list of property maps.
+   * @param array $types
+   *   Property name to typed-data type.
+   * @param array $settings
+   *   The field storage settings: 'precision' and 'scale' for a decimal.
+   */
+  public static function assertNumbersExact(array $items, array $types, array $settings = []): void {
+    foreach ($items as $item) {
+      if (!is_array($item)) {
+        continue;
+      }
+      foreach ($item as $property => $value) {
+        $type = $types[$property] ?? NULL;
+        if (!is_string($value) || !in_array($type, ['integer', 'decimal', 'float'], TRUE)) {
+          continue;
+        }
+        $canonical = self::canonicalNumeral($value, $type !== 'integer');
+        if ($canonical === NULL || !self::numeralFits($canonical, $type, $settings)) {
+          throw new ProtectedDraftRefusal('A requested number cannot be stored exactly by its field; nothing was written.');
+        }
+      }
+    }
+  }
+
+  /**
+   * Tells whether a canonical numeral is held exactly by its field type.
+   */
+  private static function numeralFits(string $canonical, string $type, array $settings): bool {
+    if ($type === 'integer') {
+      return $canonical === (string) (int) $canonical;
+    }
+    if ($type === 'float') {
+      $double = json_encode((float) $canonical);
+      return is_string($double) && self::canonicalNumeral($double, TRUE) === $canonical;
+    }
+    $precision = $settings['precision'] ?? NULL;
+    $scale = $settings['scale'] ?? NULL;
+    if (!is_numeric($precision) || !is_numeric($scale)) {
+      return TRUE;
+    }
+    $parts = explode('.', ltrim($canonical, '-'), 2);
+    $integer_digits = $parts[0] === '0' ? 0 : strlen($parts[0]);
+    return strlen($parts[1] ?? '') <= (int) $scale && $integer_digits <= (int) $precision - (int) $scale;
+  }
+
+  /**
    * Reduces a field's items to the comparison form, or NULL when malformed.
    */
   private static function canonicalItems(array $items, array $types): ?array {
@@ -138,8 +200,13 @@ final class ProtectedDraftFieldScope {
       return [$value];
     }
     if ($type === 'integer' || $type === 'decimal' || $type === 'float') {
-      if (is_int($value) || is_float($value)) {
+      if (is_int($value)) {
         $value = (string) $value;
+      }
+      elseif (is_float($value)) {
+        // The shortest text that reads back as the same double, not the
+        // 14-digit text of a string cast, so no two doubles read as equal.
+        $value = is_finite($value) ? json_encode($value) : [$value];
       }
       $canonical = is_string($value) ? self::canonicalNumeral($value, $type !== 'integer') : NULL;
       return $canonical ?? [$value];
