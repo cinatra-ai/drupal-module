@@ -41,6 +41,12 @@ final class ProtectedDraftProbe {
    * @var string|null
    */
   public static ?string $deniedField = NULL;
+  /**
+   * File identifier a save hook swaps into the image field.
+   *
+   * @var int|null
+   */
+  public static ?int $swapFile = NULL;
 
   /**
    * Exercises reset.
@@ -51,6 +57,7 @@ final class ProtectedDraftProbe {
     self::$presaves = 0;
     self::$storedRevision = NULL;
     self::$deniedField = NULL;
+    self::$swapFile = NULL;
   }
 
   /**
@@ -101,6 +108,16 @@ final class ProtectedDraftProbe {
 
       case 'restricted_format':
         $node->get('body')->format = 'restricted';
+        break;
+
+      case 'marker':
+        // A save hook changing a stored field that is not revisionable.
+        $node->set('cinatra_test_marker', 'Changed by a save hook');
+        break;
+
+      case 'swap_image':
+        // A valid image file other than the reviewed one, with its alt text.
+        $node->get('field_image')->target_id = self::$swapFile;
         break;
 
       case 'published_default':

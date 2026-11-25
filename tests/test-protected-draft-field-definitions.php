@@ -411,6 +411,11 @@ namespace {
         'value' => 'Shared',
       ],
     ],
+    'unrevisioned' => [
+      [
+        'value' => 'English unrevisioned',
+      ],
+    ],
   ]);
   $fr = new CinatraNativeFieldNode($definitions, [
     'body' => [
@@ -421,6 +426,11 @@ namespace {
     'field_shared_note' => [
       [
         'value' => 'Shared',
+      ],
+    ],
+    'unrevisioned' => [
+      [
+        'value' => 'French unrevisioned',
       ],
     ],
   ], 'fr');
@@ -438,6 +448,11 @@ namespace {
           'value' => 'Shared',
         ],
       ],
+      'unrevisioned' => [
+        [
+          'value' => 'English unrevisioned',
+        ],
+      ],
     ],
     'fr' => [
       'body' => [
@@ -450,13 +465,18 @@ namespace {
           'value' => 'Shared',
         ],
       ],
+      'unrevisioned' => [
+        [
+          'value' => 'French unrevisioned',
+        ],
+      ],
     ],
   ];
   if ($actual !== $expected) {
-    throw new RuntimeException('Stored scope must use storage revisionability and preserve both translation values.');
+    throw new RuntimeException('Stored scope must include every stored field, revisionable or not, and skip computed and per-save fields.');
   }
   $passed++;
-  echo "PASS configurable stored content scope across actual supplied translations\n";
+  echo "PASS stored content scope covers revisionable and unrevisioned fields across actual supplied translations\n";
 
   $revisionable = $fingerprint->invoke($adapter, ['body' => $definitions['body']]);
   $definitions['body']->getFieldStorageDefinition()->revisionable = FALSE;

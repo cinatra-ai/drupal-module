@@ -33,13 +33,14 @@ use Drupal\user\Entity\User;
 final class ProtectedDraftStorageTest extends KernelTestBase {
 
   use ContentModerationTestTrait;
+  use ImageFieldFixtureTrait;
 
   /**
    * {@inheritdoc}
    */
   protected static $modules = [
     'system', 'user', 'field', 'text', 'filter', 'node', 'language',
-    'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
+    'file', 'image', 'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
   ];
 
   /**
@@ -126,6 +127,7 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
       'entity_type' => 'node', 'bundle' => 'page', 'field_name' => 'field_price',
       'label' => 'Price', 'translatable' => TRUE,
     ])->save();
+    $this->createImageField(['page']);
     $workflow = $this->createEditorialWorkflow();
     $this->addEntityTypeAndBundleToWorkflow($workflow, 'node', 'page');
     $role = Role::create(['id' => 'protected_editor', 'label' => 'Protected editor']);
@@ -282,6 +284,54 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertEquals(1.5, (float) $stored['fields']['field_price'][0]['value']);
     $draft = $this->nodeStorage()->loadRevision($stored['revision_id']);
     $this->assertEquals(1.5, (float) $draft->get('field_price')->value);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * An image given as a file and alt text is stored with the derived size.
+   *
+   * The field computes width and height during the save. The reviewed value is
+   * what the field itself stores for the request, so the draft is kept.
+   */
+  public function testImageWithoutDimensionsIsNotRolledBack(): void {
+    $file = $this->createImageFile('reviewed.png', 3, 2);
+    $nid = (int) $this->page->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_image']);
+    $stored = $this->protectedDraft->write($this->request($preimage, [
+      'field_image' => [['target_id' => $file->id(), 'alt' => 'A reviewed alt']],
+    ]));
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id'])->getTranslation('en');
+    $this->assertEquals($file->id(), $draft->get('field_image')->target_id);
+    $this->assertSame('A reviewed alt', $draft->get('field_image')->alt);
+    $this->assertEquals(3, $draft->get('field_image')->width);
+    $this->assertEquals(2, $draft->get('field_image')->height);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A save hook swapping the image file for another valid one rolls back.
+   */
+  public function testSaveHookSwappingImageTargetRollsBack(): void {
+    $reviewed = $this->createImageFile('reviewed.png', 3, 2);
+    $other = $this->createImageFile('other.png', 5, 4);
+    ProtectedDraftProbe::$swapFile = (int) $other->id();
+    $this->assertSaveHookRollsBack('swap_image', [
+      'field_image' => [['target_id' => $reviewed->id(), 'alt' => 'A reviewed alt']],
+    ], 'The stored value differs from the reviewed value');
+  }
+
+  /**
+   * A text field given with a format, without a summary, is stored as sent.
+   */
+  public function testTextWithFormatIsStoredAsSent(): void {
+    $nid = (int) $this->page->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['body']);
+    $stored = $this->protectedDraft->write($this->request($preimage, [
+      'body' => [['value' => 'Reviewed body', 'format' => 'plain_text']],
+    ]));
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id'])->getTranslation('en');
+    $this->assertSame('Reviewed body', $draft->get('body')->value);
+    $this->assertSame('plain_text', $draft->get('body')->format);
     $this->assertRootFinished();
   }
 

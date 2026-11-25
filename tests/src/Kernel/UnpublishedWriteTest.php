@@ -30,13 +30,14 @@ use Drupal\user\Entity\User;
 final class UnpublishedWriteTest extends KernelTestBase {
 
   use ContentModerationTestTrait;
+  use ImageFieldFixtureTrait;
 
   /**
    * {@inheritdoc}
    */
   protected static $modules = [
     'system', 'user', 'field', 'text', 'filter', 'node', 'language',
-    'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
+    'file', 'image', 'workflows', 'content_moderation', 'cinatra', 'cinatra_protected_draft_test',
   ];
 
   /**
@@ -118,6 +119,7 @@ final class UnpublishedWriteTest extends KernelTestBase {
         'label' => 'Note', 'translatable' => TRUE,
       ])->save();
     }
+    $this->createImageField(['plain', 'page']);
     $workflow = $this->createEditorialWorkflow();
     $this->addEntityTypeAndBundleToWorkflow($workflow, 'node', 'page');
 
@@ -491,6 +493,102 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
+   * A save hook changing a non-revisionable field during a write rolls back.
+   *
+   * The write names no such field; only the post-save comparison of every
+   * unrequested field sees it.
+   */
+  public function testWriteRollsBackWhenSaveHookChangesNonRevisionableField(): void {
+    $this->assertNonRevisionableChangeRollsBack(TRUE);
+  }
+
+  /**
+   * The same during the publish step, which names no field at all.
+   */
+  public function testPublishRollsBackWhenSaveHookChangesNonRevisionableField(): void {
+    $this->assertNonRevisionableChangeRollsBack(FALSE);
+  }
+
+  /**
+   * Arms the marker hook for a write or a publish and requires the rollback.
+   */
+  private function assertNonRevisionableChangeRollsBack(bool $write): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, 'marker');
+    try {
+      if ($write) {
+        $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+          'updates' => ['title' => [['value' => 'Reviewed title']]],
+        ]);
+      }
+      else {
+        $this->protectedDraft->publishUnpublished($this->binding($preimage));
+      }
+      $this->fail('A changed non-revisionable field must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored draft changed an unrequested field', $expected->getMessage());
+      $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede the rollback.');
+    }
+    ProtectedDraftProbe::reset();
+    $after = $this->snapshot($nid);
+    $this->assertSame([], $after['marker']);
+    $this->assertSame($before, $after);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * An image given as a file and alt text is stored with the derived size.
+   */
+  public function testImageWithoutDimensionsIsNotRolledBack(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $file = $this->createImageFile('reviewed.png', 3, 2);
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_image']);
+    $result = $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+      'updates' => ['field_image' => [['target_id' => $file->id(), 'alt' => 'A reviewed alt']]],
+      'publish' => TRUE,
+    ]);
+    $stored = $this->snapshot($nid)['image']['en'][0];
+    $this->assertSame($result['revision_id'], $this->snapshot($nid)['default']);
+    $this->assertEquals($file->id(), $stored['target_id']);
+    $this->assertSame('A reviewed alt', $stored['alt']);
+    $this->assertEquals(3, $stored['width']);
+    $this->assertEquals(2, $stored['height']);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A save hook swapping the image file for another valid one rolls back.
+   */
+  public function testSaveHookSwappingImageTargetRollsBack(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $reviewed = $this->createImageFile('reviewed.png', 3, 2);
+    $other = $this->createImageFile('other.png', 5, 4);
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_image']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, 'swap_image');
+    ProtectedDraftProbe::$swapFile = (int) $other->id();
+    try {
+      $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['field_image' => [['target_id' => $reviewed->id(), 'alt' => 'A reviewed alt']]],
+      ]);
+      $this->fail('A swapped image file must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored value differs from the reviewed value', $expected->getMessage());
+      $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede the rollback.');
+    }
+    ProtectedDraftProbe::reset();
+    $this->assertSame($before, $this->snapshot($nid));
+    $this->assertRootFinished();
+  }
+
+  /**
    * A clear sent as [] or as an empty item is stored empty; a refill refuses.
    */
   public function testClearIsStoredAndRefillRefuses(): void {
@@ -676,14 +774,17 @@ final class UnpublishedWriteTest extends KernelTestBase {
     foreach (['published', 'titles', 'notes', 'changed'] as $key) {
       $result[$key] = [];
     }
+    $result['marker'] = $node->get('cinatra_test_marker')->getValue();
+    $result['image'] = [];
     foreach (array_keys($node->getTranslationLanguages()) as $language) {
       $translation = $node->getTranslation($language);
       $result['published'][$language] = $translation->isPublished();
       $result['titles'][$language] = $translation->label();
       $result['notes'][$language] = $translation->get('field_note')->getValue();
       $result['changed'][$language] = (int) $translation->getChangedTime();
+      $result['image'][$language] = $translation->get('field_image')->getValue();
     }
-    foreach (['published', 'titles', 'notes', 'changed'] as $key) {
+    foreach (['published', 'titles', 'notes', 'changed', 'image'] as $key) {
       ksort($result[$key]);
     }
     return $result;

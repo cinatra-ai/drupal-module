@@ -416,11 +416,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $node->get($field)->setValue($items);
-      // The reviewed value after Drupal's own normalisation: set, then the
-      // removal of empty items that every save applies.
-      $list = clone $node->get($field);
-      $list->filterEmptyItems();
-      $reviewed[$field] = $list->getValue();
+      $reviewed[$field] = $this->reviewedItems($node, $field);
     }
     $node->setNewRevision(TRUE);
     $node->isDefaultRevision(FALSE);
@@ -498,11 +494,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $node->get($field)->setValue($items);
-      // The reviewed value after Drupal's own normalisation: set, then the
-      // removal of empty items that every save applies.
-      $list = clone $node->get($field);
-      $list->filterEmptyItems();
-      $reviewed[$field] = $list->getValue();
+      $reviewed[$field] = $this->reviewedItems($node, $field);
     }
     $node->setNewRevision(TRUE);
     $node->isDefaultRevision(TRUE);
@@ -545,12 +537,12 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // status; the service checks that status against the publish step.
     ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields);
     $this->assertUnpublishedWriteAccess(clone $stored->getTranslation($language), array_keys($updates), $publish, $state !== NULL);
-    // The one stored-as-reviewed comparison. What is stored, and with
-    // publish what goes live, must be what was reviewed. The reviewed value is
-    // the request as Drupal normalises it (set, then empty items removed), so
-    // a clear sent as [] or as an item with an empty value is reviewed as
-    // empty, and Drupal stores empty. The stored value is read from the saved
-    // row, so a save hook that replaced or refilled a value differs.
+    // The one stored-as-reviewed comparison, the same as in saveDraft(). The
+    // scope check above covers every field NOT requested, revisionable or not;
+    // this one covers the requested fields: what is stored, and with publish
+    // what goes live, must be what the field itself stores for the request
+    // (see reviewedItems()). The stored value is read from the saved row, so a
+    // save hook that replaced or refilled a value differs.
     ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)), $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
   }
@@ -623,7 +615,30 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
   }
 
   /**
+   * Reads the value a requested field must hold after the save.
+   *
+   * The caller's items are run through the field's own save normalisation on a
+   * detached copy: FieldItemList::preSave(), which is what the real save calls.
+   * It removes empty items and lets each item type derive its own properties:
+   * an image's width and height, a decimal's rounding. The stored value is
+   * then compared property by property with this one. A property the caller
+   * did not supply is therefore derived only where the field type derives it;
+   * a save hook that sets or changes any other property, or any supplied one,
+   * leaves a difference and the write rolls back. The copy never reaches
+   * storage, and items built from plain values hold no new entity to save.
+   */
+  private function reviewedItems(NodeInterface $node, string $field): array {
+    $list = clone $node->get($field);
+    $list->preSave();
+    return $list->getValue();
+  }
+
+  /**
    * Internal only: includes unreadable fields without exporting their values.
+   *
+   * Every stored field of every translation counts, revisionable or not, so a
+   * save hook changing a field nobody asked to write is seen. Only computed
+   * fields (never stored) and the per-save bookkeeping below are left out.
    */
   private function draftContent(NodeInterface $node): array {
     $volatile = [
@@ -639,7 +654,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     foreach ($node->getTranslationLanguages() as $language => $unused) {
       $translation = $node->getTranslation($language);
       foreach ($translation->getFieldDefinitions() as $name => $definition) {
-        if ($definition->getFieldStorageDefinition()->isRevisionable() && !$definition->isComputed() && !in_array($name, $volatile, TRUE)) {
+        if (!$definition->isComputed() && !in_array($name, $volatile, TRUE)) {
           $content[$language][$name] = $translation->get($name)->getValue();
         }
       }
