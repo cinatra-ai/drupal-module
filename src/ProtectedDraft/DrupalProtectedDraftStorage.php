@@ -22,6 +22,7 @@ use Drupal\Core\Entity\EntityFieldManagerInterface;
 use Drupal\Core\Entity\EntityTypeBundleInfoInterface;
 use Drupal\Core\Entity\Sql\SqlContentEntityStorage;
 use Drupal\Core\Extension\ModuleHandlerInterface;
+use Drupal\Core\Image\ImageFactory;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\node\NodeInterface;
 
@@ -95,6 +96,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     private readonly EntityFieldManagerInterface $fieldManager,
     private readonly EntityTypeBundleInfoInterface $bundleInfo,
     private readonly TimeInterface $time,
+    private readonly ImageFactory $imageFactory,
   ) {
   }
 
@@ -407,6 +409,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $before_content = $this->draftContent($this->preimage, TRUE);
     $shared_fields = [];
     $requested_items = [];
+    $candidate_items = [];
     $node = clone $this->preimage;
     foreach ($updates as $field => $items) {
       if (!$this->editableField($node, $field) || !is_array($items) || !array_is_list($items)) {
@@ -415,6 +418,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       if (!$node->getFieldDefinition($field)->isTranslatable()) {
         $shared_fields[] = $field;
       }
+      $this->assertItemShapes($node, $field, $items);
       $node->get($field)->setValue($items);
       // What was reviewed is the request itself, as sent: its items that the
       // field does not treat as empty, with their supplied property values
@@ -427,12 +431,18 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       $node->get($field)->filterEmptyItems();
       $this->assertNumbersExact($node, $field, $requested);
       $requested_items[$field] = $requested;
+      // What this write puts into each item before any field save logic: the
+      // supplied properties, and the field type's empty value for the rest.
+      $candidate_items[$field] = $node->get($field)->getValue();
     }
     $node->setNewRevision(TRUE);
     $node->isDefaultRevision(FALSE);
     $node->setUnpublished();
     $node->set('moderation_state', $state);
+    // The edited translation is affected by this revision, also when no value
+    // differs; enforced, so core keeps it, and verified after the save.
     $node->setRevisionTranslationAffected(TRUE);
+    $node->setRevisionTranslationAffectedEnforced(TRUE);
     $node->setRevisionUserId((int) $this->account->id());
     $node->setRevisionCreationTime(time());
     $node->setRevisionLogMessage('Protected draft awaiting review.');
@@ -444,6 +454,8 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     if (!hash_equals($fingerprint, $this->workflowFingerprint($node->getFieldDefinitions()))) {
       throw new ProtectedDraftRefusal('The workflow or field configuration changed before saving.');
     }
+    // Every translation's stored moderation state before the save.
+    $before_states = $this->storedModerationStates($this->preimage, $this->workflowFor($this->preimage));
     $storage = $this->nodeStorage();
     $this->assertActiveTransaction();
     $storage->save($node);
@@ -456,6 +468,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $workflow = $this->workflowFor($stored);
     $this->assertFreshFieldConfiguration($stored);
     $this->bindStoredModeration($stored, $workflow);
+    $this->assertOtherModerationStatesKept($before_states, $this->storedModerationStates($stored, $workflow), $language);
     // Save hooks can rewrite values after the proposed candidate passed access.
     // Validate actual SQL content/permissions before the root may commit.
     ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields, (int) $this->time->getRequestTime(), $this->sharedChangeLanguages($this->preimage));
@@ -464,7 +477,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // scope check skips the requested fields, so a save hook must not have
     // replaced a reviewed value with another valid one.
     $stored_values = $this->values($stored->getTranslation($language), array_keys($updates));
-    ProtectedDraftFieldScope::assertStoredAsReviewed($this->reviewedItems($requested_items, $stored_values), $stored_values, $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
+    ProtectedDraftFieldScope::assertStoredAsReviewed($this->reviewedItems($stored->getTranslation($language), $requested_items, $candidate_items), $stored_values, $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
   }
 
@@ -496,6 +509,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $before_content = $this->draftContent($this->preimage, TRUE);
     $shared_fields = [];
     $requested_items = [];
+    $candidate_items = [];
     $node = clone $this->preimage;
     foreach ($updates as $field => $items) {
       if (!is_string($field) || !$this->editableField($node, $field) || !is_array($items) || !array_is_list($items)) {
@@ -504,6 +518,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       if (!$node->getFieldDefinition($field)->isTranslatable()) {
         $shared_fields[] = $field;
       }
+      $this->assertItemShapes($node, $field, $items);
       $node->get($field)->setValue($items);
       // What was reviewed is the request itself, as sent: its items that the
       // field does not treat as empty, with their supplied property values
@@ -516,6 +531,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       $node->get($field)->filterEmptyItems();
       $this->assertNumbersExact($node, $field, $requested);
       $requested_items[$field] = $requested;
+      // What this write puts into each item before any field save logic: the
+      // supplied properties, and the field type's empty value for the rest.
+      $candidate_items[$field] = $node->get($field)->getValue();
     }
     $node->setNewRevision(TRUE);
     $node->isDefaultRevision(TRUE);
@@ -527,7 +545,10 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       // service verifies the stored result.
       $node->set('moderation_state', $state);
     }
+    // The edited translation is affected by this revision, also when no value
+    // differs; enforced, so core keeps it, and verified after the save.
     $node->setRevisionTranslationAffected(TRUE);
+    $node->setRevisionTranslationAffectedEnforced(TRUE);
     $node->setRevisionUserId((int) $this->account->id());
     $node->setRevisionCreationTime(time());
     $node->setRevisionLogMessage($publish ? 'Reviewed change published.' : 'Reviewed change saved.');
@@ -538,6 +559,8 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     if (!hash_equals($fingerprint, $this->workflowFingerprint($node->getFieldDefinitions()))) {
       throw new ProtectedDraftRefusal('The workflow or field configuration changed before saving.');
     }
+    // Every translation's stored moderation state before the save.
+    $before_states = $this->storedModerationStates($this->preimage, $this->workflowFor($this->preimage));
     $storage = $this->nodeStorage();
     $this->assertActiveTransaction();
     $storage->save($node);
@@ -553,6 +576,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
     $this->assertFreshFieldConfiguration($stored);
     $this->bindStoredModeration($stored, $stored_workflow);
+    $this->assertOtherModerationStatesKept($before_states, $this->storedModerationStates($stored, $stored_workflow), $language);
     // Save hooks can rewrite values after the candidate passed access. The
     // scope check excludes only the requested fields and this translation's
     // status; the service checks that status against the publish step.
@@ -561,11 +585,12 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // The one stored-as-reviewed comparison, the same as in saveDraft(). The
     // scope check above covers every field NOT requested, revisionable or not;
     // this one covers the requested fields: what is stored, and with publish
-    // what goes live, must hold every supplied property as sent (see
-    // reviewedItems()). The stored value is read from the saved row, so a
-    // save hook that replaced or refilled a supplied value differs.
+    // what goes live, must hold every supplied property as sent and every
+    // other property as this write left it (see reviewedItems()). The stored
+    // value is read from the saved row, so a save hook that replaced,
+    // refilled or added a value differs.
     $stored_values = $this->values($stored->getTranslation($language), array_keys($updates));
-    ProtectedDraftFieldScope::assertStoredAsReviewed($this->reviewedItems($requested_items, $stored_values), $stored_values, $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
+    ProtectedDraftFieldScope::assertStoredAsReviewed($this->reviewedItems($stored->getTranslation($language), $requested_items, $candidate_items), $stored_values, $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
   }
 
@@ -695,32 +720,125 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
   /**
    * Builds the value each requested field must hold after the save.
    *
-   * The reviewed value is the request as sent: every property the caller
-   * supplied must be stored exactly as sent, so a field or save hook that
-   * rounds, coerces, replaces or truncates a supplied value leaves a
-   * difference and the write rolls back (a number the field cannot hold
-   * exactly is refused even before the save, see assertNumbersExact()). The
-   * item count must match too. A property the caller did NOT supply (an
-   * image's width and height, which the field derives on save) is taken from
-   * the stored item itself: no field save logic runs outside the real save,
-   * so it runs exactly once per write.
+   * Each requested item replaces the stored item at its position, so after
+   * the save every stored property must be:
+   * - a property the caller supplied: exactly as sent, so a field or save
+   *   hook that rounds, coerces, replaces or truncates it leaves a difference
+   *   (a number the field cannot hold exactly is refused even before the
+   *   save, see assertNumbersExact());
+   * - a property the caller did not supply: what this write put into the
+   *   item before the save, the field type's empty value; a save hook that
+   *   fills it in (a summary, a link title) leaves a difference;
+   * - except a property the field TYPE derives from the supplied ones, listed
+   *   in derivedProperties(): it must equal what the type derives, computed
+   *   here from its source (for an image, the file's real dimensions), never
+   *   by running field save logic.
+   * The item count must match too. No field save logic runs outside the real
+   * save, so it runs exactly once per write.
    *
+   * @param \Drupal\node\NodeInterface $stored
+   *   The saved translation, for the field definitions.
    * @param array $requested
    *   Per field, the request's own non-empty items, from requestedItems().
-   * @param array $stored
-   *   Per field, the stored items of the saved translation.
+   * @param array $candidate
+   *   Per field, the items this write handed to the save, read before it.
    */
-  private function reviewedItems(array $requested, array $stored): array {
+  private function reviewedItems(NodeInterface $stored, array $requested, array $candidate): array {
     $reviewed = [];
     foreach ($requested as $field => $items) {
+      $names = $this->storedPropertyNames($stored, $field);
       $reviewed[$field] = [];
       foreach ($items as $delta => $item) {
-        // Supplied properties as sent; the rest as the stored item holds them.
-        $stored_item = $stored[$field][$delta] ?? [];
-        $reviewed[$field][] = $item + (is_array($stored_item) ? $stored_item : []);
+        $before = is_array($candidate[$field][$delta] ?? NULL) ? $candidate[$field][$delta] : [];
+        $expected = [];
+        foreach ($names as $name) {
+          $expected[$name] = array_key_exists($name, $item) ? $item[$name] : ($before[$name] ?? NULL);
+        }
+        $reviewed[$field][] = $this->derivedProperties($stored, $field, $item, $before) + $expected;
       }
     }
     return $reviewed;
+  }
+
+  /**
+   * Returns what a core field type derives for an item, by a fixed list.
+   *
+   * Of the field types a write accepts, only the image type fills stored
+   * properties from the supplied ones (ImageItem::preSave()): when the item
+   * holds no width or no height, both become the referenced image file's real
+   * dimensions, or stay empty when the file is no valid image. Every other
+   * core type derives nothing a write can store: a text item's processed
+   * value is computed, not stored; file, link, string, number and reference
+   * items keep what they are given (a decimal is refused before the save if
+   * it would round). A contrib type that derives a value is not listed, so
+   * the derived value differs and the write is refused.
+   *
+   * @return array
+   *   The derived property values to expect, keyed by property name.
+   */
+  private function derivedProperties(NodeInterface $stored, string $field, array $item, array $before): array {
+    if ($stored->getFieldDefinition($field)->getType() !== 'image'
+      || (($before['width'] ?? NULL) !== NULL && ($before['height'] ?? NULL) !== NULL)) {
+      return [];
+    }
+    $file_storage = $this->entityTypeManager->getStorage('file');
+    $target = $item['target_id'] ?? NULL;
+    $file = $file_storage instanceof SqlContentEntityStorage && is_numeric($target)
+      ? $this->hydrateDefault($file_storage, (int) $target)
+      : NULL;
+    $uri = $file ? $file->get('uri')->value : NULL;
+    if (!is_string($uri)) {
+      return ['width' => NULL, 'height' => NULL];
+    }
+    $image = $this->imageFactory->get($uri);
+    return $image->isValid()
+      ? ['width' => $image->getWidth(), 'height' => $image->getHeight()]
+      : ['width' => NULL, 'height' => NULL];
+  }
+
+  /**
+   * Lists the stored (not computed) property names of a field.
+   */
+  private function storedPropertyNames(NodeInterface $node, string $field): array {
+    $names = [];
+    foreach ($node->getFieldDefinition($field)->getFieldStorageDefinition()->getPropertyDefinitions() as $name => $property) {
+      if (!$property->isComputed()) {
+        $names[] = $name;
+      }
+    }
+    return $names;
+  }
+
+  /**
+   * Refuses a requested item that is not a map of the field's properties.
+   *
+   * Runs before anything else reads the items, so no shape error can occur
+   * after the save. Each item must be a map whose keys are stored property
+   * names of the field and whose values are scalars or NULL (an array only
+   * for a property of the map type, such as a link's options). A bare value
+   * as an item (shorthand for the main property) is refused rather than
+   * normalised, because not every field type has one main property.
+   */
+  private function assertItemShapes(NodeInterface $node, string $field, array $items): void {
+    $types = [];
+    foreach ($node->getFieldDefinition($field)->getFieldStorageDefinition()->getPropertyDefinitions() as $name => $property) {
+      if (!$property->isComputed()) {
+        $types[$name] = $property->getDataType();
+      }
+    }
+    foreach ($items as $item) {
+      if (!is_array($item) || ($item !== [] && array_is_list($item))) {
+        throw new ProtectedDraftRefusal('Each field item must be a map of the field\'s property names; nothing was written.');
+      }
+      foreach ($item as $name => $value) {
+        if (!is_string($name) || !isset($types[$name])) {
+          throw new ProtectedDraftRefusal('A field item names a property the field does not store; nothing was written.');
+        }
+        if (!is_scalar($value) && $value !== NULL && !(is_array($value) && $types[$name] === 'map')) {
+          throw new ProtectedDraftRefusal('A field item property must be a single value; nothing was written.');
+        }
+      }
+    }
   }
 
   /**
@@ -982,6 +1100,48 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     if ($workflow === NULL) {
       return;
     }
+    foreach ($this->storedModerationStates($node, $workflow) as $language => $state) {
+      if ($state === NULL) {
+        throw new ProtectedDraftRefusal('A stored moderation state is missing in the exact page language.');
+      }
+      // Notify FALSE binds the computed value without changing stored status or
+      // default-revision flags. Never synthesize a missing language
+      // translation.
+      $node->getTranslation($language)->get('moderation_state')->setValue([['value' => $state]], FALSE);
+    }
+  }
+
+  /**
+   * Refuses a save that moved another translation's moderation state.
+   *
+   * The moderation state is not a stored node field, so the scope check does
+   * not see it; it is read from the moderation state records of the revision
+   * before and after the save. Only the edited translation's state may
+   * change (the service checks it against the requested state).
+   */
+  private function assertOtherModerationStatesKept(array $before, array $after, string $language): void {
+    foreach ($before as $code => $state) {
+      if ($code !== $language && ($after[$code] ?? NULL) !== $state) {
+        throw new ProtectedDraftRefusal('The stored draft changed an unrequested field or another translation.');
+      }
+    }
+  }
+
+  /**
+   * Reads each translation's stored moderation state of a page revision.
+   *
+   * From the moderation state records bound to this exact revision, with the
+   * hook-free reader. NULL for a translation without a record; an empty list
+   * for an unmoderated page.
+   *
+   * @return array
+   *   Moderation state per language code.
+   */
+  private function storedModerationStates(NodeInterface $node, mixed $workflow): array {
+    if ($workflow === NULL) {
+      return [];
+    }
+    $states = [];
     $storage = $this->entityTypeManager->getStorage('content_moderation_state');
     $this->assertSqlStorageConnection($storage);
     foreach ($node->getTranslationLanguages() as $language => $unused) {
@@ -995,7 +1155,8 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       $revision = key($revisions);
       $stored = $revision ? $this->hydrateRevision($storage, (int) $revision) : NULL;
       if (!$stored || !$stored->hasTranslation($language)) {
-        throw new ProtectedDraftRefusal('A stored moderation state is missing in the exact page language.');
+        $states[$language] = NULL;
+        continue;
       }
       $translation = $stored->getTranslation($language);
       if ($translation->language()->getId() !== $language
@@ -1009,11 +1170,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       if (!is_string($state) || !$workflow->getTypePlugin()->hasState($state)) {
         throw new ProtectedDraftRefusal('The stored moderation state is not in the locked workflow.');
       }
-      // Notify FALSE binds the computed value without changing stored status or
-      // default-revision flags. Never synthesize a missing language
-      // translation.
-      $node->getTranslation($language)->get('moderation_state')->setValue([['value' => $state]], FALSE);
+      $states[$language] = $state;
     }
+    return $states;
   }
 
   /**

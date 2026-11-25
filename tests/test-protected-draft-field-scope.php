@@ -86,6 +86,8 @@ $stamped_before['fr']['changed'] = [['value' => 200]];
 $stamped_before['en']['revision_translation_affected'] = FALSE;
 $stamped_before['fr']['revision_translation_affected'] = FALSE;
 $stamp_test = function (string $name, array $after, bool $allowed) use ($stamped_before, &$passed): void {
+  // A real save marks the edited translation affected.
+  $after['fr']['revision_translation_affected'] = TRUE;
   try {
     ProtectedDraftFieldScope::assertMatches($stamped_before, $after, 'fr', ['title']);
     if (!$allowed) {
@@ -100,6 +102,25 @@ $stamp_test = function (string $name, array $after, bool $allowed) use ($stamped
   $passed++;
   echo "PASS $name\n";
 };
+// The edited translation must be marked affected after the save.
+foreach (['cleared' => FALSE, 'missing' => NULL] as $form => $mark) {
+  $unmarked = $stamped_before;
+  $unmarked['fr']['changed'] = [['value' => 999]];
+  if ($mark === NULL) {
+    unset($unmarked['fr']['revision_translation_affected']);
+  }
+  else {
+    $unmarked['fr']['revision_translation_affected'] = $mark;
+  }
+  try {
+    ProtectedDraftFieldScope::assertMatches($stamped_before, $unmarked, 'fr', ['title']);
+    throw new RuntimeException("an edited translation with a $form affected mark incorrectly accepted");
+  }
+  catch (ProtectedDraftRefusal) {
+    $passed++;
+    echo "PASS an edited translation with a $form affected mark is refused\n";
+  }
+}
 $stamped = $stamped_before;
 $stamped['fr']['changed'] = [['value' => 999]];
 $stamped['fr']['revision_translation_affected'] = TRUE;
@@ -117,6 +138,8 @@ $stamp_test('another translation timestamp may not disappear', $stamped, FALSE);
 // every translation it counts the change for to the request time (999) and
 // marks it affected; any other value is not core's.
 $stamp_shared_test = function (string $name, array $after, bool $allowed, array $languages = ['en', 'fr']) use ($stamped_before, &$passed): void {
+  // A real save marks the edited translation affected.
+  $after['fr']['revision_translation_affected'] = TRUE;
   try {
     ProtectedDraftFieldScope::assertMatches($stamped_before, $after, 'fr', ['title'], ['title'], 999, $languages);
     if (!$allowed) {
@@ -157,10 +180,12 @@ $stamp_shared_test('core counting the shared field only for fr keeps en bookkeep
 $same_before = $stamped_before;
 $same_before['en']['title'] = [['value' => 'Shared title']];
 $same_before['fr']['title'] = [['value' => 'Shared title']];
-ProtectedDraftFieldScope::assertMatches($same_before, $same_before, 'fr', ['title'], ['title'], 999, ['en', 'fr']);
+$same_kept = $same_before;
+$same_kept['fr']['revision_translation_affected'] = TRUE;
+ProtectedDraftFieldScope::assertMatches($same_before, $same_kept, 'fr', ['title'], ['title'], 999, ['en', 'fr']);
 $passed++;
 echo "PASS an unchanged shared value moves no other bookkeeping\n";
-$same_after = $same_before;
+$same_after = $same_kept;
 $same_after['en']['changed'] = [['value' => 999]];
 try {
   ProtectedDraftFieldScope::assertMatches($same_before, $same_after, 'fr', ['title'], ['title'], 999, ['en', 'fr']);

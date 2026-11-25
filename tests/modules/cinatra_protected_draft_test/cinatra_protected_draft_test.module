@@ -8,6 +8,7 @@
 declare(strict_types=1);
 
 use Drupal\cinatra_protected_draft_test\ProtectedDraftProbe;
+use Drupal\content_moderation\Entity\ContentModerationStateInterface;
 use Drupal\Core\Access\AccessResult;
 use Drupal\Core\Entity\EntityTypeInterface;
 use Drupal\Core\Field\BaseFieldDefinition;
@@ -44,6 +45,13 @@ function cinatra_protected_draft_test_entity_bundle_info_alter(array &$bundles):
   if (ProtectedDraftProbe::$defaultTranslationAffectedOnly && isset($bundles['node']['page'])) {
     $bundles['node']['page']['untranslatable_fields.default_translation_affected'] = TRUE;
   }
+}
+
+/**
+ * Implements hook_ENTITY_TYPE_presave() for content_moderation_state.
+ */
+function cinatra_protected_draft_test_content_moderation_state_presave(ContentModerationStateInterface $record): void {
+  ProtectedDraftProbe::beforeModerationSave($record);
 }
 
 /**

@@ -323,6 +323,24 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   }
 
   /**
+   * A save hook moving the French moderation state rolls back.
+   *
+   * The new state has the same publication flags as the old one, so only
+   * the moderation state records show the change.
+   */
+  public function testSaveHookMovingOtherModerationStateRollsBack(): void {
+    $workflow = $this->container->get('entity_type.manager')->getStorage('workflow')->load('editorial');
+    $type = $workflow->getTypePlugin();
+    $type->addState('featured', 'Featured');
+    $configuration = $type->getConfiguration();
+    $configuration['states']['featured']['published'] = TRUE;
+    $configuration['states']['featured']['default_revision'] = TRUE;
+    $type->setConfiguration($configuration);
+    $workflow->save();
+    $this->assertSaveHookRollsBack('other_moderation', ['title' => [['value' => 'Draft title']]], 'The stored draft changed an unrequested field or another translation');
+  }
+
+  /**
    * A draft's field save logic runs once per write, and not when refused.
    */
   public function testDraftFieldSaveLogicRunsOncePerWrite(): void {

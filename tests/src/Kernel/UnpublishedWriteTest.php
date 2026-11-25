@@ -921,6 +921,114 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
+   * A property left out is stored empty; a hook filling it in rolls back.
+   */
+  public function testUnsuppliedSummaryStaysEmptyAndInjectionRollsBack(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $nid = (int) $this->plainPage()->id();
+    $body = ['body' => [['value' => 'Reviewed body', 'format' => 'plain_text']]];
+    foreach ([FALSE, TRUE] as $publish) {
+      $preimage = $this->protectedDraft->prepare($nid, 'en', ['body']);
+      $before = $this->snapshot($nid);
+      ProtectedDraftProbe::arm($nid, 'inject_summary');
+      try {
+        $this->protectedDraft->writeUnpublished($this->binding($preimage) + ['updates' => $body, 'publish' => $publish]);
+        $this->fail('An injected summary must refuse.');
+      }
+      catch (ProtectedDraftRefusal $expected) {
+        $this->assertStringContainsString('The stored value differs from the reviewed value', $expected->getMessage());
+        $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede the rollback.');
+      }
+      ProtectedDraftProbe::reset();
+      $this->assertSame($before, $this->snapshot($nid));
+      $this->assertRootFinished();
+    }
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['body']);
+    $result = $this->protectedDraft->writeUnpublished($this->binding($preimage) + ['updates' => $body]);
+    $stored = $this->nodeStorage()->loadRevision($result['revision_id'])->get('body');
+    $this->assertSame('Reviewed body', $stored->value);
+    $this->assertEmpty($stored->summary, 'A summary nobody sent stays empty.');
+  }
+
+  /**
+   * A save hook setting a link title nobody sent rolls back.
+   */
+  public function testInjectedLinkTitleRollsBack(): void {
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_link']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, 'inject_link_title');
+    try {
+      $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['field_link' => [['uri' => 'https://example.com/reviewed']]],
+      ]);
+      $this->fail('An injected link title must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored value differs from the reviewed value', $expected->getMessage());
+    }
+    ProtectedDraftProbe::reset();
+    $this->assertSame($before, $this->snapshot($nid));
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A save hook changing the derived image dimensions rolls back.
+   */
+  public function testAlteredImageDimensionsRollBack(): void {
+    $file = $this->createImageFile('sized.png', 3, 2);
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_image']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, 'alter_image_size');
+    try {
+      $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['field_image' => [['target_id' => $file->id(), 'alt' => 'Sized']]],
+      ]);
+      $this->fail('Altered dimensions must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored value differs from the reviewed value', $expected->getMessage());
+    }
+    ProtectedDraftProbe::reset();
+    $this->assertSame($before, $this->snapshot($nid));
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A save hook clearing the edited translation's affected mark rolls back.
+   */
+  public function testClearedAffectedMarkRollsBack(): void {
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, 'self_unaffected');
+    try {
+      $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['title' => [['value' => 'Reviewed title']]],
+      ]);
+      $this->fail('A cleared affected mark must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('not marked as changing the edited translation', $expected->getMessage());
+    }
+    ProtectedDraftProbe::reset();
+    $this->assertSame($before, $this->snapshot($nid));
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A bare value as an item is refused before anything runs.
+   */
+  public function testBareValueItemRefusesBeforeSave(): void {
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+    $this->assertRefusedBeforeSave($nid, fn() => $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+      'updates' => ['title' => ['A bare title']],
+    ]), "Each field item must be a map of the field's property names");
+  }
+
+  /**
    * A field's save logic runs once per write, and not at all when refused.
    */
   public function testFieldSaveLogicRunsOncePerWrite(): void {

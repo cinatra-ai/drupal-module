@@ -72,7 +72,11 @@ final class ProtectedDraftFieldScope {
       }
       if ($code === $language) {
         // The edited translation's own bookkeeping: the save moves its
-        // timestamp and marks it affected.
+        // timestamp and marks it affected; the mark must be there.
+        if (array_key_exists('revision_translation_affected', $expected)
+          && ($stored['revision_translation_affected'] ?? NULL) !== TRUE) {
+          throw new ProtectedDraftRefusal('The stored revision is not marked as changing the edited translation; nothing was written.');
+        }
         foreach (array_merge($updated_fields, ['status', 'changed', 'revision_translation_affected']) as $field) {
           unset($expected[$field], $stored[$field]);
         }

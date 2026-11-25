@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\cinatra_protected_draft_test;
 
+use Drupal\content_moderation\Entity\ContentModerationStateInterface;
 use Drupal\node\NodeInterface;
 
 /**
@@ -90,6 +91,24 @@ final class ProtectedDraftProbe {
   }
 
   /**
+   * Moves another translation's state in the new moderation state record.
+   *
+   * In mode other_moderation: when the record of the new page revision is
+   * saved, the other translation gets another state with the same
+   * publication flags. The old revision's record is left as it was.
+   */
+  public static function beforeModerationSave(ContentModerationStateInterface $record): void {
+    if (self::$mode !== 'other_moderation' || (int) $record->get('content_entity_id')->value !== self::$nid
+      || !$record->isNewRevision()) {
+      return;
+    }
+    $other = $record->language()->getId() === 'en' ? 'fr' : 'en';
+    if ($record->hasTranslation($other)) {
+      $record->getTranslation($other)->set('moderation_state', 'featured');
+    }
+  }
+
+  /**
    * Exercises before save.
    */
   public static function beforeSave(NodeInterface $node): void {
@@ -159,6 +178,26 @@ final class ProtectedDraftProbe {
       case 'marker':
         // A save hook changing a stored field that is not revisionable.
         $node->set('cinatra_test_marker', 'Changed by a save hook');
+        break;
+
+      case 'inject_summary':
+        // A summary the person never sent.
+        $node->get('body')->summary = 'Injected by a save hook';
+        break;
+
+      case 'inject_link_title':
+        // A link title the person never sent.
+        $node->get('field_link')->title = 'Injected by a save hook';
+        break;
+
+      case 'alter_image_size':
+        // Dimensions other than the file's own, after the field derived them.
+        $node->get('field_image')->width = 999;
+        break;
+
+      case 'self_unaffected':
+        // Clears the edited translation's affected mark.
+        $node->setRevisionTranslationAffected(FALSE);
         break;
 
       case 'swap_image':

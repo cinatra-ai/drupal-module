@@ -15,6 +15,7 @@ use Drupal\Core\Entity\EntityFieldManagerInterface;
 use Drupal\Core\Entity\EntityTypeBundleInfoInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Extension\ModuleHandlerInterface;
+use Drupal\Core\Image\ImageFactory;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Tests\UnitTestCase;
 
@@ -276,6 +277,7 @@ final class ProtectedDraftInnoDbCheckTest extends UnitTestCase {
       $this->createMock(EntityFieldManagerInterface::class),
       $this->createMock(EntityTypeBundleInfoInterface::class),
       $this->createMock(TimeInterface::class),
+      $this->createMock(ImageFactory::class),
     );
     (new \ReflectionMethod(DrupalProtectedDraftStorage::class, 'assertInnoDb'))->invoke($storage, $table);
   }

@@ -11,6 +11,7 @@ services:
       - '@entity_field.manager'
       - '@entity_type.bundle.info'
       - '@datetime.time'
+      - '@image.factory'
 
   cinatra.protected_draft:
     class: Drupal\cinatra\ProtectedDraft\ProtectedDraftService
