@@ -470,6 +470,44 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
+   * A clear sent as [] or as an empty item is stored empty; a refill refuses.
+   */
+  public function testClearIsStoredAndRefillRefuses(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    foreach (['empty list' => [], 'empty item' => [['value' => '']]] as $form => $clear) {
+      $nid = (int) $this->plainPage()->id();
+      $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_note']);
+      $result = $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['field_note' => $clear],
+        'publish' => TRUE,
+      ]);
+      $this->assertSame(['field_note' => []], $result['fields'], $form);
+      $after = $this->snapshot($nid);
+      $this->assertSame(['en' => []], $after['notes'], $form);
+      $this->assertSame(['en' => TRUE], $after['published'], $form);
+    }
+    // A save hook that puts a value back into the cleared field.
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_note']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, 'refill_cleared');
+    try {
+      $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['field_note' => [['value' => '']]],
+        'publish' => TRUE,
+      ]);
+      $this->fail('A refilled cleared field must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored value differs from the reviewed value', $expected->getMessage());
+      $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede the rollback.');
+    }
+    ProtectedDraftProbe::reset();
+    $this->assertSame($before, $this->snapshot($nid));
+    $this->assertRootFinished();
+  }
+
+  /**
    * A moderated publish needs edit access to moderation_state too.
    */
   public function testDeniedModerationStateEditRefusesPublish(): void {

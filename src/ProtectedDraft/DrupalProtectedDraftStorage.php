@@ -364,9 +364,6 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       // A moderated save sets moderation_state; its edit access is checked
       // with the transition permission.
       'can_edit_moderation_state' => $workflow !== NULL && $translation->get('moderation_state')->access('edit', $this->account, TRUE)->isAllowed(),
-      // INTERNAL: typed-data types of the requested fields' properties, for
-      // the stored-as-reviewed comparison.
-      'property_types' => $this->propertyTypes($raw_translation, $fields),
       'draft_states' => $states,
       'allowed_draft_states' => array_values(array_unique($allowed)),
       'field_access' => $access,
@@ -457,7 +454,8 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // Validate actual SQL content/permissions before the root may commit.
     ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields);
     $this->assertDraftAccess(clone $stored->getTranslation($language), array_keys($updates));
-    // The scope check skips the requested fields; a save hook must not have
+    // The one stored-as-reviewed comparison (see saveUnpublished()): the
+    // scope check skips the requested fields, so a save hook must not have
     // replaced a reviewed value with another valid one.
     ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)), $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
@@ -547,8 +545,12 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // status; the service checks that status against the publish step.
     ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields);
     $this->assertUnpublishedWriteAccess(clone $stored->getTranslation($language), array_keys($updates), $publish, $state !== NULL);
-    // What is stored, and with publish what goes live, must be what was
-    // reviewed: a save hook must not have replaced a requested value.
+    // The one stored-as-reviewed comparison. What is stored, and with
+    // publish what goes live, must be what was reviewed. The reviewed value is
+    // the request as Drupal normalises it (set, then empty items removed), so
+    // a clear sent as [] or as an item with an empty value is reviewed as
+    // empty, and Drupal stores empty. The stored value is read from the saved
+    // row, so a save hook that replaced or refilled a value differs.
     ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)), $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
   }

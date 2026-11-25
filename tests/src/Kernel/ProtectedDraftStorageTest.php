@@ -261,6 +261,43 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   }
 
   /**
+   * A clear sent as an empty list is reviewed as empty and stored empty.
+   */
+  public function testClearByEmptyListIsStored(): void {
+    $this->assertClearIsStored([]);
+  }
+
+  /**
+   * A clear sent as an item with an empty value ends in the same state.
+   */
+  public function testClearByEmptyItemIsStored(): void {
+    $this->assertClearIsStored([['value' => '']]);
+  }
+
+  /**
+   * A save hook putting a value back into a cleared field rolls back.
+   */
+  public function testSaveHookRefillingClearedFieldRollsBack(): void {
+    $this->assertSaveHookRollsBack('refill_cleared', ['field_shared_note' => []], 'The stored value differs from the reviewed value');
+  }
+
+  /**
+   * Writes a draft that clears the shared note and checks it is stored empty.
+   */
+  private function assertClearIsStored(array $clear): void {
+    $nid = (int) $this->page->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_shared_note']);
+    $this->assertSame([['value' => 'Shared live note']], $preimage['fields']['field_shared_note']);
+    $stored = $this->protectedDraft->write($this->request($preimage, ['field_shared_note' => $clear]));
+    $this->assertSame([], $stored['fields']['field_shared_note']);
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id']);
+    $this->assertTrue($draft->get('field_shared_note')->isEmpty());
+    $this->assertTrue($draft->getTranslation('fr')->get('field_shared_note')->isEmpty());
+    $this->assertSame([['value' => 'Shared live note']], $this->snapshot()['published']['en']['field_shared_note']);
+    $this->assertRootFinished();
+  }
+
+  /**
    * The draft sets moderation_state, so its field edit access must allow it.
    */
   public function testDeniedModerationStateEditRefusesBeforeSave(): void {

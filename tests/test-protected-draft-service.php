@@ -37,7 +37,7 @@ use Drupal\cinatra\ProtectedDraft\ProtectedDraftStorageInterface;
 /**
  * Provides the native cinatra memory protected draft storage dependency double.
  */
-final class CinatraMemoryProtectedDraftStorage implements ProtectedDraftStorageInterface {
+class CinatraMemoryProtectedDraftStorageBase implements ProtectedDraftStorageInterface {
 
   /**
    * Native fixture snapshot.
@@ -243,6 +243,12 @@ final class CinatraMemoryProtectedDraftStorage implements ProtectedDraftStorageI
 }
 
 /**
+ * Provides the default memory storage double.
+ */
+final class CinatraMemoryProtectedDraftStorage extends CinatraMemoryProtectedDraftStorageBase {
+}
+
+/**
  * Builds a complete request from the protected preimage and proposed updates.
  */
 function request(): array {
@@ -355,13 +361,6 @@ $corruptions = [
   'published revision was saved' => ['is_published', TRUE],
   'wrong stored moderation state' => ['moderation_state', 'published'],
   'missing actual stored field' => ['fields', ['title' => [['value' => 'Only title']]]],
-  'stored value differs from the reviewed value' => [
-    'fields',
-    [
-      'title' => [['value' => 'Replaced by a save hook']],
-      'body' => [['value' => '<p>Requested</p>', 'format' => 'basic_html', 'summary' => 'Requested summary']],
-    ],
-  ],
 ];
 foreach ($corruptions as $name => [$key, $value]) {
   $cases['rolls back stored mismatch: ' . $name] = static function () use ($key, $value): void {
@@ -460,10 +459,6 @@ function unpublished_store(bool $publish = FALSE): CinatraMemoryProtectedDraftSt
     'changed' => 1000,
     'can_publish' => TRUE,
     'can_edit_moderation_state' => TRUE,
-    'property_types' => [
-      'title' => ['value' => 'string'],
-      'body' => ['value' => 'string', 'format' => 'filter_format', 'summary' => 'string'],
-    ],
   ]);
   $store->after = array_merge($store->snapshot, [
     'default_revision_id' => 41,
@@ -630,19 +625,52 @@ $cases['publish refuses without the publish permission'] = static function (): v
   $request['publish'] = TRUE;
   require_refused_unsaved($store, static fn() => (new ProtectedDraftService($store))->writeUnpublished($request), 'Publishing this page is not permitted');
 };
-$cases['a text value that only looks like a number must be stored byte for byte'] = static function (): void {
-  $store = unpublished_store(TRUE);
+// The one stored-as-reviewed comparison is the storage's, of Drupal's own
+// normalised value. A clear asks for empty, Drupal stores empty: the service
+// must not compare the raw request again.
+foreach (['an empty list' => [], 'an item with an empty value' => [['value' => '']]] as $form => $clear) {
+  $cases['unpublished write accepts a clear sent as ' . $form] = static function () use ($clear): void {
+    $store = unpublished_store();
+    $request = unpublished_request();
+    $request['updates'] = ['title' => [['value' => 'Requested']], 'body' => $clear];
+    $store->after['fields'] = ['title' => [['value' => 'Requested']], 'body' => []];
+    $result = (new ProtectedDraftService($store))->writeUnpublished($request);
+    require_true($store->committed && $result['fields']['body'] === [], 'A normalised clear was refused');
+    require_true($store->saveArguments[2] === $request['updates'], 'The clear was not passed to the storage as sent');
+  };
+  $cases['protected draft accepts a clear sent as ' . $form] = static function () use ($clear): void {
+    $store = new CinatraMemoryProtectedDraftStorage();
+    $request = request();
+    $request['updates']['body'] = $clear;
+    $store->stored['fields']['body'] = [];
+    $result = (new ProtectedDraftService($store))->write($request);
+    require_true($store->committed && $result['fields']['body'] === [], 'A normalised clear was refused');
+  };
+}
+$cases['a storage refusal of a replaced value rolls back with nothing committed'] = static function (): void {
+  $store = new class() extends CinatraMemoryProtectedDraftStorageBase {
+
+    /**
+     * Refuses like the storage comparison after a save hook replaced a value.
+     */
+    public function saveUnpublished(int $nid, string $language, array $updates, bool $publish, ?string $state): int {
+      parent::saveUnpublished($nid, $language, $updates, $publish, $state);
+      throw new ProtectedDraftRefusal('The stored value differs from the reviewed value; nothing was written.');
+    }
+
+  };
+  $fixture = unpublished_store(TRUE);
+  $store->snapshot = $fixture->snapshot;
+  $store->after = $fixture->after;
   $request = unpublished_request();
-  $request['updates'] = ['title' => [['value' => '1.50']]];
   $request['publish'] = TRUE;
-  $store->after['fields'] = ['title' => [['value' => '1.5']]];
   try {
     (new ProtectedDraftService($store))->writeUnpublished($request);
-    throw new \RuntimeException('A replaced text value was published');
+    throw new \RuntimeException('A refused replacement was committed');
   }
   catch (ProtectedDraftRefusal $e) {
     require_true(str_contains($e->getMessage(), 'stored value differs'), 'Another refusal: ' . $e->getMessage());
-    require_true($store->rolledBack && !$store->committed, 'A replaced text value committed');
+    require_true($store->rolledBack && !$store->committed, 'A replaced value committed');
   }
 };
 $cases['write without publish needs no publish permission'] = static function (): void {
@@ -691,13 +719,6 @@ $unpublished_corruptions = [
   'missing stored field' => ['fields', ['title' => [['value' => 'Only title']]]],
   'no changed time' => ['changed', NULL],
   'foreign UUID' => ['uuid', 'foreign'],
-  'stored value differs from the reviewed value' => [
-    'fields',
-    [
-      'title' => [['value' => 'Replaced by a save hook']],
-      'body' => [['value' => '<p>Requested</p>', 'format' => 'basic_html', 'summary' => 'Requested summary']],
-    ],
-  ],
 ];
 foreach ($unpublished_corruptions as $name => [$key, $value]) {
   $cases['unpublished write rolls back stored mismatch: ' . $name] = static function () use ($key, $value): void {

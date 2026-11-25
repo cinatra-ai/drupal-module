@@ -65,7 +65,7 @@ use Drupal\tool\TypedData\InputDefinition;
     'updates' => new InputDefinition(
       data_type: 'map',
       label: new TranslatableMarkup('Canonical fields with structured item values'),
-      description: new TranslatableMarkup('Canonical field names mapped to the structured field item values that the person reviewed.'),
+      description: new TranslatableMarkup('Canonical field names mapped to the structured field item values that the person reviewed. To clear a field, send an empty list or an item with an empty value; both store the field empty.'),
       required: TRUE,
     ),
     'publish' => new InputDefinition(

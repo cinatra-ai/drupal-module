@@ -90,6 +90,15 @@ final class ProtectedDraftProbe {
         $node->setTitle('1.5');
         break;
 
+      case 'refill_cleared':
+        // Puts a value back into a field the person reviewed as cleared.
+        foreach (['field_note', 'field_shared_note'] as $field) {
+          if ($node->hasField($field)) {
+            $node->set($field, 'Put back by a save hook');
+          }
+        }
+        break;
+
       case 'restricted_format':
         $node->get('body')->format = 'restricted';
         break;
