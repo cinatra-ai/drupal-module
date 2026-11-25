@@ -165,10 +165,17 @@ final class PublishWebhook {
     // recordPreRootState() from hook_node_presave, before the first write of
     // the node in the root. fromContainer() always passes the site database.
     //
-    // CONTENT. The event carries what is stored when the root commits, read
-    // fresh: a later save of the same revision in the same root (an in-place
+    // CONTENT, ONE STATE. After the commit the node is loaded ONCE, fresh,
+    // and everything is decided on that one object: its translation must be
+    // published, its default revision must be one that a save of THIS root
+    // wrote (recordRootSave()), and the payload is built from that same
+    // object. So a later save of the same revision in this root (an in-place
     // publish followed by an in-place save) is described by its final stored
-    // values, not by the values the publishing save saw.
+    // values; and when another request has written in the meantime, its
+    // state is never sent as this root's event: unpublished means nothing is
+    // sent, a different default revision (another request's publish) means
+    // nothing is sent, and a new draft revision of another request is not
+    // the default revision and so never read.
     $nid = (int) $node->id();
     $langcode = $node->language()->getId();
     if ($this->database !== NULL && $this->database->inTransaction()) {
@@ -177,8 +184,16 @@ final class PublishWebhook {
         if (!$committed) {
           return;
         }
-        $stored = $this->storedPublishedRevision($nid, $langcode);
-        if ($stored === NULL) {
+        $key = $nid . ':' . $langcode;
+        if (isset($state->queued[$key])) {
+          return;
+        }
+        $translation = $this->loadStoredTranslation($nid, $langcode);
+        if ($translation === NULL || !$translation->isPublished()) {
+          return;
+        }
+        $stored = (int) $translation->getRevisionId();
+        if (!isset($state->saved[$nid][$stored])) {
           return;
         }
         // Unknown (a new page, or no recording) counts as not published.
@@ -186,11 +201,11 @@ final class PublishWebhook {
         if ($before !== NULL && $before['published'] && $before['vid'] === $stored) {
           return;
         }
-        $key = $nid . ':' . $langcode;
-        if (isset($state->queued[$key])) {
+        // Built from the same object that was checked above.
+        if ($this->buildEmission($translation) === NULL) {
           return;
         }
-        $final = $this->emissionForStored($nid, $langcode);
+        $final = $this->buildEmission($translation, $this->nextSequence($nid, $langcode));
         if ($final === NULL) {
           return;
         }
@@ -241,7 +256,7 @@ final class PublishWebhook {
    */
   private function rootState(): \stdClass {
     if (self::$root === NULL || self::$root->ended) {
-      $state = (object) ['ended' => FALSE, 'queued' => [], 'before' => []];
+      $state = (object) ['ended' => FALSE, 'queued' => [], 'before' => [], 'saved' => []];
       self::$root = $state;
       $this->database->transactionManager()->addPostTransactionCallback(static function (bool $committed) use ($state): void {
         $state->ended = TRUE;
@@ -291,68 +306,44 @@ final class PublishWebhook {
   }
 
   /**
-   * Reads the stored default revision of a translation if it is published.
+   * Records a revision that a save of the current root wrote.
    *
-   * Straight from the database, never the entity cache, which still holds
-   * objects whose save was rolled back. The translation's default revision
-   * (node_field_data) must be published AND its own stored row
-   * (node_field_revision, that revision and language) must be published.
-   *
-   * @param int $nid
-   *   The node ID.
-   * @param string $langcode
-   *   The translation.
-   *
-   * @return int|null
-   *   The stored default revision ID, or NULL when it is not published.
+   * Called from hook_node_insert() and hook_node_update() for every save, so
+   * the commit check can tell this root's revisions from another request's.
+   * A quiet no-op outside a transaction or when webhooks are not configured.
    */
-  private function storedPublishedRevision(int $nid, string $langcode): ?int {
-    try {
-      $row = $this->database->select('node_field_data', 'n')
-        ->fields('n', ['vid', 'status'])
-        ->condition('nid', $nid)
-        ->condition('langcode', $langcode)
-        ->execute()
-        ->fetchAssoc();
-      if (!is_array($row) || (int) $row['status'] !== 1) {
-        return NULL;
-      }
-      $revision_status = $this->database->select('node_field_revision', 'r')
-        ->fields('r', ['status'])
-        ->condition('vid', (int) $row['vid'])
-        ->condition('langcode', $langcode)
-        ->execute()
-        ->fetchField();
-      return $revision_status !== FALSE && (int) $revision_status === 1 ? (int) $row['vid'] : NULL;
+  public function recordRootSave(NodeInterface $node): void {
+    $nid = (int) $node->id();
+    if ($nid === 0 || $this->database === NULL || !$this->database->inTransaction()) {
+      return;
     }
-    catch (\Throwable) {
-      return NULL;
+    $config = $this->configFactory->get('cinatra.settings');
+    if ((string) $config->get('cinatra_url') === '' || (string) $config->get('webhook_secret') === '' || (string) $config->get('webhook_binding_id') === '') {
+      return;
     }
+    $this->rootState()->saved[$nid][(int) $node->getRevisionId()] = TRUE;
   }
 
   /**
-   * Builds the emission of the stored default revision, loaded fresh.
+   * Loads the stored default revision of a translation, once and fresh.
    *
-   * The one event of a root describes the stored state at commit, whichever
-   * save registered it, and takes the next sequence number of the node
-   * language. NULL when that cannot be built.
+   * Never from an entity cache, which can still hold objects whose save was
+   * rolled back. NULL when the node or the translation does not exist.
    */
-  private function emissionForStored(int $nid, string $langcode): ?array {
+  private function loadStoredTranslation(int $nid, string $langcode): ?NodeInterface {
     if ($this->entityTypeManager === NULL) {
       return NULL;
     }
     try {
       $storage = $this->entityTypeManager->getStorage('node');
+      // The static and the persistent cache: either can hold a rolled-back
+      // object.
       $storage->resetCache([$nid]);
-      $stored = $storage->load($nid);
-      if (!$stored instanceof NodeInterface) {
+      $stored = $storage->loadUnchanged($nid);
+      if (!$stored instanceof NodeInterface || !$stored->hasTranslation($langcode)) {
         return NULL;
       }
-      $translation = $stored->hasTranslation($langcode) ? $stored->getTranslation($langcode) : $stored;
-      if ($this->buildEmission($translation) === NULL) {
-        return NULL;
-      }
-      return $this->buildEmission($translation, $this->nextSequence($nid, $langcode));
+      return $stored->getTranslation($langcode);
     }
     catch (\Throwable) {
       return NULL;

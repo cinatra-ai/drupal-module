@@ -55,6 +55,15 @@ final class ProtectedDraftProbe {
    * @var bool
    */
   public static bool $defaultTranslationAffectedOnly = FALSE;
+  /**
+   * Another request's save, run after the next root commits.
+   *
+   * Registered from the first node pre-save of a root, so it runs after the
+   * root has committed and before the publish webhook's commit check.
+   *
+   * @var callable|null
+   */
+  public static $afterCommitWriter = NULL;
 
   /**
    * Exercises reset.
@@ -67,6 +76,7 @@ final class ProtectedDraftProbe {
     self::$deniedField = NULL;
     self::$swapFile = NULL;
     self::$defaultTranslationAffectedOnly = FALSE;
+    self::$afterCommitWriter = NULL;
   }
 
   /**

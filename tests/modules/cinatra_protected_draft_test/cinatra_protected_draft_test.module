@@ -50,6 +50,16 @@ function cinatra_protected_draft_test_entity_bundle_info_alter(array &$bundles):
  * Implements hook_node_presave().
  */
 function cinatra_protected_draft_test_node_presave(NodeInterface $node): void {
+  $writer = ProtectedDraftProbe::$afterCommitWriter;
+  $database = \Drupal::database();
+  if ($writer !== NULL && $database->inTransaction()) {
+    ProtectedDraftProbe::$afterCommitWriter = NULL;
+    $database->transactionManager()->addPostTransactionCallback(static function (bool $committed) use ($writer): void {
+      if ($committed) {
+        $writer();
+      }
+    });
+  }
   ProtectedDraftProbe::beforeSave($node);
 }
 

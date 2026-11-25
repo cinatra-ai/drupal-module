@@ -1268,6 +1268,93 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
+   * Another request unpublishes the page in place before the commit check.
+   *
+   * The stored state is not published: nothing is sent.
+   */
+  public function testInterleavedUnpublishSendsNothing(): void {
+    $sent = $this->webhooksSentBy(function (): void {
+      $nid = (int) $this->plainPage()->id();
+      $this->publishWithInterleavedWriter($nid, function () use ($nid): void {
+        $this->savePage($nid, FALSE, FALSE, 'Unpublished by another request');
+      });
+    });
+    $this->assertSame([], $sent);
+  }
+
+  /**
+   * Another request saves a new draft revision before the commit check.
+   *
+   * The published default revision is still this transaction's: one event,
+   * with this transaction's title and revision, never the draft's.
+   */
+  public function testInterleavedDraftRevisionIsNotSent(): void {
+    $revision = 0;
+    $nid = 0;
+    $draft = 0;
+    $sent = $this->webhooksSentBy(function () use (&$revision, &$nid, &$draft): void {
+      $nid = (int) $this->plainPage()->id();
+      $revision = $this->publishWithInterleavedWriter($nid, function () use ($nid, &$draft): void {
+        $this->nodeStorage()->resetCache([$nid]);
+        $node = $this->nodeStorage()->load($nid);
+        $node->setTitle('Draft of another request');
+        $node->set('status', FALSE);
+        $node->setNewRevision(TRUE);
+        $node->isDefaultRevision(FALSE);
+        $node->save();
+        $draft = (int) $node->getRevisionId();
+      });
+    });
+    $this->assertNotSame($revision, $draft);
+    $this->assertCount(1, $sent);
+    $this->assertSame('Published by this transaction', $sent[0]['body']['title']);
+    $this->assertSame($this->webhookId($nid, $revision), $sent[0]['id']);
+  }
+
+  /**
+   * Another request publishes a different revision before the commit check.
+   *
+   * That revision is not this transaction's: this transaction sends nothing,
+   * never an event carrying the other revision. The other request's save of
+   * an already published page is not a publish step, so it sends nothing
+   * either.
+   */
+  public function testInterleavedPublishOfAnotherRevisionIsNotSent(): void {
+    $revision = 0;
+    $other = 0;
+    $sent = $this->webhooksSentBy(function () use (&$revision, &$other): void {
+      $nid = (int) $this->plainPage()->id();
+      $revision = $this->publishWithInterleavedWriter($nid, function () use ($nid, &$other): void {
+        $other = $this->savePage($nid, TRUE, TRUE, 'Published by another request');
+      });
+    });
+    $this->assertNotSame($revision, $other);
+    $this->assertSame([], $sent);
+  }
+
+  /**
+   * Publishes the page in one root; another request writes after the commit.
+   *
+   * @return int
+   *   The revision this transaction published.
+   */
+  private function publishWithInterleavedWriter(int $nid, callable $writer): int {
+    $database = $this->container->get('database');
+    ProtectedDraftProbe::reset();
+    $ran = FALSE;
+    ProtectedDraftProbe::$afterCommitWriter = static function () use ($writer, &$ran): void {
+      $writer();
+      $ran = TRUE;
+    };
+    $root = $database->startTransaction();
+    $this->savePage($nid, TRUE, FALSE, 'Publishing save');
+    $revision = $this->savePage($nid, TRUE, FALSE, 'Published by this transaction');
+    unset($root);
+    $this->assertTrue($ran, 'The interleaved writer must have run after the commit.');
+    return $revision;
+  }
+
+  /**
    * Creates an unpublished, unmoderated page with an old changed time.
    */
   private function plainPage(?User $owner = NULL): Node {
