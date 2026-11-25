@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\Tests\cinatra\Unit;
 
 use Drupal\cinatra\PublishWebhook;
+use Drupal\Core\Language\Language;
 use Drupal\node\NodeInterface;
 use Drupal\Tests\UnitTestCase;
 use GuzzleHttp\ClientInterface;
@@ -177,6 +178,8 @@ final class PublishWebhookTest extends UnitTestCase {
     $node->method('bundle')->willReturn('article');
     $node->method('label')->willReturn('Hello');
     $node->method('getRevisionId')->willReturn('7');
+    $node->method('language')->willReturn(new Language(['id' => 'en']));
+    $node->method('getChangedTime')->willReturn(1700000000);
     // toUrl() needs the routing container in a real site; the emitter treats a
     // failure as "omit the optional url field".
     $node->method('toUrl')->willThrowException(new \RuntimeException('no container'));
@@ -196,11 +199,17 @@ final class PublishWebhookTest extends UnitTestCase {
     $this->assertSame('https://news.example.com', $payload['siteUrl']);
     $this->assertArrayNotHasKey('url', $payload);
     $this->assertNotEmpty($payload['issuedAt']);
-    // The idempotency id is STABLE per (instance, node, revision).
+    // The idempotency id is STABLE per event: the same inputs give the same id.
     $again = $emitter->buildEmission($node);
     $this->assertNotNull($again);
     $this->assertSame($emission['messageId'], $again['messageId']);
-    $this->assertStringStartsWith('drupal-', $emission['messageId']);
+    $this->assertMatchesRegularExpression('/^drupal-[0-9a-f]{64}$/', $emission['messageId']);
+    // Another publish event of the same revision has another sequence number,
+    // and so another id.
+    $next = $emitter->buildEmission($node, 1);
+    $this->assertNotNull($next);
+    $this->assertNotSame($emission['messageId'], $next['messageId']);
+    $this->assertSame($next['messageId'], $emitter->buildEmission($node, 1)['messageId']);
     // The secret rides internally to the shutdown sender, never the payload.
     $this->assertStringNotContainsString(self::VECTOR_SECRET, $emission['body']);
   }

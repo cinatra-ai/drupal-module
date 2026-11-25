@@ -113,11 +113,12 @@ $stamp_test('another translation may not be marked affected', $stamped, FALSE);
 $stamped = $stamped_before;
 unset($stamped['en']['changed']);
 $stamp_test('another translation timestamp may not disappear', $stamped, FALSE);
-// An untranslatable (shared) field in the write: core moves every translation's
-// timestamp and affected flag with it.
-$stamp_shared_test = function (string $name, array $after, bool $allowed) use ($stamped_before, &$passed): void {
+// An untranslatable (shared) field in the write: core moves the timestamp of
+// every translation it counts the change for to the request time (999) and
+// marks it affected; any other value is not core's.
+$stamp_shared_test = function (string $name, array $after, bool $allowed, array $languages = ['en', 'fr']) use ($stamped_before, &$passed): void {
   try {
-    ProtectedDraftFieldScope::assertMatches($stamped_before, $after, 'fr', ['title'], ['title']);
+    ProtectedDraftFieldScope::assertMatches($stamped_before, $after, 'fr', ['title'], ['title'], 999, $languages);
     if (!$allowed) {
       throw new RuntimeException($name . ' incorrectly accepted');
     }
@@ -136,6 +137,39 @@ $stamped['en']['title'] = [['value' => 'Shared title']];
 $stamped['en']['changed'] = [['value' => 999]];
 $stamped['en']['revision_translation_affected'] = TRUE;
 $stamp_shared_test('a shared write moves the other translation bookkeeping', $stamped, TRUE);
+$stamped_other = $stamped;
+$stamped_other['en']['changed'] = [['value' => '999']];
+$stamp_shared_test('a stored timestamp read as text is the same number', $stamped_other, TRUE);
+$stamped_other['en']['changed'] = [['value' => 12345]];
+$stamp_shared_test('a shared write refuses another timestamp than the request time', $stamped_other, FALSE);
+$stamped_other = $stamped;
+$stamped_other['en']['changed'] = [['value' => 100]];
+$stamp_shared_test('a shared write refuses a kept timestamp core would move', $stamped_other, FALSE);
+$stamped_other = $stamped;
+$stamped_other['en']['revision_translation_affected'] = FALSE;
+$stamp_shared_test('a shared write refuses a cleared affected flag core would set', $stamped_other, FALSE);
+$stamp_shared_test('core counting the shared field only for fr refuses moved en bookkeeping', $stamped, FALSE, ['fr']);
+$kept = $stamped;
+$kept['en']['changed'] = [['value' => 100]];
+$kept['en']['revision_translation_affected'] = FALSE;
+$stamp_shared_test('core counting the shared field only for fr keeps en bookkeeping', $kept, TRUE, ['fr']);
+// A shared value written unchanged is no change: core moves nothing else.
+$same_before = $stamped_before;
+$same_before['en']['title'] = [['value' => 'Shared title']];
+$same_before['fr']['title'] = [['value' => 'Shared title']];
+ProtectedDraftFieldScope::assertMatches($same_before, $same_before, 'fr', ['title'], ['title'], 999, ['en', 'fr']);
+$passed++;
+echo "PASS an unchanged shared value moves no other bookkeeping\n";
+$same_after = $same_before;
+$same_after['en']['changed'] = [['value' => 999]];
+try {
+  ProtectedDraftFieldScope::assertMatches($same_before, $same_after, 'fr', ['title'], ['title'], 999, ['en', 'fr']);
+  throw new RuntimeException('an unchanged shared value with a moved other timestamp incorrectly accepted');
+}
+catch (ProtectedDraftRefusal) {
+  $passed++;
+  echo "PASS an unchanged shared value refuses a moved other timestamp\n";
+}
 $stamped['en']['body'][0]['value'] = 'Out of scope';
 $stamp_shared_test('a shared write still refuses another translation content', $stamped, FALSE);
 $shared_before = $before;

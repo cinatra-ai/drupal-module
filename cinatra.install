@@ -7,6 +7,8 @@
 
 declare(strict_types=1);
 
+use Drupal\cinatra\PublishWebhook;
+
 /**
  * Implements hook_install().
  *
@@ -67,4 +69,6 @@ function cinatra_uninstall(): void {
   foreach (['cinatra.settings', 'cinatra_widget.settings'] as $name) {
     $config_factory->getEditable($name)->delete();
   }
+  // The publish webhook's per-node event sequence numbers.
+  \Drupal::keyValue(PublishWebhook::SEQUENCE_COLLECTION)->deleteAll();
 }

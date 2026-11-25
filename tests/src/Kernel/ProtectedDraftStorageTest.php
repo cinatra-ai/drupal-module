@@ -472,8 +472,74 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
       'field_shared_note' => [['value' => 'A new shared note']],
     ]));
     $draft = $this->nodeStorage()->loadRevision($stored['revision_id']);
-    $this->assertGreaterThan($old, (int) $draft->getTranslation('fr')->getChangedTime());
+    // Exactly what core sets: the request time and the affected flag.
+    $this->assertSame((int) $this->container->get('datetime.time')->getRequestTime(), (int) $draft->getTranslation('fr')->getChangedTime());
+    $this->assertTrue((bool) $draft->getTranslation('fr')->isRevisionTranslationAffected());
     $this->assertRootFinished();
+  }
+
+  /**
+   * A shared field write: a hook moving the French timestamp elsewhere fails.
+   *
+   * Core moves it to the request time; any other value is the hook's.
+   */
+  public function testSharedFieldWriteRollsBackWhenHookMovesOtherTimestampElsewhere(): void {
+    $this->assertSaveHookRollsBack('other_changed', ['field_shared_note' => [['value' => 'A new shared note']]], 'The stored draft changed an unrequested field or another translation');
+  }
+
+  /**
+   * A shared field write: a hook clearing the French affected flag fails.
+   *
+   * Core marks the French translation affected; a cleared flag is the hook's.
+   */
+  public function testSharedFieldWriteRollsBackWhenHookClearsOtherAffectedFlag(): void {
+    $this->assertSaveHookRollsBack('other_unaffected', ['field_shared_note' => [['value' => 'A new shared note']]], 'The stored draft changed an unrequested field or another translation');
+  }
+
+  /**
+   * Shared fields that affect only the default translation leave French alone.
+   *
+   * Core then neither moves the French timestamp nor marks French affected,
+   * so the write is kept with French unchanged, and a hook moving French's
+   * timestamp to the request time rolls back.
+   */
+  public function testSharedFieldAffectingOnlyDefaultTranslationKeepsOtherBookkeeping(): void {
+    $nid = (int) $this->page->id();
+    $old = (int) $this->page->getTranslation('fr')->getChangedTime() - 100;
+    $this->page->getTranslation('fr')->setChangedTime($old);
+    $this->page->save();
+    $updates = ['field_shared_note' => [['value' => 'A new shared note']]];
+    $preimage = $this->protectedDraft->prepare($nid, 'en', array_keys($updates));
+    $before = $this->snapshot();
+    ProtectedDraftProbe::arm($nid, 'other_changed_to_request_time');
+    $this->defaultTranslationAffectedOnly();
+    try {
+      $this->protectedDraft->write($this->request($preimage, $updates));
+      $this->fail('A hook moving the French timestamp must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored draft changed an unrequested field or another translation', $expected->getMessage());
+      $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede rollback.');
+    }
+    $this->assertSame($before, $this->snapshot());
+    $this->assertRootFinished();
+    ProtectedDraftProbe::reset();
+    $this->defaultTranslationAffectedOnly();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', array_keys($updates));
+    $stored = $this->protectedDraft->write($this->request($preimage, $updates));
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id']);
+    $this->assertSame($old, (int) $draft->getTranslation('fr')->getChangedTime());
+    $this->assertFalse((bool) $draft->getTranslation('fr')->isRevisionTranslationAffected());
+    $this->assertRootFinished();
+  }
+
+  /**
+   * Makes untranslatable page fields affect only the default translation.
+   */
+  private function defaultTranslationAffectedOnly(): void {
+    ProtectedDraftProbe::$defaultTranslationAffectedOnly = TRUE;
+    $this->container->get('entity_type.bundle.info')->clearCachedBundles();
+    $this->assertTrue($this->nodeStorage()->load((int) $this->page->id())->isDefaultTranslationAffectedOnly());
   }
 
   /**

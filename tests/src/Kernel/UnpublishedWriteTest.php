@@ -896,7 +896,7 @@ final class UnpublishedWriteTest extends KernelTestBase {
    * @return array
    *   One entry per request: id (the webhook-id) and body (the payload).
    */
-  private function webhooksSentBy(callable $scenario): array {
+  private function webhooksSentBy(callable $scenario, int $deliveries = 1): array {
     $this->config('cinatra.settings')
       ->set('cinatra_url', 'http://localhost:3000')
       ->set('webhook_secret', 'whsec_' . base64_encode(str_repeat('k', 32)))
@@ -912,7 +912,10 @@ final class UnpublishedWriteTest extends KernelTestBase {
     try {
       $scenario();
       foreach (array_slice($callbacks, $initial) as $queued) {
-        call_user_func_array($queued['callback'], $queued['arguments']);
+        // More than one delivery stands for a retry of the same event.
+        for ($delivery = 0; $delivery < $deliveries; $delivery++) {
+          call_user_func_array($queued['callback'], $queued['arguments']);
+        }
       }
     }
     finally {
@@ -926,11 +929,22 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
-   * The webhook-id of a node's revision, as the emitter derives it.
+   * The webhook-id of a publish event, as the emitter derives it.
+   *
+   * @param int $nid
+   *   The page.
+   * @param int $revision_id
+   *   The published revision.
+   * @param int $sequence
+   *   The event's sequence number for the page language.
+   * @param string $langcode
+   *   The language.
    */
-  private function webhookId(int $nid, int $revision_id): string {
+  private function webhookId(int $nid, int $revision_id, int $sequence = 1, string $langcode = 'en'): string {
     $instance = (string) $this->config('cinatra.settings')->get('instance_id');
-    return 'drupal-' . hash('sha256', $instance . ':' . $nid . ':' . $revision_id);
+    $this->nodeStorage()->resetCache([$nid]);
+    $changed = (int) $this->nodeStorage()->loadRevision($revision_id)->getTranslation($langcode)->getChangedTime();
+    return 'drupal-' . hash('sha256', implode(':', [$instance, $nid, $revision_id, $langcode, $changed, $sequence]));
   }
 
   /**
@@ -1206,6 +1220,51 @@ final class UnpublishedWriteTest extends KernelTestBase {
     });
     $this->assertCount(2, $sent);
     $this->assertNotSame($sent[0]['id'], $sent[1]['id']);
+  }
+
+  /**
+   * An in-place publish, then an in-place save in the same root: final title.
+   *
+   * Both saves write the same revision; the one event carries what is stored
+   * when the root commits, not what the publishing save saw.
+   */
+  public function testInPlacePublishThenInPlaceSaveSendsTheStoredTitle(): void {
+    $sent = $this->webhooksSentBy(function (): void {
+      $database = $this->container->get('database');
+      $nid = (int) $this->plainPage()->id();
+      $root = $database->startTransaction();
+      $first = $this->savePage($nid, TRUE, FALSE, 'Published in place');
+      $second = $this->savePage($nid, TRUE, FALSE, 'Final stored title');
+      $this->assertSame($first, $second);
+      unset($root);
+    });
+    $this->assertCount(1, $sent);
+    $this->assertSame('Final stored title', $sent[0]['body']['title']);
+  }
+
+  /**
+   * The same revision published, unpublished and published again in place.
+   *
+   * Each publish is its own event with its own webhook-id, so the receiver's
+   * idempotency ledger keeps both; a retry of one event keeps its id.
+   */
+  public function testInPlaceRepublishOfTheSameRevisionGetsAnotherWebhookId(): void {
+    $revisions = [];
+    $sent = $this->webhooksSentBy(function () use (&$revisions): void {
+      $database = $this->container->get('database');
+      $nid = (int) $this->plainPage()->id();
+      foreach ([TRUE, FALSE, TRUE] as $published) {
+        $root = $database->startTransaction();
+        $revisions[] = $this->savePage($nid, $published, FALSE, $published ? 'Published' : 'Unpublished');
+        unset($root);
+      }
+    }, 2);
+    $this->assertCount(1, array_unique($revisions));
+    $this->assertCount(4, $sent);
+    // Two deliveries of each event: a retry keeps the id of its event.
+    $this->assertSame($sent[0]['id'], $sent[1]['id']);
+    $this->assertSame($sent[2]['id'], $sent[3]['id']);
+    $this->assertNotSame($sent[0]['id'], $sent[2]['id']);
   }
 
   /**

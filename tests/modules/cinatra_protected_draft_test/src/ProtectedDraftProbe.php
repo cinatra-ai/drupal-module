@@ -47,6 +47,14 @@ final class ProtectedDraftProbe {
    * @var int|null
    */
   public static ?int $swapFile = NULL;
+  /**
+   * Whether untranslatable fields affect only the default translation.
+   *
+   * Read by the test module's bundle info alter for the page bundle.
+   *
+   * @var bool
+   */
+  public static bool $defaultTranslationAffectedOnly = FALSE;
 
   /**
    * Exercises reset.
@@ -58,6 +66,7 @@ final class ProtectedDraftProbe {
     self::$storedRevision = NULL;
     self::$deniedField = NULL;
     self::$swapFile = NULL;
+    self::$defaultTranslationAffectedOnly = FALSE;
   }
 
   /**
@@ -93,10 +102,24 @@ final class ProtectedDraftProbe {
         $node->getTranslation($other)->setChangedTime(time() + 1000);
         break;
 
+      case 'other_changed_to_request_time':
+        // A save hook moving another translation's timestamp to the value core
+        // gives an affected translation.
+        $other = $node->language()->getId() === 'en' ? 'fr' : 'en';
+        $node->getTranslation($other)->setChangedTime(\Drupal::time()->getRequestTime());
+        break;
+
       case 'other_affected':
         // A save hook marking another translation as affected by this revision.
         $other = $node->language()->getId() === 'en' ? 'fr' : 'en';
         $node->getTranslation($other)->setRevisionTranslationAffected(TRUE);
+        break;
+
+      case 'other_unaffected':
+        // A save hook clearing another translation's affected flag, which
+        // core would set for a change of an untranslatable field.
+        $other = $node->language()->getId() === 'en' ? 'fr' : 'en';
+        $node->getTranslation($other)->setRevisionTranslationAffected(FALSE);
         break;
 
       case 'replace_title':

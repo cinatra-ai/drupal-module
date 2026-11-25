@@ -7,6 +7,7 @@ namespace Drupal\cinatra;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Database\Connection;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\KeyValueStore\KeyValueStoreInterface;
 use Drupal\node\NodeInterface;
 use GuzzleHttp\ClientInterface;
 use Psr\Log\LoggerInterface;
@@ -45,9 +46,15 @@ use Symfony\Component\HttpFoundation\RequestStack;
  *              $node->id(), exactly as the WordPress plugin casts
  *              (int) $post->ID. The body is JSON-encoded ONCE and the same
  *              exact bytes are signed and sent.
- * - IDEMPOTENCY: webhook-id is STABLE per publish event (derived from the
- *              instance id + node id + revision id) so a retried delivery
- *              carries the same id and the host's idempotency ledger dedupes.
+ * - IDEMPOTENCY: webhook-id is STABLE per publish event and differs between
+ *              publish events: it is derived from the instance id, node id,
+ *              revision id, language, the stored "changed" time and the
+ *              event's sequence number for that node and language (see
+ *              buildEmission()). The emission is built once per event, so a
+ *              retried delivery carries the same id and the host's
+ *              idempotency ledger dedupes it; a later publish of the same
+ *              revision (in place, after an unpublish) is a new event with a
+ *              new id. The id stays an opaque "drupal-<sha256 hex>" string.
  *
  * SAFETY: emission is deferred to a shutdown callback so the transport can
  * never block or fail the node save itself (codex: a synchronous 4s POST
@@ -83,6 +90,11 @@ final class PublishWebhook {
   private const TIMEOUT_SECONDS = 4;
 
   /**
+   * The key-value collection holding each node language's event sequence.
+   */
+  public const SEQUENCE_COLLECTION = 'cinatra.publish_webhook';
+
+  /**
    * What the root transaction now running knows.
    *
    * The published state it started with, per node and language, and the
@@ -100,6 +112,7 @@ final class PublishWebhook {
     private readonly RequestStack $requestStack,
     private readonly ?Connection $database = NULL,
     private readonly ?EntityTypeManagerInterface $entityTypeManager = NULL,
+    private readonly ?KeyValueStoreInterface $sequences = NULL,
   ) {
   }
 
@@ -114,6 +127,7 @@ final class PublishWebhook {
       \Drupal::requestStack(),
       \Drupal::database(),
       \Drupal::entityTypeManager(),
+      \Drupal::keyValue(self::SEQUENCE_COLLECTION),
     );
   }
 
@@ -132,15 +146,11 @@ final class PublishWebhook {
    *   The node that just transitioned into the published state.
    */
   public function deferEmitNodePublished(NodeInterface $node): void {
-    $emission = $this->buildEmission($node);
-    if ($emission === NULL) {
+    // Only a gate here (configured, buildable); what is sent is built when the
+    // event is queued, with its sequence number.
+    if ($this->buildEmission($node) === NULL) {
       return;
     }
-    $register = function () use ($emission): void {
-      drupal_register_shutdown_function(function () use ($emission): void {
-        $this->send($emission);
-      });
-    };
     // SEMANTICS. A publish event is a CHANGE of the stored state across one
     // root transaction, not a root commit. Per root, node and language: at
     // most one webhook, queued only if the root committed, the stored default
@@ -154,12 +164,16 @@ final class PublishWebhook {
     // registers. The state at the root's start is recorded by
     // recordPreRootState() from hook_node_presave, before the first write of
     // the node in the root. fromContainer() always passes the site database.
+    //
+    // CONTENT. The event carries what is stored when the root commits, read
+    // fresh: a later save of the same revision in the same root (an in-place
+    // publish followed by an in-place save) is described by its final stored
+    // values, not by the values the publishing save saw.
+    $nid = (int) $node->id();
+    $langcode = $node->language()->getId();
     if ($this->database !== NULL && $this->database->inTransaction()) {
       $state = $this->rootState();
-      $nid = (int) $node->id();
-      $langcode = $node->language()->getId();
-      $revision_id = (int) $node->getRevisionId();
-      $check = function (bool $committed) use ($state, $emission, $nid, $revision_id, $langcode): void {
+      $check = function (bool $committed) use ($state, $nid, $langcode): void {
         if (!$committed) {
           return;
         }
@@ -176,7 +190,7 @@ final class PublishWebhook {
         if (isset($state->queued[$key])) {
           return;
         }
-        $final = $stored === $revision_id ? $emission : $this->emissionForStored($nid, $langcode);
+        $final = $this->emissionForStored($nid, $langcode);
         if ($final === NULL) {
           return;
         }
@@ -188,7 +202,34 @@ final class PublishWebhook {
       $this->database->transactionManager()->addPostTransactionCallback($check);
       return;
     }
-    $register();
+    $final = $this->buildEmission($node, $this->nextSequence($nid, $langcode));
+    if ($final !== NULL) {
+      drupal_register_shutdown_function(function () use ($final): void {
+        $this->send($final);
+      });
+    }
+  }
+
+  /**
+   * Takes the next event sequence number of a node language.
+   *
+   * Kept in the module's own key-value collection and taken once per queued
+   * event, so two publish events of the same revision get different numbers.
+   * 0 when no store is available (the id then rests on the other inputs).
+   */
+  private function nextSequence(int $nid, string $langcode): int {
+    if ($this->sequences === NULL) {
+      return 0;
+    }
+    try {
+      $key = $nid . ':' . $langcode;
+      $sequence = (int) $this->sequences->get($key, 0) + 1;
+      $this->sequences->set($key, $sequence);
+      return $sequence;
+    }
+    catch (\Throwable) {
+      return 0;
+    }
   }
 
   /**
@@ -292,9 +333,9 @@ final class PublishWebhook {
   /**
    * Builds the emission of the stored default revision, loaded fresh.
    *
-   * Used when the save that registered a callback is not the stored one (a
-   * later save kept the page published): the one event describes the stored
-   * state. NULL when that cannot be built.
+   * The one event of a root describes the stored state at commit, whichever
+   * save registered it, and takes the next sequence number of the node
+   * language. NULL when that cannot be built.
    */
   private function emissionForStored(int $nid, string $langcode): ?array {
     if ($this->entityTypeManager === NULL) {
@@ -307,7 +348,11 @@ final class PublishWebhook {
       if (!$stored instanceof NodeInterface) {
         return NULL;
       }
-      return $this->buildEmission($stored->hasTranslation($langcode) ? $stored->getTranslation($langcode) : $stored);
+      $translation = $stored->hasTranslation($langcode) ? $stored->getTranslation($langcode) : $stored;
+      if ($this->buildEmission($translation) === NULL) {
+        return NULL;
+      }
+      return $this->buildEmission($translation, $this->nextSequence($nid, $langcode));
     }
     catch (\Throwable) {
       return NULL;
@@ -325,11 +370,13 @@ final class PublishWebhook {
    *
    * @param \Drupal\node\NodeInterface $node
    *   The published node.
+   * @param int $sequence
+   *   The event's sequence number for the node language (see nextSequence()).
    *
    * @return array{url: string, body: string, messageId: string, secret: string}|null
    *   The delivery inputs, or NULL when emission is not configured/possible.
    */
-  public function buildEmission(NodeInterface $node): ?array {
+  public function buildEmission(NodeInterface $node, int $sequence = 0): ?array {
     $config = $this->configFactory->get('cinatra.settings');
     $configUrl = rtrim((string) $config->get('cinatra_url'), '/');
     $secret = (string) $config->get('webhook_secret');
@@ -384,13 +431,24 @@ final class PublishWebhook {
       return NULL;
     }
 
-    // STABLE per publish event (instance + node + revision): a retried
-    // delivery of the same event carries the same webhook-id, so the host's
-    // idempotency ledger dedupes; a LATER publish event (new revision) gets a
-    // fresh id. Non-secret inputs only.
+    // STABLE per publish event, DIFFERENT per publish event. The inputs:
+    // instance, node, revision, language, the translation's stored changed
+    // time and the event's sequence number. The emission is built once per
+    // event, so a retried delivery carries the same webhook-id and the host's
+    // idempotency ledger dedupes it. A later publish event gets a fresh id:
+    // a new revision, or the same revision published again in place (the
+    // sequence number moves, and core's ChangedItem moves the changed time
+    // of a translation whose status changed). Non-secret inputs only.
     $instanceId = (string) $config->get('instance_id');
     $revisionId = (string) ($node->getRevisionId() ?? $node->getChangedTime());
-    $messageId = 'drupal-' . hash('sha256', $instanceId . ':' . $node->id() . ':' . $revisionId);
+    $messageId = 'drupal-' . hash('sha256', implode(':', [
+      $instanceId,
+      $node->id(),
+      $revisionId,
+      $node->language()->getId(),
+      (string) $node->getChangedTime(),
+      (string) $sequence,
+    ]));
 
     $base = ServerBase::resolve($configUrl, $this->logger);
     return [

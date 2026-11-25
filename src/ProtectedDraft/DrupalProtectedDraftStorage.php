@@ -458,7 +458,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $this->bindStoredModeration($stored, $workflow);
     // Save hooks can rewrite values after the proposed candidate passed access.
     // Validate actual SQL content/permissions before the root may commit.
-    ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields);
+    ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields, (int) $this->time->getRequestTime(), $this->sharedChangeLanguages($this->preimage));
     $this->assertDraftAccess(clone $stored->getTranslation($language), array_keys($updates));
     // The one stored-as-reviewed comparison (see saveUnpublished()): the
     // scope check skips the requested fields, so a save hook must not have
@@ -555,7 +555,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // Save hooks can rewrite values after the candidate passed access. The
     // scope check excludes only the requested fields and this translation's
     // status; the service checks that status against the publish step.
-    ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields);
+    ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields, (int) $this->time->getRequestTime(), $this->sharedChangeLanguages($this->preimage));
     $this->assertUnpublishedWriteAccess(clone $stored->getTranslation($language), array_keys($updates), $publish, $state !== NULL);
     // The one stored-as-reviewed comparison, the same as in saveDraft(). The
     // scope check above covers every field NOT requested, revisionable or not;
@@ -767,6 +767,25 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       }
     }
     return $content;
+  }
+
+  /**
+   * Lists the translations for which core counts an untranslatable field.
+   *
+   * ContentEntityBase::hasTranslationChanges() skips untranslatable fields for
+   * a non-default translation when the bundle's untranslatable fields affect
+   * only the default translation; for every other translation a changed
+   * untranslatable field is a change of that translation.
+   */
+  private function sharedChangeLanguages(NodeInterface $node): array {
+    $languages = [];
+    foreach (array_keys($node->getTranslationLanguages()) as $language) {
+      $translation = $node->getTranslation($language);
+      if ($translation->isDefaultTranslation() || !$translation->isDefaultTranslationAffectedOnly()) {
+        $languages[] = $language;
+      }
+    }
+    return $languages;
   }
 
   /**

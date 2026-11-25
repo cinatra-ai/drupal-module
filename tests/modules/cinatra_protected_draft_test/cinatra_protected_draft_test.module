@@ -35,6 +35,18 @@ function cinatra_protected_draft_test_entity_base_field_info(EntityTypeInterface
 }
 
 /**
+ * Implements hook_entity_bundle_info_alter().
+ *
+ * Lets a test make untranslatable page fields affect only the default
+ * translation, as the content translation settings do.
+ */
+function cinatra_protected_draft_test_entity_bundle_info_alter(array &$bundles): void {
+  if (ProtectedDraftProbe::$defaultTranslationAffectedOnly && isset($bundles['node']['page'])) {
+    $bundles['node']['page']['untranslatable_fields.default_translation_affected'] = TRUE;
+  }
+}
+
+/**
  * Implements hook_node_presave().
  */
 function cinatra_protected_draft_test_node_presave(NodeInterface $node): void {

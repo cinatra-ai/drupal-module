@@ -11,8 +11,40 @@ final class ProtectedDraftFieldScope {
 
   /**
    * Rejects a save hook changing any unrequested revisioned content.
+   *
+   * Every translation must be stored as before, except for the requested
+   * fields and what Drupal core itself changes in the same save:
+   * - the edited translation: its status, "changed" timestamp and
+   *   "revision_translation_affected" flag;
+   * - every other translation: exactly the bookkeeping core gives it.
+   *   ChangedItem::preSave() moves a translation's "changed" to the request
+   *   time when it has changes (ContentEntityBase::hasTranslationChanges()) or
+   *   has no timestamp yet, and otherwise keeps it; and
+   *   ContentEntityStorageBase::populateAffectedRevisionTranslations() marks
+   *   it affected exactly when it has changes. The only change such a
+   *   translation may have is a changed value of a requested untranslatable
+   *   (shared) field, and only when core counts untranslatable fields for it
+   *   ($shared_change_languages: not for a non-default translation of a bundle
+   *   whose untranslatable fields affect only the default translation).
+   *
+   * @param array $before
+   *   Language to field name to values, before the save; the affected flag is
+   *   the one an untouched translation holds in the new revision (FALSE).
+   * @param array $after
+   *   The same, as stored; the affected flag as a boolean.
+   * @param string $language
+   *   The edited translation.
+   * @param array $updated_fields
+   *   The requested fields.
+   * @param array $shared_fields
+   *   The requested fields that are untranslatable.
+   * @param int|null $request_time
+   *   The request time core stamps; NULL keeps every other timestamp fixed.
+   * @param array $shared_change_languages
+   *   The translations for which core counts a change of an untranslatable
+   *   field as a change of the translation.
    */
-  public static function assertMatches(array $before, array $after, string $language, array $updated_fields, array $shared_fields = []): void {
+  public static function assertMatches(array $before, array $after, string $language, array $updated_fields, array $shared_fields = [], ?int $request_time = NULL, array $shared_change_languages = []): void {
     // The adapter derives this subset from actual field definitions. A caller
     // cannot excuse unrelated content by labelling an unrequested field shared.
     if (array_diff($shared_fields, $updated_fields)) {
@@ -28,26 +60,35 @@ final class ProtectedDraftFieldScope {
     foreach ($before as $code => $fields) {
       $expected = $fields;
       $stored = $after[$code];
+      $shared_changed = FALSE;
       foreach ($shared_fields as $field) {
         if (!array_key_exists($field, $after[$language])
           || !array_key_exists($field, $stored)
           || $stored[$field] !== $after[$language][$field]) {
           throw new ProtectedDraftRefusal('A shared stored field must have one value across all page translations.');
         }
+        $shared_changed = $shared_changed || !self::sameItems($expected[$field] ?? [], $stored[$field]);
         unset($expected[$field], $stored[$field]);
-      }
-      if ($shared_fields) {
-        // Core itself marks every translation as affected, and moves its
-        // timestamp, when an untranslatable field changes: such a write
-        // legitimately touches all translations' bookkeeping.
-        unset($expected['changed'], $stored['changed']);
-        unset($expected['revision_translation_affected'], $stored['revision_translation_affected']);
       }
       if ($code === $language) {
         // The edited translation's own bookkeeping: the save moves its
-        // timestamp and marks it affected. No other translation's may move.
+        // timestamp and marks it affected.
         foreach (array_merge($updated_fields, ['status', 'changed', 'revision_translation_affected']) as $field) {
           unset($expected[$field], $stored[$field]);
+        }
+      }
+      else {
+        // Another translation: exactly what core gives it in this save.
+        $affected = $shared_changed && in_array($code, $shared_change_languages, TRUE);
+        if (array_key_exists('changed', $expected) && $expected['changed'] !== []) {
+          $old = self::timestamp($expected['changed']);
+          if ($old !== NULL || $request_time !== NULL) {
+            $expected['changed'] = $request_time !== NULL && ($affected || !$old) ? $request_time : $old;
+            $stored['changed'] = array_key_exists('changed', $stored) ? (self::timestamp($stored['changed']) ?? $stored['changed']) : NULL;
+          }
+        }
+        if (array_key_exists('revision_translation_affected', $expected)) {
+          $expected['revision_translation_affected'] = $affected;
         }
       }
       ksort($expected);
@@ -56,6 +97,48 @@ final class ProtectedDraftFieldScope {
         throw new ProtectedDraftRefusal('The stored draft changed an unrequested field or another translation.');
       }
     }
+  }
+
+  /**
+   * Tells whether two item lists are equal as FieldItemList::equals() does.
+   *
+   * Same count, and each item's properties, NULL ones dropped and keys
+   * sorted, loosely equal.
+   */
+  private static function sameItems(mixed $a, mixed $b): bool {
+    if ($a === $b) {
+      return TRUE;
+    }
+    if (!is_array($a) || !is_array($b) || count($a) !== count($b)) {
+      return FALSE;
+    }
+    $normalise = static function (mixed $item): mixed {
+      if (!is_array($item)) {
+        return $item;
+      }
+      $item = array_filter($item, static fn(mixed $value): bool => $value !== NULL);
+      ksort($item);
+      return $item;
+    };
+    return array_map($normalise, array_values($a)) == array_map($normalise, array_values($b));
+  }
+
+  /**
+   * Reads a stored timestamp field value as an integer, or NULL.
+   *
+   * NULL for an empty value and for anything that is not one item whose only
+   * property is a whole number.
+   */
+  private static function timestamp(mixed $items): ?int {
+    if (!is_array($items) || count($items) !== 1 || !isset($items[0]) || !is_array($items[0])
+      || array_keys($items[0]) !== ['value']) {
+      return NULL;
+    }
+    $value = $items[0]['value'];
+    if (is_int($value)) {
+      return $value;
+    }
+    return is_string($value) && preg_match('/\A-?\d+\z/', $value) ? (int) $value : NULL;
   }
 
   /**
