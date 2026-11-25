@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace Drupal\cinatra;
 
+use Drupal\Component\Serialization\PhpSerialize;
 use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Database\Connection;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\KeyValueStore\DatabaseStorage;
 use Drupal\node\NodeInterface;
 use GuzzleHttp\ClientInterface;
 use Psr\Log\LoggerInterface;
@@ -43,9 +47,18 @@ use Symfony\Component\HttpFoundation\RequestStack;
  *              $node->id(), exactly as the WordPress plugin casts
  *              (int) $post->ID. The body is JSON-encoded ONCE and the same
  *              exact bytes are signed and sent.
- * - IDEMPOTENCY: webhook-id is STABLE per publish event (derived from the
- *              instance id + node id + revision id) so a retried delivery
- *              carries the same id and the host's idempotency ledger dedupes.
+ * - IDEMPOTENCY: webhook-id is STABLE per publish event and never shared by
+ *              two events: sha256 over the instance id, node id, revision id,
+ *              language and a random value drawn once when the emission is
+ *              built (see buildEmission()). The built emission is what is
+ *              sent, so a retried delivery carries the same id and the host's
+ *              idempotency ledger dedupes it; another event, even of the same
+ *              revision in the same second, has its own random value and so
+ *              its own id. The id stays an opaque "drupal-<sha256 hex>".
+ * - TIMING   : an event says what one transaction published, as that
+ *              transaction stored it. It can arrive after a later request has
+ *              already changed or unpublished the page; that later state is
+ *              not in this event (a later publish sends its own).
  *
  * SAFETY: emission is deferred to a shutdown callback so the transport can
  * never block or fail the node save itself (codex: a synchronous 4s POST
@@ -80,11 +93,29 @@ final class PublishWebhook {
    */
   private const TIMEOUT_SECONDS = 4;
 
+  /**
+   * The module's key-value collection: the capture markers of the outbox.
+   */
+  public const COLLECTION = 'cinatra.publish_webhook';
+
+  /**
+   * What the root transaction now running knows.
+   *
+   * The published state it started with, per node and language; the node
+   * languages a save of the root published; and, per node language, the
+   * captures of its saves in order. One object per root transaction, shared
+   * by everything registered inside it; the root callback marks it ended
+   * when the root finishes, so the next use belongs to a new root.
+   */
+  private static ?\stdClass $root = NULL;
+
   public function __construct(
     private readonly ClientInterface $httpClient,
     private readonly ConfigFactoryInterface $configFactory,
     private readonly LoggerInterface $logger,
     private readonly RequestStack $requestStack,
+    private readonly ?Connection $database = NULL,
+    private readonly ?EntityTypeManagerInterface $entityTypeManager = NULL,
   ) {
   }
 
@@ -97,28 +128,245 @@ final class PublishWebhook {
       \Drupal::configFactory(),
       \Drupal::logger('cinatra'),
       \Drupal::requestStack(),
+      \Drupal::database(),
+      \Drupal::entityTypeManager(),
     );
   }
 
   /**
    * Defers a node-published emission to request shutdown.
    *
-   * The emission payload/target/key material is captured NOW (the entity may
-   * be mutated later in the request), but the network call happens in a
-   * shutdown callback so the node save is never transport-blocked. A quiet
-   * no-op when the connection is not fully configured.
+   * Called for a save that moves the node into the published state. Inside a
+   * database transaction it only marks the node language as published by the
+   * root; what is sent is decided and taken from the root's captures when the
+   * root commits (see the semantics note below). Outside a transaction the
+   * emission is built now and sent at shutdown. The network call always
+   * happens in a shutdown callback so the node save is never
+   * transport-blocked. A quiet no-op when the connection is not fully
+   * configured.
    *
    * @param \Drupal\node\NodeInterface $node
    *   The node that just transitioned into the published state.
    */
   public function deferEmitNodePublished(NodeInterface $node): void {
-    $emission = $this->buildEmission($node);
-    if ($emission === NULL) {
+    if ($this->buildEmission($node) === NULL) {
       return;
     }
-    drupal_register_shutdown_function(function () use ($emission): void {
-      $this->send($emission);
-    });
+    // SEMANTICS. A publish event is a CHANGE of the stored state across one
+    // root transaction, not a root commit. Per root, node and language: at
+    // most one webhook, queued only if the root committed, a save of the root
+    // moved the node into the published state, the root's last kept capture
+    // is published, and either the page was not published when the root
+    // began or its published default revision is a different one now. A
+    // root that ends where it began (a savepoint rolled back, in place or as
+    // a new revision, the root then committed by a caller that caught the
+    // error) queues nothing; so does a publish later undone.
+    //
+    // CONTENT, THE OUTBOX. The payload is taken INSIDE the root, at each save
+    // of the node (recordRootSave()): the stored default revision read back
+    // right after that save, presave and other hooks' changes included. Each
+    // save replaces the capture, so the last save of the root wins; a save
+    // that leaves the page unpublished leaves an unpublished capture, which
+    // sends nothing. Each capture has a marker row written in the same
+    // transaction, so a savepoint rolled back removes its captures' markers
+    // and the capture before it stands again. At commit the last capture
+    // whose marker exists is queued and sent unchanged. Nothing is loaded
+    // after the commit to build or check the payload, so nothing another
+    // request does after this root committed can change this root's event.
+    $nid = (int) $node->id();
+    $langcode = $node->language()->getId();
+    if ($this->database !== NULL && $this->database->inTransaction()) {
+      $this->rootState()->published[$nid . ':' . $langcode] = TRUE;
+      return;
+    }
+    $final = $this->buildEmission($node);
+    if ($final !== NULL) {
+      drupal_register_shutdown_function(function () use ($final): void {
+        $this->send($final);
+      });
+    }
+  }
+
+  /**
+   * Returns the state shared by everything registered in the current root.
+   *
+   * The first call in a root creates it and registers the root callback: it
+   * marks the state ended and, when the root committed, queues the root's
+   * events from its kept captures and removes the markers.
+   */
+  private function rootState(): \stdClass {
+    if (self::$root === NULL || self::$root->ended) {
+      $state = (object) [
+        'ended' => FALSE,
+        'before' => [],
+        'published' => [],
+        'captures' => [],
+      ];
+      self::$root = $state;
+      $this->database->transactionManager()->addPostTransactionCallback(function (bool $committed) use ($state): void {
+        $state->ended = TRUE;
+        if ($committed) {
+          $this->queueRootEvents($state);
+        }
+      });
+    }
+    return self::$root;
+  }
+
+  /**
+   * Queues the events of a committed root from its kept captures.
+   *
+   * Per node language a save of the root published: the last capture whose
+   * marker survived the commit (a rolled-back savepoint took its markers
+   * with it). It is sent unchanged if it is published and the published
+   * default revision changed across the root. The markers are removed.
+   */
+  private function queueRootEvents(\stdClass $state): void {
+    $outbox = $this->outbox();
+    if ($outbox === NULL) {
+      return;
+    }
+    $markers = [];
+    foreach ($state->captures as $captures) {
+      foreach ($captures as $capture) {
+        $markers[] = $capture['marker'];
+      }
+    }
+    try {
+      $kept = array_flip(array_keys($outbox->getMultiple($markers)));
+    }
+    catch (\Throwable) {
+      return;
+    }
+    foreach (array_keys($state->published) as $key) {
+      $capture = NULL;
+      foreach (array_reverse($state->captures[$key] ?? []) as $candidate) {
+        if (isset($kept[$candidate['marker']])) {
+          $capture = $candidate;
+          break;
+        }
+      }
+      if ($capture === NULL || $capture['emission'] === NULL) {
+        continue;
+      }
+      [$nid, $langcode] = explode(':', $key, 2);
+      // Unknown (a new page, or no recording) counts as not published.
+      $before = $state->before[(int) $nid][$langcode] ?? NULL;
+      if ($before !== NULL && $before['published'] && $before['vid'] === $capture['vid']) {
+        continue;
+      }
+      $final = $capture['emission'];
+      drupal_register_shutdown_function(function () use ($final): void {
+        $this->send($final);
+      });
+    }
+    try {
+      $outbox->deleteMultiple($markers);
+    }
+    catch (\Throwable) {
+      // Leftover markers are inert: each key is random and read only by the
+      // root that wrote it.
+    }
+  }
+
+  /**
+   * Records, once per root and node, the published state the root started with.
+   *
+   * Called from hook_node_presave, which runs before the save's own write: the
+   * first call for a node in a root therefore reads the state the root began
+   * with, from the same connection, before any write of that node in it. Later
+   * calls in the root (a second save, one inside a savepoint) keep the first
+   * record. A new node has no stored state and records nothing. A quiet no-op
+   * outside a transaction or when webhooks are not configured.
+   */
+  public function recordPreRootState(NodeInterface $node): void {
+    $nid = (int) $node->id();
+    if ($nid === 0 || !$this->configuredInTransaction()) {
+      return;
+    }
+    $state = $this->rootState();
+    if (isset($state->before[$nid])) {
+      return;
+    }
+    $before = [];
+    try {
+      $rows = $this->database->select('node_field_data', 'n')
+        ->fields('n', ['langcode', 'vid', 'status'])
+        ->condition('nid', $nid)
+        ->execute()
+        ->fetchAll();
+    }
+    catch (\Throwable) {
+      return;
+    }
+    foreach ($rows as $row) {
+      $before[$row->langcode] = ['published' => (int) $row->status === 1, 'vid' => (int) $row->vid];
+    }
+    $state->before[$nid] = $before;
+  }
+
+  /**
+   * Captures, inside the root, what a save of the node stored.
+   *
+   * Called from hook_node_insert() and hook_node_update() for every save. It
+   * reads the stored default revision of the saved translation back on the
+   * root's own connection, so the values are those this transaction wrote,
+   * with every presave hook's change, and builds the emission from them (an
+   * unpublished translation is captured as "nothing to send"). The capture
+   * gets a marker row in the module's key-value collection, written in the
+   * same transaction: if a savepoint holding this save is rolled back, the
+   * marker goes with it. Without a marker there is no capture, so nothing
+   * can be sent from it. A quiet no-op outside a transaction or when webhooks
+   * are not configured.
+   */
+  public function recordRootSave(NodeInterface $node): void {
+    $nid = (int) $node->id();
+    $outbox = $this->outbox();
+    if ($nid === 0 || $outbox === NULL || $this->entityTypeManager === NULL || !$this->configuredInTransaction()) {
+      return;
+    }
+    $langcode = $node->language()->getId();
+    try {
+      $storage = $this->entityTypeManager->getStorage('node');
+      $storage->resetCache([$nid]);
+      $stored = $storage->loadUnchanged($nid);
+      $storage->resetCache([$nid]);
+      if (!$stored instanceof NodeInterface || !$stored->hasTranslation($langcode)) {
+        return;
+      }
+      $translation = $stored->getTranslation($langcode);
+      $marker = 'outbox:' . bin2hex(random_bytes(16));
+      $outbox->set($marker, TRUE);
+    }
+    catch (\Throwable) {
+      return;
+    }
+    $this->rootState()->captures[$nid . ':' . $langcode][] = [
+      'marker' => $marker,
+      'vid' => (int) $translation->getRevisionId(),
+      'emission' => $translation->isPublished() ? $this->buildEmission($translation) : NULL,
+    ];
+  }
+
+  /**
+   * Tells whether webhooks are configured and a transaction is open.
+   */
+  private function configuredInTransaction(): bool {
+    if ($this->database === NULL || !$this->database->inTransaction()) {
+      return FALSE;
+    }
+    $config = $this->configFactory->get('cinatra.settings');
+    return (string) $config->get('cinatra_url') !== '' && (string) $config->get('webhook_secret') !== '' && (string) $config->get('webhook_binding_id') !== '';
+  }
+
+  /**
+   * Returns the outbox markers' store, on the site database connection.
+   *
+   * Always the database, on the same connection as the node save, so a
+   * marker is written and rolled back with the save it belongs to.
+   */
+  private function outbox(): ?DatabaseStorage {
+    return $this->database === NULL ? NULL : new DatabaseStorage(self::COLLECTION, new PhpSerialize(), $this->database);
   }
 
   /**
@@ -191,13 +439,27 @@ final class PublishWebhook {
       return NULL;
     }
 
-    // STABLE per publish event (instance + node + revision): a retried
-    // delivery of the same event carries the same webhook-id, so the host's
-    // idempotency ledger dedupes; a LATER publish event (new revision) gets a
-    // fresh id. Non-secret inputs only.
+    // STABLE per publish event, NEVER SHARED by two events: one built
+    // emission is one event, and its id has a random value drawn here, once.
+    // The built emission is what is sent, so a retried delivery carries the
+    // same id and the host's idempotency ledger dedupes it; any other event,
+    // even of the same revision in the same second, draws its own value.
+    // Non-secret inputs only.
     $instanceId = (string) $config->get('instance_id');
     $revisionId = (string) ($node->getRevisionId() ?? $node->getChangedTime());
-    $messageId = 'drupal-' . hash('sha256', $instanceId . ':' . $node->id() . ':' . $revisionId);
+    try {
+      $nonce = bin2hex(random_bytes(16));
+    }
+    catch (\Throwable) {
+      return NULL;
+    }
+    $messageId = 'drupal-' . hash('sha256', implode(':', [
+      $instanceId,
+      $node->id(),
+      $revisionId,
+      $node->language()->getId(),
+      $nonce,
+    ]));
 
     $base = ServerBase::resolve($configUrl, $this->logger);
     return [

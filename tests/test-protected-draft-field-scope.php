@@ -79,6 +79,99 @@ $test('translation disappeared', $changed, FALSE);
 $changed = $after;
 $changed['de'] = $before['en'];
 $test('translation added', $changed, FALSE);
+// Per-translation bookkeeping moves only for the edited translation (fr).
+$stamped_before = $before;
+$stamped_before['en']['changed'] = [['value' => 100]];
+$stamped_before['fr']['changed'] = [['value' => 200]];
+$stamped_before['en']['revision_translation_affected'] = FALSE;
+$stamped_before['fr']['revision_translation_affected'] = FALSE;
+$stamp_test = function (string $name, array $after, bool $allowed) use ($stamped_before, &$passed): void {
+  try {
+    ProtectedDraftFieldScope::assertMatches($stamped_before, $after, 'fr', ['title']);
+    if (!$allowed) {
+      throw new RuntimeException($name . ' incorrectly accepted');
+    }
+  }
+  catch (ProtectedDraftRefusal $error) {
+    if ($allowed) {
+      throw $error;
+    }
+  }
+  $passed++;
+  echo "PASS $name\n";
+};
+$stamped = $stamped_before;
+$stamped['fr']['changed'] = [['value' => 999]];
+$stamped['fr']['revision_translation_affected'] = TRUE;
+$stamp_test('the edited translation timestamp and affected flag may move', $stamped, TRUE);
+$stamped = $stamped_before;
+$stamped['en']['changed'] = [['value' => 999]];
+$stamp_test('another translation timestamp may not move', $stamped, FALSE);
+$stamped = $stamped_before;
+$stamped['en']['revision_translation_affected'] = TRUE;
+$stamp_test('another translation may not be marked affected', $stamped, FALSE);
+$stamped = $stamped_before;
+unset($stamped['en']['changed']);
+$stamp_test('another translation timestamp may not disappear', $stamped, FALSE);
+// An untranslatable (shared) field in the write: core moves the timestamp of
+// every translation it counts the change for to the request time (999) and
+// marks it affected; any other value is not core's.
+$stamp_shared_test = function (string $name, array $after, bool $allowed, array $languages = ['en', 'fr']) use ($stamped_before, &$passed): void {
+  try {
+    ProtectedDraftFieldScope::assertMatches($stamped_before, $after, 'fr', ['title'], ['title'], 999, $languages);
+    if (!$allowed) {
+      throw new RuntimeException($name . ' incorrectly accepted');
+    }
+  }
+  catch (ProtectedDraftRefusal $error) {
+    if ($allowed) {
+      throw $error;
+    }
+  }
+  $passed++;
+  echo "PASS $name\n";
+};
+$stamped = $stamped_before;
+$stamped['fr']['title'] = [['value' => 'Shared title']];
+$stamped['en']['title'] = [['value' => 'Shared title']];
+$stamped['en']['changed'] = [['value' => 999]];
+$stamped['en']['revision_translation_affected'] = TRUE;
+$stamp_shared_test('a shared write moves the other translation bookkeeping', $stamped, TRUE);
+$stamped_other = $stamped;
+$stamped_other['en']['changed'] = [['value' => '999']];
+$stamp_shared_test('a stored timestamp read as text is the same number', $stamped_other, TRUE);
+$stamped_other['en']['changed'] = [['value' => 12345]];
+$stamp_shared_test('a shared write refuses another timestamp than the request time', $stamped_other, FALSE);
+$stamped_other = $stamped;
+$stamped_other['en']['changed'] = [['value' => 100]];
+$stamp_shared_test('a shared write refuses a kept timestamp core would move', $stamped_other, FALSE);
+$stamped_other = $stamped;
+$stamped_other['en']['revision_translation_affected'] = FALSE;
+$stamp_shared_test('a shared write refuses a cleared affected flag core would set', $stamped_other, FALSE);
+$stamp_shared_test('core counting the shared field only for fr refuses moved en bookkeeping', $stamped, FALSE, ['fr']);
+$kept = $stamped;
+$kept['en']['changed'] = [['value' => 100]];
+$kept['en']['revision_translation_affected'] = FALSE;
+$stamp_shared_test('core counting the shared field only for fr keeps en bookkeeping', $kept, TRUE, ['fr']);
+// A shared value written unchanged is no change: core moves nothing else.
+$same_before = $stamped_before;
+$same_before['en']['title'] = [['value' => 'Shared title']];
+$same_before['fr']['title'] = [['value' => 'Shared title']];
+ProtectedDraftFieldScope::assertMatches($same_before, $same_before, 'fr', ['title'], ['title'], 999, ['en', 'fr']);
+$passed++;
+echo "PASS an unchanged shared value moves no other bookkeeping\n";
+$same_after = $same_before;
+$same_after['en']['changed'] = [['value' => 999]];
+try {
+  ProtectedDraftFieldScope::assertMatches($same_before, $same_after, 'fr', ['title'], ['title'], 999, ['en', 'fr']);
+  throw new RuntimeException('an unchanged shared value with a moved other timestamp incorrectly accepted');
+}
+catch (ProtectedDraftRefusal) {
+  $passed++;
+  echo "PASS an unchanged shared value refuses a moved other timestamp\n";
+}
+$stamped['en']['body'][0]['value'] = 'Out of scope';
+$stamp_shared_test('a shared write still refuses another translation content', $stamped, FALSE);
 $shared_before = $before;
 $shared_before['en']['field_shared_note'] = [['value' => 'Shared live note']];
 $shared_before['fr']['field_shared_note'] = [['value' => 'Shared live note']];
@@ -110,4 +203,252 @@ $changed = $shared_after;
 $changed['fr']['title'] = [['value' => 'Unrequested other-language title']];
 $shared_test('shared update cannot excuse other-language content', $changed, ['field_shared_note'], FALSE);
 $shared_test('unrequested field cannot be declared shared', $shared_after, ['field_shared_note', 'title'], FALSE);
+$types = [
+  'title' => ['value' => 'string'],
+  'body' => ['value' => 'string', 'format' => 'filter_format', 'summary' => 'string'],
+  'field_count' => ['value' => 'integer'],
+  'field_flag' => ['value' => 'boolean'],
+  'field_price' => ['value' => 'decimal'],
+  'field_ratio' => ['value' => 'float'],
+  'field_link' => ['uri' => 'uri', 'title' => 'string', 'options' => 'map'],
+];
+$reviewed_test = function (string $name, array $reviewed, array $stored, bool $allowed) use (&$passed, $types): void {
+  try {
+    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $stored, $types);
+    if (!$allowed) {
+      throw new RuntimeException($name . ' incorrectly accepted');
+    }
+  }
+  catch (ProtectedDraftRefusal $error) {
+    if ($allowed) {
+      throw $error;
+    }
+    if ($error->getMessage() !== 'The stored value differs from the reviewed value; nothing was written.') {
+      throw new RuntimeException($name . ' refused with another reason');
+    }
+  }
+  $passed++;
+  echo "PASS $name\n";
+};
+$reviewed = [
+  'title' => [['value' => 'Reviewed title']],
+  'body' => [['value' => 'Reviewed body', 'format' => 'plain_text', 'summary' => '']],
+  'field_count' => [['value' => 3]],
+  'field_flag' => [['value' => TRUE]],
+  'field_price' => [['value' => 1.5]],
+  'field_ratio' => [['value' => 0.25]],
+  'field_link' => [['uri' => 'https://example.com', 'title' => 'Example']],
+];
+$stored = [
+  'title' => [['value' => 'Reviewed title']],
+  'body' => [['summary' => '', 'format' => 'plain_text', 'value' => 'Reviewed body']],
+  'field_count' => [['value' => '3']],
+  'field_flag' => [['value' => '1']],
+  'field_price' => [['value' => '1.50']],
+  'field_ratio' => [['value' => '0.250']],
+  'field_link' => [['uri' => 'https://example.com', 'title' => 'Example', 'options' => []]],
+];
+$reviewed_test('numeric and boolean properties compare by value, key order aside', $reviewed, $stored, TRUE);
+$with_null = $stored;
+$with_null['title'][0]['unset_column'] = NULL;
+$reviewed_test('a NULL column is the same as an absent property', $reviewed, $with_null, TRUE);
+$changed = $stored;
+$changed['title'][0]['value'] = 'Replaced by a save hook';
+$reviewed_test('a replaced value refuses', $reviewed, $changed, FALSE);
+$changed = $stored;
+$changed['body'][0]['summary'] = NULL;
+$reviewed_test('an empty string property is a value, not an absent one', $reviewed, $changed, FALSE);
+$changed = $stored;
+$changed['body'][0]['format'] = 'full_html';
+$reviewed_test('a replaced text format refuses', $reviewed, $changed, FALSE);
+$changed = $stored;
+$changed['title'][] = ['value' => 'An added item'];
+$reviewed_test('an added item refuses', $reviewed, $changed, FALSE);
+$changed = $stored;
+$changed['title'][0]['extra'] = 'Unreviewed property';
+$reviewed_test('an added non-empty property refuses', $reviewed, $changed, FALSE);
+$changed = $stored;
+unset($changed['field_flag']);
+$reviewed_test('a missing reviewed field refuses', $reviewed, $changed, FALSE);
+$changed = $stored;
+$changed['field_flag'][0]['value'] = '0';
+$reviewed_test('a flipped boolean refuses', $reviewed, $changed, FALSE);
+$changed = $stored;
+$changed['field_count'][0]['value'] = '30';
+$reviewed_test('another number refuses', $reviewed, $changed, FALSE);
+$changed = $stored;
+$changed['field_link'][0]['options'] = ['attributes' => ['rel' => 'nofollow']];
+$reviewed_test('added link options refuse', $reviewed, $changed, FALSE);
+// Text is compared byte for byte, whatever it looks like.
+$text = $reviewed;
+$text['title'] = [['value' => '1.50']];
+$text_stored = $stored;
+$text_stored['title'] = [['value' => '1.5']];
+$reviewed_test('a text title "1.50" replaced by "1.5" refuses', $text, $text_stored, FALSE);
+$text_stored['title'] = [['value' => '1.50']];
+$reviewed_test('a text title "1.50" stored as "1.50" is the same', $text, $text_stored, TRUE);
+$text['title'] = [['value' => '007']];
+$text_stored['title'] = [['value' => '7']];
+$reviewed_test('a text title "007" replaced by "7" refuses', $text, $text_stored, FALSE);
+$text['title'] = [['value' => 'TRUE']];
+$text_stored['title'] = [['value' => '1']];
+$reviewed_test('a text title is never read as a boolean', $text, $text_stored, FALSE);
+$decimal = $reviewed;
+$decimal['field_price'] = [['value' => '1.50']];
+$decimal_stored = $stored;
+$decimal_stored['field_price'] = [['value' => '1.5']];
+$reviewed_test('a decimal 1.50 stored as "1.5" is the same', $decimal, $decimal_stored, TRUE);
+$decimal_stored['field_price'] = [['value' => '1.05']];
+$reviewed_test('a decimal 1.50 stored as "1.05" refuses', $decimal, $decimal_stored, FALSE);
+$decimal_stored = $stored;
+$decimal_stored['field_count'] = [['value' => '3.0']];
+$reviewed_test('an integer is not a decimal', $reviewed, $decimal_stored, FALSE);
+$untyped = $reviewed;
+$untyped['field_unknown'] = [['value' => '1.50']];
+$untyped_stored = $stored;
+$untyped_stored['field_unknown'] = [['value' => '1.5']];
+$reviewed_test('a property without a known type is compared exactly', $untyped, $untyped_stored, FALSE);
+// One exact numeral form on both sides: no leading zeroes, no plus sign, no
+// trailing fractional zeroes, no negative zero, and no float cast. Each row is
+// property type, reviewed value, stored value, and whether they are the same.
+$numeral_rows = [
+  ['decimal', '01.50', '1.50', TRUE],
+  ['decimal', '01.50', '1.5', TRUE],
+  ['decimal', '+1.0', '1', TRUE],
+  ['decimal', '+1.0', '1.00', TRUE],
+  ['decimal', '000', '0', TRUE],
+  ['decimal', '-0', '0', TRUE],
+  ['decimal', '-0.00', '0.00', TRUE],
+  ['decimal', '+0', '0', TRUE],
+  ['decimal', '0.50', '.5', TRUE],
+  ['decimal', '5.', '5.00', TRUE],
+  ['decimal', '-.50', '-0.5', TRUE],
+  ['decimal', '-01.50', '-1.5', TRUE],
+  ['decimal', '-1.5', '1.5', FALSE],
+  ['decimal', '0.05', '0.5', FALSE],
+  ['decimal', '10', '1', FALSE],
+  ['decimal', '100', '1', FALSE],
+  ['decimal', '12345678901234567890.10', '12345678901234567890.1', TRUE],
+  ['decimal', '12345678901234567890.1', '12345678901234567891.1', FALSE],
+  ['decimal', '12345678901234567890.1', '12345678901234567890.2', FALSE],
+  ['decimal', '1e3', '1000', FALSE],
+  ['decimal', '1e3', '1e3', TRUE],
+  ['decimal', ' 1', '1', FALSE],
+  ['decimal', "1\n", '1', FALSE],
+  ['decimal', '0x1', '1', FALSE],
+  ['decimal', '1.2.3', '1.2.3', TRUE],
+  ['decimal', '1.2.3', '1.23', FALSE],
+  ['decimal', '', '0', FALSE],
+  ['decimal', '.', '0', FALSE],
+  ['decimal', '+', '0', FALSE],
+  ['integer', '03', '3', TRUE],
+  ['integer', '+3', '3', TRUE],
+  ['integer', '-0', '0', TRUE],
+  ['integer', '000', '0', TRUE],
+  ['integer', '3.0', '3', FALSE],
+  ['integer', '30', '3', FALSE],
+  ['integer', '1e3', '1000', FALSE],
+  ['float', '01.50', '1.5', TRUE],
+  ['float', '1.10', '1.1', TRUE],
+  ['float', '-0.0', '0', TRUE],
+  ['float', '1e3', '1000', FALSE],
+  ['float', '1.1', '1.2', FALSE],
+];
+$numeric_test = function (string $name, string $type, mixed $review, mixed $store, bool $same) use (&$passed): void {
+  try {
+    ProtectedDraftFieldScope::assertStoredAsReviewed(['field_x' => [['value' => $review]]], ['field_x' => [['value' => $store]]], ['field_x' => ['value' => $type]]);
+    $accepted = TRUE;
+  }
+  catch (ProtectedDraftRefusal) {
+    $accepted = FALSE;
+  }
+  if ($accepted !== $same) {
+    throw new RuntimeException($name . ' gave the wrong answer');
+  }
+  $passed++;
+  echo "PASS $name\n";
+};
+foreach ($numeral_rows as [$type, $left, $right, $same]) {
+  $name = sprintf('%s %s vs %s is %s', $type, json_encode($left), json_encode($right), $same ? 'the same' : 'different');
+  // The comparison reads the same whichever side holds which spelling.
+  $numeric_test($name, $type, $left, $right, $same);
+  $numeric_test($name . ' (swapped)', $type, $right, $left, $same);
+}
+// Both sides take the same form even when one is a PHP number.
+$numeric_test('a PHP float 1.5 is the stored "1.50"', 'decimal', 1.5, '1.50', TRUE);
+$numeric_test('a PHP int 3 is the stored "3.00"', 'decimal', 3, '3.00', TRUE);
+$numeric_test('a PHP float 1.5 is not the stored "1.05"', 'decimal', 1.5, '1.05', FALSE);
+// A value that is not a plain numeral never equals a numeral.
+$mixed = $reviewed;
+$mixed['field_price'] = [['value' => ['1.50']]];
+$reviewed_test('an array is not a decimal numeral', $mixed, $stored, FALSE);
+// What the field rounds or coerces differs from what was reviewed.
+$numeric_test('a float 9007199254740993 stored as the double 9007199254740992', 'float', '9007199254740993', 9007199254740992.0, FALSE);
+$numeric_test('a decimal 1.239 stored rounded as 1.24', 'decimal', '1.239', '1.24', FALSE);
+$numeric_test('a decimal 1.239 stored rounded as the float 1.24', 'decimal', '1.239', 1.24, FALSE);
+$numeric_test('an integer 3.0 stored as 3', 'integer', '3.0', 3, FALSE);
+$numeric_test('a float 1e3 stored as 1000.0', 'float', '1e3', 1000.0, FALSE);
+$numeric_test('a float 1.10 stored as 1.1', 'float', '1.10', 1.1, TRUE);
+$numeric_test('two different doubles are not the same number', 'float', 0.30000000000000004, 0.3, FALSE);
+$numeric_test('the same double is the same number', 'float', 0.30000000000000004, 0.30000000000000004, TRUE);
+// A request a field cannot store exactly is refused before the save.
+$exact_rows = [
+  ['float', '9007199254740993', [], FALSE],
+  ['float', '1e3', [], FALSE],
+  ['float', '0.1234567890123456789', [], FALSE],
+  ['float', '100000000000000000000', [], FALSE],
+  ['float', '1.10', [], TRUE],
+  ['float', '0.1', [], TRUE],
+  ['float', '-0.0', [], TRUE],
+  ['float', '123456789012345', [], TRUE],
+  ['integer', '3.0', [], FALSE],
+  ['integer', '1e3', [], FALSE],
+  ['integer', '9223372036854775808', [], FALSE],
+  ['integer', '03', [], TRUE],
+  ['integer', '+3', [], TRUE],
+  ['integer', '-9223372036854775808', [], TRUE],
+  ['decimal', '1.239', ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', '1.230', ['precision' => 10, 'scale' => 2], TRUE],
+  ['decimal', '01.50', ['precision' => 10, 'scale' => 2], TRUE],
+  ['decimal', '.5', ['precision' => 10, 'scale' => 2], TRUE],
+  ['decimal', '12345678901234567890.1', ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', '12345678.12', ['precision' => 10, 'scale' => 2], TRUE],
+  ['decimal', '123456789.12', ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', '1e3', ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', 'abc', ['precision' => 10, 'scale' => 2], FALSE],
+];
+foreach ($exact_rows as [$type, $value, $settings, $exact]) {
+  $name = sprintf('a %s %s is %s', $type, json_encode($value), $exact ? 'exact' : 'refused before the save');
+  try {
+    ProtectedDraftFieldScope::assertNumbersExact([['value' => $value]], ['value' => $type], $settings);
+    $accepted = TRUE;
+  }
+  catch (ProtectedDraftRefusal $error) {
+    if ($error->getMessage() !== 'A requested number cannot be stored exactly by its field; nothing was written.') {
+      throw new RuntimeException($name . ' refused with another reason');
+    }
+    $accepted = FALSE;
+  }
+  if ($accepted !== $exact) {
+    throw new RuntimeException($name . ' gave the wrong answer');
+  }
+  $passed++;
+  echo "PASS $name\n";
+}
+// PHP numbers and other types are not examined.
+ProtectedDraftFieldScope::assertNumbersExact(
+  [['value' => 1.5, 'format' => '3.0x']],
+  ['value' => 'float', 'format' => 'string'],
+  []
+);
+ProtectedDraftFieldScope::assertNumbersExact([['value' => '1e3']], ['value' => 'string'], []);
+$passed++;
+echo "PASS PHP numbers and strings of other types are not examined\n";
+$cleared = $reviewed;
+$cleared['title'] = [];
+$cleared_stored = $stored;
+$cleared_stored['title'] = [];
+$reviewed_test('a clear reviewed as empty and stored empty is the same', $cleared, $cleared_stored, TRUE);
+$cleared_stored['title'] = [['value' => 'Put back by a save hook']];
+$reviewed_test('a value put back into a cleared field refuses', $cleared, $cleared_stored, FALSE);
 echo "$passed passed, 0 failed, 0 skipped\n";

@@ -1,6 +1,6 @@
 name: 'Cinatra development site'
 type: module
-description: 'Development sites only: moderates basic pages and exposes the two protected-draft tools through the remote MCP endpoint.'
+description: 'Development sites only: moderates basic pages and exposes the Cinatra page tools through the remote MCP endpoint.'
 hidden: true
 package: Development
 core_version_requirement: ^10.5 || ^11
