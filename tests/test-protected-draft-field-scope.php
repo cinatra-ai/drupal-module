@@ -110,9 +110,18 @@ $changed = $shared_after;
 $changed['fr']['title'] = [['value' => 'Unrequested other-language title']];
 $shared_test('shared update cannot excuse other-language content', $changed, ['field_shared_note'], FALSE);
 $shared_test('unrequested field cannot be declared shared', $shared_after, ['field_shared_note', 'title'], FALSE);
-$reviewed_test = function (string $name, array $reviewed, array $stored, bool $allowed) use (&$passed): void {
+$types = [
+  'title' => ['value' => 'string'],
+  'body' => ['value' => 'string', 'format' => 'filter_format', 'summary' => 'string'],
+  'field_count' => ['value' => 'integer'],
+  'field_flag' => ['value' => 'boolean'],
+  'field_price' => ['value' => 'decimal'],
+  'field_ratio' => ['value' => 'float'],
+  'field_link' => ['uri' => 'uri', 'title' => 'string', 'options' => 'map'],
+];
+$reviewed_test = function (string $name, array $reviewed, array $stored, bool $allowed) use (&$passed, $types): void {
   try {
-    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $stored);
+    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $stored, $types);
     if (!$allowed) {
       throw new RuntimeException($name . ' incorrectly accepted');
     }
@@ -130,28 +139,32 @@ $reviewed_test = function (string $name, array $reviewed, array $stored, bool $a
 };
 $reviewed = [
   'title' => [['value' => 'Reviewed title']],
-  'body' => [['value' => 'Reviewed body', 'format' => 'plain_text', 'summary' => 'Reviewed summary']],
+  'body' => [['value' => 'Reviewed body', 'format' => 'plain_text', 'summary' => '']],
   'field_count' => [['value' => 3]],
   'field_flag' => [['value' => TRUE]],
   'field_price' => [['value' => 1.5]],
+  'field_ratio' => [['value' => 0.25]],
+  'field_link' => [['uri' => 'https://example.com', 'title' => 'Example']],
 ];
 $stored = [
   'title' => [['value' => 'Reviewed title']],
-  'body' => [['summary' => 'Reviewed summary', 'format' => 'plain_text', 'value' => 'Reviewed body']],
+  'body' => [['summary' => '', 'format' => 'plain_text', 'value' => 'Reviewed body']],
   'field_count' => [['value' => '3']],
   'field_flag' => [['value' => '1']],
   'field_price' => [['value' => '1.50']],
+  'field_ratio' => [['value' => '0.250']],
+  'field_link' => [['uri' => 'https://example.com', 'title' => 'Example', 'options' => []]],
 ];
-$reviewed_test('SQL scalar strings, key order and decimal scale are the same value', $reviewed, $stored, TRUE);
+$reviewed_test('numeric and boolean properties compare by value, key order aside', $reviewed, $stored, TRUE);
 $with_null = $stored;
-$with_null['title'][0]['langcode_hint'] = NULL;
-$reviewed_test('a stored empty column is the same as an absent one', $reviewed, $with_null, TRUE);
+$with_null['title'][0]['unset_column'] = NULL;
+$reviewed_test('a NULL column is the same as an absent property', $reviewed, $with_null, TRUE);
 $changed = $stored;
 $changed['title'][0]['value'] = 'Replaced by a save hook';
 $reviewed_test('a replaced value refuses', $reviewed, $changed, FALSE);
 $changed = $stored;
-$changed['body'][0]['summary'] = '';
-$reviewed_test('a blanked reviewed property refuses', $reviewed, $changed, FALSE);
+$changed['body'][0]['summary'] = NULL;
+$reviewed_test('an empty string property is a value, not an absent one', $reviewed, $changed, FALSE);
 $changed = $stored;
 $changed['body'][0]['format'] = 'full_html';
 $reviewed_test('a replaced text format refuses', $reviewed, $changed, FALSE);
@@ -170,4 +183,36 @@ $reviewed_test('a flipped boolean refuses', $reviewed, $changed, FALSE);
 $changed = $stored;
 $changed['field_count'][0]['value'] = '30';
 $reviewed_test('another number refuses', $reviewed, $changed, FALSE);
+$changed = $stored;
+$changed['field_link'][0]['options'] = ['attributes' => ['rel' => 'nofollow']];
+$reviewed_test('added link options refuse', $reviewed, $changed, FALSE);
+// Text is compared byte for byte, whatever it looks like.
+$text = $reviewed;
+$text['title'] = [['value' => '1.50']];
+$text_stored = $stored;
+$text_stored['title'] = [['value' => '1.5']];
+$reviewed_test('a text title "1.50" replaced by "1.5" refuses', $text, $text_stored, FALSE);
+$text_stored['title'] = [['value' => '1.50']];
+$reviewed_test('a text title "1.50" stored as "1.50" is the same', $text, $text_stored, TRUE);
+$text['title'] = [['value' => '007']];
+$text_stored['title'] = [['value' => '7']];
+$reviewed_test('a text title "007" replaced by "7" refuses', $text, $text_stored, FALSE);
+$text['title'] = [['value' => 'TRUE']];
+$text_stored['title'] = [['value' => '1']];
+$reviewed_test('a text title is never read as a boolean', $text, $text_stored, FALSE);
+$decimal = $reviewed;
+$decimal['field_price'] = [['value' => '1.50']];
+$decimal_stored = $stored;
+$decimal_stored['field_price'] = [['value' => '1.5']];
+$reviewed_test('a decimal 1.50 stored as "1.5" is the same', $decimal, $decimal_stored, TRUE);
+$decimal_stored['field_price'] = [['value' => '1.05']];
+$reviewed_test('a decimal 1.50 stored as "1.05" refuses', $decimal, $decimal_stored, FALSE);
+$decimal_stored = $stored;
+$decimal_stored['field_count'] = [['value' => '3.0']];
+$reviewed_test('an integer is not a decimal', $reviewed, $decimal_stored, FALSE);
+$untyped = $reviewed;
+$untyped['field_unknown'] = [['value' => '1.50']];
+$untyped_stored = $stored;
+$untyped_stored['field_unknown'] = [['value' => '1.5']];
+$reviewed_test('a property without a known type is compared exactly', $untyped, $untyped_stored, FALSE);
 echo "$passed passed, 0 failed, 0 skipped\n";

@@ -103,6 +103,15 @@ final class UnpublishedWriteTest extends KernelTestBase {
       'entity_type' => 'node', 'field_name' => 'field_note', 'type' => 'string',
       'revisionable' => TRUE, 'translatable' => TRUE,
     ])->save();
+    FieldStorageConfig::create([
+      'entity_type' => 'node', 'field_name' => 'field_price', 'type' => 'decimal',
+      'revisionable' => TRUE, 'translatable' => TRUE,
+      'settings' => ['precision' => 10, 'scale' => 2],
+    ])->save();
+    FieldConfig::create([
+      'entity_type' => 'node', 'bundle' => 'plain', 'field_name' => 'field_price',
+      'label' => 'Price', 'translatable' => TRUE,
+    ])->save();
     foreach (['plain', 'page'] as $bundle) {
       FieldConfig::create([
         'entity_type' => 'node', 'bundle' => $bundle, 'field_name' => 'field_note',
@@ -421,6 +430,85 @@ final class UnpublishedWriteTest extends KernelTestBase {
     }
     $this->assertNull($this->nodeStorage()->loadRevision(ProtectedDraftProbe::$storedRevision));
     ProtectedDraftProbe::reset();
+    $this->assertSame($before, $this->snapshot($nid));
+    $this->assertRootFinished();
+  }
+
+  /**
+   * Text is compared byte for byte; a decimal by its number.
+   *
+   * A save hook turning the reviewed title "1.50" into "1.5" is refused,
+   * while a decimal field's 1.50 stored in its column's own form is the same.
+   */
+  public function testStoredValuesCompareByFieldType(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, 'short_number_title');
+    try {
+      $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['title' => [['value' => '1.50']]],
+        'publish' => TRUE,
+      ]);
+      $this->fail('Text that only looks like the reviewed number must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored value differs from the reviewed value', $expected->getMessage());
+      $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede the rollback.');
+    }
+    ProtectedDraftProbe::reset();
+    $this->assertSame($before, $this->snapshot($nid));
+
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_price']);
+    $result = $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+      'updates' => ['field_price' => [['value' => '1.50']]],
+    ]);
+    $this->assertSame($result['revision_id'], $this->snapshot($nid)['default']);
+    $this->assertEquals(1.5, (float) $result['fields']['field_price'][0]['value']);
+    $this->assertRootFinished();
+  }
+
+  /**
+   * A moderated publish needs edit access to moderation_state too.
+   */
+  public function testDeniedModerationStateEditRefusesPublish(): void {
+    $node = Node::create([
+      'type' => 'page', 'langcode' => 'en', 'uid' => $this->editor->id(),
+      'title' => 'Moderated draft', 'moderation_state' => 'draft', 'changed' => $this->oldChanged,
+    ]);
+    $node->save();
+    $nid = (int) $node->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, 'observe');
+    // The editor has the publish transition; a field access hook denies the
+    // moderation_state field.
+    ProtectedDraftProbe::$deniedField = 'moderation_state';
+    try {
+      foreach ([
+        fn() => $this->protectedDraft->publishUnpublished($this->binding($preimage)),
+        fn() => $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+          'updates' => ['title' => [['value' => 'Reviewed draft']]],
+          'publish' => TRUE,
+        ]),
+        fn() => $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+          'updates' => ['title' => [['value' => 'Reviewed draft']]],
+        ]),
+      ] as $operation) {
+        try {
+          $operation();
+          $this->fail('A denied moderation_state field must refuse.');
+        }
+        catch (ProtectedDraftRefusal $expected) {
+          $this->assertStringContainsString('Changing the workflow state of this page is not permitted', $expected->getMessage());
+        }
+        $this->assertSame(0, ProtectedDraftProbe::$presaves, 'Refusal must precede an actual node save hook.');
+      }
+    }
+    finally {
+      ProtectedDraftProbe::reset();
+    }
     $this->assertSame($before, $this->snapshot($nid));
     $this->assertRootFinished();
   }

@@ -160,7 +160,7 @@ final class ProtectedDraftService {
         || ($stored['moderation_state'] ?? NULL) !== $request['draft_state']) {
         throw new ProtectedDraftRefusal('The stored result is not the requested unpublished non-default draft.');
       }
-      ProtectedDraftFieldScope::assertStoredAsReviewed($request['updates'], $stored['fields']);
+      ProtectedDraftFieldScope::assertStoredAsReviewed($request['updates'], $stored['fields'], $before['property_types'] ?? []);
       $after = $this->storage->readDefault($nid, $language, $fields);
       if (($after['default_revision_id'] ?? NULL) !== $before['default_revision_id']
         || !array_key_exists('published_values', $before)
@@ -280,6 +280,11 @@ final class ProtectedDraftService {
           throw new ProtectedDraftRefusal('A requested field cannot be edited in this translation.');
         }
       }
+      // The save sets moderation_state on a moderated page: its field edit
+      // access must allow it, as well as the transition permission.
+      if ($before['moderated'] && ($before['can_edit_moderation_state'] ?? NULL) !== TRUE) {
+        throw new ProtectedDraftRefusal('Changing the workflow state of this page is not permitted.');
+      }
       $state = $before['moderated'] ? $this->unpublishedTargetState($before, $publish) : NULL;
 
       $revision_id = $this->storage->saveUnpublished($nid, $language, $updates, $publish, $state);
@@ -319,7 +324,7 @@ final class ProtectedDraftService {
       }
       // What is stored, and with publish what goes live, must be what was
       // reviewed; a difference rolls the save back.
-      ProtectedDraftFieldScope::assertStoredAsReviewed($updates, $stored);
+      ProtectedDraftFieldScope::assertStoredAsReviewed($updates, $stored, $before['property_types'] ?? []);
       return [
         'node_id' => $nid,
         'uuid' => $after['uuid'],

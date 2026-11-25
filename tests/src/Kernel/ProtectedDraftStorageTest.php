@@ -261,6 +261,13 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   }
 
   /**
+   * The draft sets moderation_state, so its field edit access must allow it.
+   */
+  public function testDeniedModerationStateEditRefusesBeforeSave(): void {
+    $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($this->titleRequest($this->prepareTitle())), 'Changing the workflow state of this page is not permitted', NULL, 'moderation_state');
+  }
+
+  /**
    * The binding names its translation, also when the translations look alike.
    *
    * The French translation of the fixture page shares the English changed

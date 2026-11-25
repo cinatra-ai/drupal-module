@@ -459,6 +459,11 @@ function unpublished_store(bool $publish = FALSE): CinatraMemoryProtectedDraftSt
     'moderation_state' => NULL,
     'changed' => 1000,
     'can_publish' => TRUE,
+    'can_edit_moderation_state' => TRUE,
+    'property_types' => [
+      'title' => ['value' => 'string'],
+      'body' => ['value' => 'string', 'format' => 'filter_format', 'summary' => 'string'],
+    ],
   ]);
   $store->after = array_merge($store->snapshot, [
     'default_revision_id' => 41,
@@ -582,6 +587,14 @@ $unpublished_refusals = [
     ],
     'does not allow this change',
   ],
+  'moderated without edit access to its workflow state' => [
+    [
+      'moderated' => TRUE,
+      'moderation_state' => 'draft',
+      'can_edit_moderation_state' => FALSE,
+    ],
+    'Changing the workflow state of this page is not permitted',
+  ],
   'moderated with an ambiguous field' => [
     [
       'moderated' => TRUE,
@@ -616,6 +629,21 @@ $cases['publish refuses without the publish permission'] = static function (): v
   $request = unpublished_request();
   $request['publish'] = TRUE;
   require_refused_unsaved($store, static fn() => (new ProtectedDraftService($store))->writeUnpublished($request), 'Publishing this page is not permitted');
+};
+$cases['a text value that only looks like a number must be stored byte for byte'] = static function (): void {
+  $store = unpublished_store(TRUE);
+  $request = unpublished_request();
+  $request['updates'] = ['title' => [['value' => '1.50']]];
+  $request['publish'] = TRUE;
+  $store->after['fields'] = ['title' => [['value' => '1.5']]];
+  try {
+    (new ProtectedDraftService($store))->writeUnpublished($request);
+    throw new \RuntimeException('A replaced text value was published');
+  }
+  catch (ProtectedDraftRefusal $e) {
+    require_true(str_contains($e->getMessage(), 'stored value differs'), 'Another refusal: ' . $e->getMessage());
+    require_true($store->rolledBack && !$store->committed, 'A replaced text value committed');
+  }
 };
 $cases['write without publish needs no publish permission'] = static function (): void {
   $store = unpublished_store();

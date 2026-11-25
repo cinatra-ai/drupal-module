@@ -361,6 +361,12 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       'can_update' => $translation->access('update', $this->account, TRUE)->isAllowed(),
       // The core check behind the editor's Published checkbox.
       'can_publish' => $translation->get('status')->access('edit', $this->account, TRUE)->isAllowed(),
+      // A moderated save sets moderation_state; its edit access is checked
+      // with the transition permission.
+      'can_edit_moderation_state' => $workflow !== NULL && $translation->get('moderation_state')->access('edit', $this->account, TRUE)->isAllowed(),
+      // INTERNAL: typed-data types of the requested fields' properties, for
+      // the stored-as-reviewed comparison.
+      'property_types' => $this->propertyTypes($raw_translation, $fields),
       'draft_states' => $states,
       'allowed_draft_states' => array_values(array_unique($allowed)),
       'field_access' => $access,
@@ -413,8 +419,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $node->get($field)->setValue($items);
-      // The reviewed value after Drupal's own normalisation on set.
-      $reviewed[$field] = $node->get($field)->getValue();
+      // The reviewed value after Drupal's own normalisation: set, then the
+      // removal of empty items that every save applies.
+      $list = clone $node->get($field);
+      $list->filterEmptyItems();
+      $reviewed[$field] = $list->getValue();
     }
     $node->setNewRevision(TRUE);
     $node->isDefaultRevision(FALSE);
@@ -450,7 +459,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $this->assertDraftAccess(clone $stored->getTranslation($language), array_keys($updates));
     // The scope check skips the requested fields; a save hook must not have
     // replaced a reviewed value with another valid one.
-    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)));
+    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)), $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
   }
 
@@ -491,8 +500,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $node->get($field)->setValue($items);
-      // The reviewed value after Drupal's own normalisation on set.
-      $reviewed[$field] = $node->get($field)->getValue();
+      // The reviewed value after Drupal's own normalisation: set, then the
+      // removal of empty items that every save applies.
+      $list = clone $node->get($field);
+      $list->filterEmptyItems();
+      $reviewed[$field] = $list->getValue();
     }
     $node->setNewRevision(TRUE);
     $node->isDefaultRevision(TRUE);
@@ -508,7 +520,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $node->setRevisionUserId((int) $this->account->id());
     $node->setRevisionCreationTime(time());
     $node->setRevisionLogMessage($publish ? 'Reviewed change published.' : 'Reviewed change saved.');
-    $this->assertUnpublishedWriteAccess($node, array_keys($updates), $publish && $state === NULL);
+    $this->assertUnpublishedWriteAccess($node, array_keys($updates), $publish, $state !== NULL);
     $fingerprint = $this->workflowFingerprint($node->getFieldDefinitions());
     $this->workflowFor($node);
     $this->assertFreshFieldConfiguration($node);
@@ -534,10 +546,10 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // scope check excludes only the requested fields and this translation's
     // status; the service checks that status against the publish step.
     ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields);
-    $this->assertUnpublishedWriteAccess(clone $stored->getTranslation($language), array_keys($updates), $publish && $state === NULL);
+    $this->assertUnpublishedWriteAccess(clone $stored->getTranslation($language), array_keys($updates), $publish, $state !== NULL);
     // What is stored, and with publish what goes live, must be what was
     // reviewed: a save hook must not have replaced a requested value.
-    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)));
+    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)), $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
   }
 
@@ -545,11 +557,12 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
    * Checks the edit, publish, field and text-format access of the write.
    *
    * These are the checks of an editor's own save: update access on the page,
-   * edit access on the status field to publish an unmoderated page, and view
-   * and edit access on every written field. A moderated page is published by a
-   * workflow transition, whose permission the service checked.
+   * edit access on every field the save changes: each written field, the
+   * status field to publish an unmoderated page, and the moderation_state
+   * field of a moderated page, whose state the save sets in addition to the
+   * workflow transition permission the service checked.
    */
-  private function assertUnpublishedWriteAccess(NodeInterface $node, array $fields, bool $check_status): void {
+  private function assertUnpublishedWriteAccess(NodeInterface $node, array $fields, bool $publish, bool $moderated): void {
     foreach ($fields as $field) {
       $this->assertTextFormatAccess($node, $field);
     }
@@ -558,8 +571,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       || !$node->access('update', $this->account, TRUE)->isAllowed()) {
       throw new ProtectedDraftRefusal('Editing this page is not permitted.');
     }
-    if ($check_status && !$node->get('status')->access('edit', $this->account, TRUE)->isAllowed()) {
+    if ($publish && !$moderated && !$node->get('status')->access('edit', $this->account, TRUE)->isAllowed()) {
       throw new ProtectedDraftRefusal('Publishing this page is not permitted.');
+    }
+    if ($moderated && !$node->get('moderation_state')->access('edit', $this->account, TRUE)->isAllowed()) {
+      throw new ProtectedDraftRefusal('Changing the workflow state of this page is not permitted.');
     }
     foreach ($fields as $field) {
       if (!$node->get($field)->access('view', $this->account, TRUE)->isAllowed()
@@ -587,6 +603,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       || !$node->access('view', $this->account, TRUE)->isAllowed()
       || !$node->access('update', $this->account, TRUE)->isAllowed()) {
       throw new ProtectedDraftRefusal('The proposed draft is not readable; the live page was not edited.');
+    }
+    // The draft save also sets moderation_state; its edit access must allow
+    // it, in addition to the transition permission.
+    if (!$node->get('moderation_state')->access('edit', $this->account, TRUE)->isAllowed()) {
+      throw new ProtectedDraftRefusal('Changing the workflow state of this page is not permitted.');
     }
     foreach ($fields as $field) {
       if (!$node->get($field)->access('view', $this->account, TRUE)->isAllowed()
@@ -1146,6 +1167,20 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     return !$definition->isComputed() && !$definition->isReadOnly()
       && $definition->getFieldStorageDefinition()->isRevisionable()
       && ($node->isDefaultTranslation() || $definition->isTranslatable());
+  }
+
+  /**
+   * Returns the typed-data type of each property of the requested fields.
+   */
+  private function propertyTypes(NodeInterface $node, array $fields): array {
+    $types = [];
+    foreach ($fields as $field) {
+      $types[$field] = [];
+      foreach ($node->getFieldDefinition($field)->getFieldStorageDefinition()->getPropertyDefinitions() as $name => $property) {
+        $types[$field][$name] = $property->getDataType();
+      }
+    }
+    return $types;
   }
 
   /**

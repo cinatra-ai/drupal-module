@@ -85,6 +85,11 @@ final class ProtectedDraftProbe {
         $node->setTitle('Replaced by a save hook');
         break;
 
+      case 'short_number_title':
+        // Text that only looks like the reviewed number.
+        $node->setTitle('1.5');
+        break;
+
       case 'restricted_format':
         $node->get('body')->format = 'restricted';
         break;
