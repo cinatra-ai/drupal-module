@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\cinatra;
 
 use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Database\Connection;
 use Drupal\node\NodeInterface;
 use GuzzleHttp\ClientInterface;
 use Psr\Log\LoggerInterface;
@@ -85,6 +86,7 @@ final class PublishWebhook {
     private readonly ConfigFactoryInterface $configFactory,
     private readonly LoggerInterface $logger,
     private readonly RequestStack $requestStack,
+    private readonly ?Connection $database = NULL,
   ) {
   }
 
@@ -97,6 +99,7 @@ final class PublishWebhook {
       \Drupal::configFactory(),
       \Drupal::logger('cinatra'),
       \Drupal::requestStack(),
+      \Drupal::database(),
     );
   }
 
@@ -105,8 +108,9 @@ final class PublishWebhook {
    *
    * The emission payload/target/key material is captured NOW (the entity may
    * be mutated later in the request), but the network call happens in a
-   * shutdown callback so the node save is never transport-blocked. A quiet
-   * no-op when the connection is not fully configured.
+   * shutdown callback so the node save is never transport-blocked. Inside a
+   * database transaction it is registered only once that transaction has
+   * committed. A quiet no-op when the connection is not fully configured.
    *
    * @param \Drupal\node\NodeInterface $node
    *   The node that just transitioned into the published state.
@@ -116,9 +120,24 @@ final class PublishWebhook {
     if ($emission === NULL) {
       return;
     }
-    drupal_register_shutdown_function(function () use ($emission): void {
-      $this->send($emission);
-    });
+    $register = function () use ($emission): void {
+      drupal_register_shutdown_function(function () use ($emission): void {
+        $this->send($emission);
+      });
+    };
+    // An event is emitted only for a committed save. Inside a transaction the
+    // send is registered when the root transaction ends, and only if it
+    // committed; a rolled-back save never reports a publish.
+    // fromContainer() always passes the site database.
+    if ($this->database !== NULL && $this->database->inTransaction()) {
+      $this->database->transactionManager()->addPostTransactionCallback(static function (bool $committed) use ($register): void {
+        if ($committed) {
+          $register();
+        }
+      });
+      return;
+    }
+    $register();
   }
 
   /**

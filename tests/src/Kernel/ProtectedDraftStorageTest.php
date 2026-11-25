@@ -254,6 +254,26 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   }
 
   /**
+   * A draft is never saved with a value the person did not review.
+   */
+  public function testSaveHookReplacingRequestedValueRollsBack(): void {
+    $this->assertSaveHookRollsBack('replace_title', ['title' => [['value' => 'Draft title']]], 'The stored value differs from the reviewed value');
+  }
+
+  /**
+   * The binding names its translation, also when the translations look alike.
+   *
+   * The French translation of the fixture page shares the English changed
+   * time; an English binding sent for French must not write French.
+   */
+  public function testBindingOfOneTranslationCannotWriteAnother(): void {
+    $this->assertSame($this->page->getTranslation('en')->getChangedTime(), $this->page->getTranslation('fr')->getChangedTime());
+    $request = $this->titleRequest($this->prepareTitle());
+    $request['language'] = 'fr';
+    $this->assertRefusedBeforeSave(fn() => $this->protectedDraft->write($request), 'The live page values changed');
+  }
+
+  /**
    * Tests unmoderated node refuses before save.
    */
   public function testUnmoderatedNodeRefusesBeforeSave(): void {

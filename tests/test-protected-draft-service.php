@@ -15,7 +15,13 @@ declare(strict_types=1);
  */
 
 $source = dirname(__DIR__) . '/src/ProtectedDraft/';
-foreach (['ProtectedDraftRefusal', 'ProtectedDraftStorageInterface', 'ProtectedDraftService'] as $class) {
+$classes = [
+  'ProtectedDraftRefusal',
+  'ProtectedDraftFieldScope',
+  'ProtectedDraftStorageInterface',
+  'ProtectedDraftService',
+];
+foreach ($classes as $class) {
   $file = $source . $class . '.php';
   if (!is_file($file)) {
     fwrite(STDERR, "RED: protected draft operation is absent: $class\n");
@@ -146,14 +152,14 @@ final class CinatraMemoryProtectedDraftStorage implements ProtectedDraftStorageI
       'fields' => [
         'title' => [
           [
-            'value' => 'Stored draft',
+            'value' => 'Requested',
           ],
         ],
         'body' => [
           [
-            'value' => '<p>Stored</p>',
+            'summary' => 'Requested summary',
             'format' => 'basic_html',
-            'summary' => 'Stored summary',
+            'value' => '<p>Requested</p>',
           ],
         ],
       ],
@@ -332,11 +338,11 @@ foreach ([
     }
   };
 }
-$cases['returns exact stored structured field values, not requested values'] = static function (): void {
+$cases['returns the exact stored structured field values'] = static function (): void {
   $store = new CinatraMemoryProtectedDraftStorage();
   $result = (new ProtectedDraftService($store))->write(request());
   require_true($result['fields'] === $store->stored['fields'], 'Returned request or flattened values');
-  require_true($result['fields']['body'][0]['summary'] === 'Stored summary', 'Lost summary');
+  require_true($result['fields']['body'][0]['summary'] === 'Requested summary', 'Lost summary');
   require_true($store->saveArguments === [19, 'de', 'draft', request()['updates']], 'Changed save identity');
   require_true($store->saves === 1 && $store->committed, 'Draft did not commit once');
 };
@@ -349,6 +355,13 @@ $corruptions = [
   'published revision was saved' => ['is_published', TRUE],
   'wrong stored moderation state' => ['moderation_state', 'published'],
   'missing actual stored field' => ['fields', ['title' => [['value' => 'Only title']]]],
+  'stored value differs from the reviewed value' => [
+    'fields',
+    [
+      'title' => [['value' => 'Replaced by a save hook']],
+      'body' => [['value' => '<p>Requested</p>', 'format' => 'basic_html', 'summary' => 'Requested summary']],
+    ],
+  ],
 ];
 foreach ($corruptions as $name => [$key, $value]) {
   $cases['rolls back stored mismatch: ' . $name] = static function () use ($key, $value): void {
@@ -453,8 +466,8 @@ function unpublished_store(bool $publish = FALSE): CinatraMemoryProtectedDraftSt
     'is_published' => $publish,
     'changed' => 2000,
     'fields' => [
-      'title' => [['value' => 'Stored title']],
-      'body' => [['value' => '<p>Stored</p>', 'format' => 'basic_html', 'summary' => 'Stored summary']],
+      'title' => [['value' => 'Requested']],
+      'body' => [['summary' => 'Requested summary', 'format' => 'basic_html', 'value' => '<p>Requested</p>']],
     ],
   ]);
   return $store;
@@ -650,13 +663,24 @@ $unpublished_corruptions = [
   'missing stored field' => ['fields', ['title' => [['value' => 'Only title']]]],
   'no changed time' => ['changed', NULL],
   'foreign UUID' => ['uuid', 'foreign'],
+  'stored value differs from the reviewed value' => [
+    'fields',
+    [
+      'title' => [['value' => 'Replaced by a save hook']],
+      'body' => [['value' => '<p>Requested</p>', 'format' => 'basic_html', 'summary' => 'Requested summary']],
+    ],
+  ],
 ];
 foreach ($unpublished_corruptions as $name => [$key, $value]) {
   $cases['unpublished write rolls back stored mismatch: ' . $name] = static function () use ($key, $value): void {
-    $store = unpublished_store();
+    $store = unpublished_store(TRUE);
     $store->after[$key] = $value;
+    $store->after['is_published'] = $key === 'is_published' ? FALSE : TRUE;
+    $request = unpublished_request();
+    // With publish, a refused stored value must never be committed as live.
+    $request['publish'] = TRUE;
     try {
-      (new ProtectedDraftService($store))->writeUnpublished(unpublished_request());
+      (new ProtectedDraftService($store))->writeUnpublished($request);
       throw new \RuntimeException('Corrupt stored revision accepted');
     }
     catch (ProtectedDraftRefusal $e) {

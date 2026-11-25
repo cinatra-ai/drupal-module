@@ -80,6 +80,11 @@ final class ProtectedDraftProbe {
         $node->getTranslation($other)->setTitle('A save hook changed the other translation.');
         break;
 
+      case 'replace_title':
+        // A valid value the person never reviewed.
+        $node->setTitle('Replaced by a save hook');
+        break;
+
       case 'restricted_format':
         $node->get('body')->format = 'restricted';
         break;

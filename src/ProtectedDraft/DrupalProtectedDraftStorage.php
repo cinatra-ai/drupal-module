@@ -271,6 +271,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $this->assertFreshFieldConfiguration($node);
     $this->bindStoredModeration($node, $workflow);
     $raw_translation = $node->getTranslation($language);
+    foreach ($fields as $field) {
+      if (!$raw_translation->hasField($field)) {
+        throw new ProtectedDraftRefusal('A requested field does not exist on this page.');
+      }
+    }
     $stored_fields = $this->values($raw_translation, $fields);
     $published = [];
     $published_languages = [];
@@ -346,7 +351,12 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       'moderation_state' => $workflow !== NULL ? $raw_translation->get('moderation_state')->value : NULL,
       'canonical_moderation_field' => $canonical,
       'workflow_fingerprint' => $this->workflowFingerprint($definitions),
-      'preimage_fingerprint' => $this->fingerprint($published),
+      // The binding names its translation: the same content read for another
+      // language gives another fingerprint, so it cannot write that language.
+      'preimage_fingerprint' => $this->fingerprint([
+        'language' => $raw_translation->language()->getId(),
+        'values' => $published,
+      ]),
       'can_read' => TRUE,
       'can_update' => $translation->access('update', $this->account, TRUE)->isAllowed(),
       // The core check behind the editor's Published checkbox.
@@ -393,6 +403,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
     $before_content = $this->draftContent($this->preimage);
     $shared_fields = [];
+    $reviewed = [];
     $node = clone $this->preimage;
     foreach ($updates as $field => $items) {
       if (!$this->editableField($node, $field) || !is_array($items) || !array_is_list($items)) {
@@ -402,6 +413,8 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $node->get($field)->setValue($items);
+      // The reviewed value after Drupal's own normalisation on set.
+      $reviewed[$field] = $node->get($field)->getValue();
     }
     $node->setNewRevision(TRUE);
     $node->isDefaultRevision(FALSE);
@@ -435,6 +448,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // Validate actual SQL content/permissions before the root may commit.
     ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields);
     $this->assertDraftAccess(clone $stored->getTranslation($language), array_keys($updates));
+    // The scope check skips the requested fields; a save hook must not have
+    // replaced a reviewed value with another valid one.
+    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
   }
 
@@ -465,6 +481,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     }
     $before_content = $this->draftContent($this->preimage);
     $shared_fields = [];
+    $reviewed = [];
     $node = clone $this->preimage;
     foreach ($updates as $field => $items) {
       if (!is_string($field) || !$this->editableField($node, $field) || !is_array($items) || !array_is_list($items)) {
@@ -474,6 +491,8 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $node->get($field)->setValue($items);
+      // The reviewed value after Drupal's own normalisation on set.
+      $reviewed[$field] = $node->get($field)->getValue();
     }
     $node->setNewRevision(TRUE);
     $node->isDefaultRevision(TRUE);
@@ -516,6 +535,9 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // status; the service checks that status against the publish step.
     ProtectedDraftFieldScope::assertMatches($before_content, $this->draftContent($stored), $language, array_keys($updates), $shared_fields);
     $this->assertUnpublishedWriteAccess(clone $stored->getTranslation($language), array_keys($updates), $publish && $state === NULL);
+    // What is stored, and with publish what goes live, must be what was
+    // reviewed: a save hook must not have replaced a requested value.
+    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
   }
 

@@ -160,6 +160,7 @@ final class ProtectedDraftService {
         || ($stored['moderation_state'] ?? NULL) !== $request['draft_state']) {
         throw new ProtectedDraftRefusal('The stored result is not the requested unpublished non-default draft.');
       }
+      ProtectedDraftFieldScope::assertStoredAsReviewed($request['updates'], $stored['fields']);
       $after = $this->storage->readDefault($nid, $language, $fields);
       if (($after['default_revision_id'] ?? NULL) !== $before['default_revision_id']
         || !array_key_exists('published_values', $before)
@@ -316,6 +317,9 @@ final class ProtectedDraftService {
           throw new ProtectedDraftRefusal('Stored fields must preserve their structured item values.');
         }
       }
+      // What is stored, and with publish what goes live, must be what was
+      // reviewed; a difference rolls the save back.
+      ProtectedDraftFieldScope::assertStoredAsReviewed($updates, $stored);
       return [
         'node_id' => $nid,
         'uuid' => $after['uuid'],

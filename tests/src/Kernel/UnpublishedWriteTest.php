@@ -176,8 +176,8 @@ final class UnpublishedWriteTest extends KernelTestBase {
     $this->assertGreaterThan($before['default'], $result['revision_id']);
     $this->assertFalse($result['is_published']);
     $this->assertSame(['en' => FALSE], $after['published']);
-    $this->assertSame([['value' => 'Reviewed title']], $result['fields']['title']);
-    $this->assertSame([['value' => 'Old note']], $result['fields']['field_note']);
+    $this->assertSame(['title' => [['value' => 'Reviewed title']]], $result['fields']);
+    $this->assertSame($before['notes'], $after['notes']);
     $this->assertSame('Reviewed title', $after['titles']['en']);
     $this->assertGreaterThan($this->oldChanged, $result['changed']);
     $this->assertSame($result['changed'], $after['changed']['en']);
@@ -311,20 +311,26 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
-   * The binding is for one translation; another language refuses.
+   * The binding names its translation; another language refuses.
+   *
+   * Both translations share one changed time, so only the binding itself can
+   * tell them apart.
    */
   public function testTranslationMismatchRefuses(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
     $node = $this->plainPage();
     $node->addTranslation('fr', [
-      'title' => 'Titre', 'status' => FALSE, 'changed' => $this->oldChanged + 50,
+      'title' => 'Titre', 'status' => FALSE, 'changed' => $this->oldChanged,
     ])->save();
     $nid = (int) $node->id();
     $snapshot = $this->snapshot($nid);
-    $this->assertNotSame($snapshot['changed']['en'], $snapshot['changed']['fr']);
+    $this->assertSame($snapshot['changed']['en'], $snapshot['changed']['fr']);
     $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
     // The English binding sent for the French translation.
     $request = ['language' => 'fr'] + $this->binding($preimage) + ['updates' => ['title' => [['value' => 'Titre revu']]]];
-    $this->assertRefusedBeforeSave($nid, fn() => $this->protectedDraft->writeUnpublished($request), 'The page was saved after it was read');
+    $this->assertRefusedBeforeSave($nid, fn() => $this->protectedDraft->writeUnpublished($request), 'The page values changed');
+    $this->assertRefusedBeforeSave($nid, fn() => $this->protectedDraft->writeUnpublished(['publish' => TRUE] + $request), 'The page values changed');
+    $this->assertRefusedBeforeSave($nid, fn() => $this->protectedDraft->publishUnpublished(['language' => 'fr'] + $this->binding($preimage)), 'The page values changed');
     // A language the page has no translation in.
     $request['language'] = 'de';
     $this->assertRefusedBeforeSave($nid, fn() => $this->protectedDraft->writeUnpublished($request), 'The exact page translation is not available');
@@ -390,6 +396,73 @@ final class UnpublishedWriteTest extends KernelTestBase {
     $this->assertSame('Reviewed draft', $published['titles']['en']);
     $this->assertSame('published', $this->nodeStorage()->load($nid)->get('moderation_state')->value);
     $this->assertRootFinished();
+  }
+
+  /**
+   * A save hook replacing a reviewed value rolls back; nothing goes live.
+   */
+  public function testSaveHookReplacingReviewedValueRollsBack(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+    $before = $this->snapshot($nid);
+    ProtectedDraftProbe::arm($nid, 'replace_title');
+    try {
+      $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['title' => [['value' => 'Reviewed title']]],
+        'publish' => TRUE,
+      ]);
+      $this->fail('A replaced reviewed value must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The stored value differs from the reviewed value', $expected->getMessage());
+      $this->assertGreaterThan(0, ProtectedDraftProbe::$presaves, 'The real pre-save hook must run.');
+      $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede the rollback.');
+    }
+    $this->assertNull($this->nodeStorage()->loadRevision(ProtectedDraftProbe::$storedRevision));
+    ProtectedDraftProbe::reset();
+    $this->assertSame($before, $this->snapshot($nid));
+    $this->assertRootFinished();
+  }
+
+  /**
+   * The publish webhook is queued only when the publishing save committed.
+   */
+  public function testPublishWebhookOnlyForCommittedSave(): void {
+    $this->config('cinatra.settings')
+      ->set('cinatra_url', 'https://cinatra.example.test')
+      ->set('webhook_secret', 'whsec_' . base64_encode(str_repeat('k', 32)))
+      ->set('webhook_binding_id', 'binding-1')
+      ->save();
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $callbacks = &drupal_register_shutdown_function();
+    $count = count($callbacks);
+    try {
+      // A rolled-back publish queues nothing.
+      $nid = (int) $this->plainPage()->id();
+      $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+      ProtectedDraftProbe::arm($nid, 'replace_title');
+      try {
+        $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+          'updates' => ['title' => [['value' => 'Reviewed title']]],
+          'publish' => TRUE,
+        ]);
+        $this->fail('A replaced reviewed value must refuse.');
+      }
+      catch (ProtectedDraftRefusal) {
+        $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The publishing save must have run before the rollback.');
+      }
+      ProtectedDraftProbe::reset();
+      $this->assertCount($count, $callbacks, 'A rolled-back publish must not queue its webhook.');
+      // A committed publish queues one.
+      $preimage = $this->protectedDraft->prepare($nid, 'en', ['title']);
+      $this->protectedDraft->publishUnpublished($this->binding($preimage));
+      $this->assertCount($count + 1, $callbacks, 'A committed publish queues its webhook once.');
+    }
+    finally {
+      // Never send from the test process.
+      array_splice($callbacks, $count);
+    }
   }
 
   /**
