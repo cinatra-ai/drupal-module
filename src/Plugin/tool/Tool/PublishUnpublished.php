@@ -17,7 +17,7 @@ use Drupal\tool\TypedData\InputDefinition;
 #[Tool(
   id: 'cinatra_publish_unpublished',
   label: new TranslatableMarkup('Publish unpublished page'),
-  description: new TranslatableMarkup('Atomically publish an unpublished, unmoderated page in the exact translation as it is, only if the page is unchanged since the cinatra_read_protected_revision read: revision, changed time, workflow and content bindings must all match. Changes no field value. Refuses published or moderated pages, a changed page and missing permission before saving; returns the new revision ID and the new changed time.'),
+  description: new TranslatableMarkup('Atomically publish an unpublished page in the exact translation as it is, only if the page is unchanged since the cinatra_read_protected_revision read: revision, changed time, workflow and content bindings must all match. Changes no field value. A moderated page is published through the workflow transition to the published state that the user may use. Refuses published pages, a page without such a transition, a changed page and missing permission before saving; returns the new revision ID and the new changed time.'),
   operation: ToolOperation::Write,
   input_definitions: [
     'nid' => new InputDefinition(

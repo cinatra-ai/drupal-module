@@ -57,9 +57,12 @@ final class ProtectedDraftFieldScope {
    * check compares them, item by item and property by property. A value is
    * normalised only by its property's typed-data TYPE, never by what it
    * looks like:
-   * - integer: an integer and its decimal digit string are the same ("3");
-   * - decimal and float: a number and its digit string are the same, and
-   *   trailing fractional zeros do not count ("1.50" is 1.5);
+   * - integer, decimal and float: a number and its digit string are the same,
+   *   through one exact string form (see canonicalNumeral()), so "03" is "3",
+   *   "01.50", "1.50", "1.5" and "+1.5" are the same, and "-0" is "0". A
+   *   float is a PHP double when stored: only a value that reads back as a
+   *   plain numeral compares equal; one in exponent form, or beyond double
+   *   precision, differs from the reviewed digits and refuses (never accepts);
    * - boolean: TRUE, 1 and "1" are the same, and FALSE, 0 and "0";
    * - every other type (string, text, format, uri, ...): exact; a number
    *   given for it is compared as the string the column stores.
@@ -125,20 +128,12 @@ final class ProtectedDraftFieldScope {
       }
       return [$value];
     }
-    if ($type === 'integer') {
-      if (is_int($value)) {
-        return (string) $value;
-      }
-      return is_string($value) && preg_match('/\A-?(0|[1-9]\d*)\z/', $value) ? $value : [$value];
-    }
-    if ($type === 'decimal' || $type === 'float') {
+    if ($type === 'integer' || $type === 'decimal' || $type === 'float') {
       if (is_int($value) || is_float($value)) {
         $value = (string) $value;
       }
-      if (!is_string($value) || !preg_match('/\A-?\d+(\.\d+)?\z/', $value)) {
-        return [$value];
-      }
-      return str_contains($value, '.') ? rtrim(rtrim($value, '0'), '.') : $value;
+      $canonical = is_string($value) ? self::canonicalNumeral($value, $type !== 'integer') : NULL;
+      return $canonical ?? [$value];
     }
     if ($type === NULL) {
       return [$value];
@@ -147,6 +142,39 @@ final class ProtectedDraftFieldScope {
       return self::sortedMap($value);
     }
     return is_int($value) || is_float($value) ? (string) $value : $value;
+  }
+
+  /**
+   * Reduces a plain decimal numeral to its one exact form, or NULL.
+   *
+   * Strings only, with no float cast, so a value beyond float precision keeps
+   * every digit. The form: no sign for zero or a plus sign, a minus sign only
+   * for a non-zero value, the integer part without leading zeroes (one digit
+   * at least), the fraction without trailing zeroes, and no point when the
+   * fraction is empty. "01.50", "1.5" and "+1.50" are the same; "-0", "+0",
+   * "0.0" and ".0" are "0". The accepted spellings are those of Drupal's own
+   * decimal validation: a sign, digits, and an optional point, with a bare
+   * ".5" and a bare "5." both valid. An integer takes no point. Anything else
+   * (an exponent, whitespace, a hex or empty string, a second point) is NOT a
+   * plain numeral and returns NULL, so the caller compares the raw value and
+   * nothing unequal can become equal.
+   */
+  private static function canonicalNumeral(string $value, bool $allow_fraction): ?string {
+    $pattern = $allow_fraction ? '/\A([+-]?)(\d*)(?:\.(\d*))?\z/' : '/\A([+-]?)(\d+)\z/';
+    if (!preg_match($pattern, $value, $parts)) {
+      return NULL;
+    }
+    // PCRE leaves out a trailing group that did not take part in the match.
+    $fraction = rtrim($parts[3] ?? '', '0');
+    if ($parts[2] === '' && ($parts[3] ?? '') === '') {
+      return NULL;
+    }
+    $integer = ltrim($parts[2], '0');
+    if ($integer === '') {
+      $integer = '0';
+    }
+    $sign = $parts[1] === '-' && ($integer !== '0' || $fraction !== '') ? '-' : '';
+    return $sign . $integer . ($fraction === '' ? '' : '.' . $fraction);
   }
 
   /**

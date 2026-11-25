@@ -117,6 +117,15 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
       'entity_type' => 'node', 'bundle' => 'page', 'field_name' => 'field_shared_note',
       'label' => 'Shared note', 'translatable' => FALSE,
     ])->save();
+    FieldStorageConfig::create([
+      'entity_type' => 'node', 'field_name' => 'field_price', 'type' => 'decimal',
+      'revisionable' => TRUE, 'translatable' => TRUE,
+      'settings' => ['precision' => 10, 'scale' => 2],
+    ])->save();
+    FieldConfig::create([
+      'entity_type' => 'node', 'bundle' => 'page', 'field_name' => 'field_price',
+      'label' => 'Price', 'translatable' => TRUE,
+    ])->save();
     $workflow = $this->createEditorialWorkflow();
     $this->addEntityTypeAndBundleToWorkflow($workflow, 'node', 'page');
     $role = Role::create(['id' => 'protected_editor', 'label' => 'Protected editor']);
@@ -258,6 +267,22 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
    */
   public function testSaveHookReplacingRequestedValueRollsBack(): void {
     $this->assertSaveHookRollsBack('replace_title', ['title' => [['value' => 'Draft title']]], 'The stored value differs from the reviewed value');
+  }
+
+  /**
+   * A decimal sent with leading zeroes is the stored decimal, not a mismatch.
+   *
+   * Drupal stores "01.50" in a scale 2 column as 1.50: one number, so the
+   * draft is kept instead of rolled back.
+   */
+  public function testDecimalWithLeadingZeroesIsNotRolledBack(): void {
+    $nid = (int) $this->page->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_price']);
+    $stored = $this->protectedDraft->write($this->request($preimage, ['field_price' => [['value' => '01.50']]]));
+    $this->assertEquals(1.5, (float) $stored['fields']['field_price'][0]['value']);
+    $draft = $this->nodeStorage()->loadRevision($stored['revision_id']);
+    $this->assertEquals(1.5, (float) $draft->get('field_price')->value);
+    $this->assertRootFinished();
   }
 
   /**

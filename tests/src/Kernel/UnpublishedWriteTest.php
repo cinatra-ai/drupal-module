@@ -470,6 +470,27 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
+   * A decimal sent with leading zeroes is the stored decimal, not a mismatch.
+   *
+   * Drupal stores "01.50" in a scale 2 column as 1.50. Both spellings are one
+   * number, so the saved write is kept, with and without publishing.
+   */
+  public function testDecimalWithLeadingZeroesIsNotRolledBack(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    foreach ([FALSE, TRUE] as $publish) {
+      $nid = (int) $this->plainPage()->id();
+      $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_price']);
+      $result = $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['field_price' => [['value' => '01.50']]],
+        'publish' => $publish,
+      ]);
+      $this->assertSame($result['revision_id'], $this->snapshot($nid)['default']);
+      $this->assertEquals(1.5, (float) $result['fields']['field_price'][0]['value']);
+      $this->assertRootFinished();
+    }
+  }
+
+  /**
    * A clear sent as [] or as an empty item is stored empty; a refill refuses.
    */
   public function testClearIsStoredAndRefillRefuses(): void {

@@ -215,6 +215,80 @@ $untyped['field_unknown'] = [['value' => '1.50']];
 $untyped_stored = $stored;
 $untyped_stored['field_unknown'] = [['value' => '1.5']];
 $reviewed_test('a property without a known type is compared exactly', $untyped, $untyped_stored, FALSE);
+// One exact numeral form on both sides: no leading zeroes, no plus sign, no
+// trailing fractional zeroes, no negative zero, and no float cast. Each row is
+// property type, reviewed value, stored value, and whether they are the same.
+$numeral_rows = [
+  ['decimal', '01.50', '1.50', TRUE],
+  ['decimal', '01.50', '1.5', TRUE],
+  ['decimal', '+1.0', '1', TRUE],
+  ['decimal', '+1.0', '1.00', TRUE],
+  ['decimal', '000', '0', TRUE],
+  ['decimal', '-0', '0', TRUE],
+  ['decimal', '-0.00', '0.00', TRUE],
+  ['decimal', '+0', '0', TRUE],
+  ['decimal', '0.50', '.5', TRUE],
+  ['decimal', '5.', '5.00', TRUE],
+  ['decimal', '-.50', '-0.5', TRUE],
+  ['decimal', '-01.50', '-1.5', TRUE],
+  ['decimal', '-1.5', '1.5', FALSE],
+  ['decimal', '0.05', '0.5', FALSE],
+  ['decimal', '10', '1', FALSE],
+  ['decimal', '100', '1', FALSE],
+  ['decimal', '12345678901234567890.10', '12345678901234567890.1', TRUE],
+  ['decimal', '12345678901234567890.1', '12345678901234567891.1', FALSE],
+  ['decimal', '12345678901234567890.1', '12345678901234567890.2', FALSE],
+  ['decimal', '1e3', '1000', FALSE],
+  ['decimal', '1e3', '1e3', TRUE],
+  ['decimal', ' 1', '1', FALSE],
+  ['decimal', "1\n", '1', FALSE],
+  ['decimal', '0x1', '1', FALSE],
+  ['decimal', '1.2.3', '1.2.3', TRUE],
+  ['decimal', '1.2.3', '1.23', FALSE],
+  ['decimal', '', '0', FALSE],
+  ['decimal', '.', '0', FALSE],
+  ['decimal', '+', '0', FALSE],
+  ['integer', '03', '3', TRUE],
+  ['integer', '+3', '3', TRUE],
+  ['integer', '-0', '0', TRUE],
+  ['integer', '000', '0', TRUE],
+  ['integer', '3.0', '3', FALSE],
+  ['integer', '30', '3', FALSE],
+  ['integer', '1e3', '1000', FALSE],
+  ['float', '01.50', '1.5', TRUE],
+  ['float', '1.10', '1.1', TRUE],
+  ['float', '-0.0', '0', TRUE],
+  ['float', '1e3', '1000', FALSE],
+  ['float', '1.1', '1.2', FALSE],
+];
+$numeric_test = function (string $name, string $type, mixed $review, mixed $store, bool $same) use (&$passed): void {
+  try {
+    ProtectedDraftFieldScope::assertStoredAsReviewed(['field_x' => [['value' => $review]]], ['field_x' => [['value' => $store]]], ['field_x' => ['value' => $type]]);
+    $accepted = TRUE;
+  }
+  catch (ProtectedDraftRefusal) {
+    $accepted = FALSE;
+  }
+  if ($accepted !== $same) {
+    throw new RuntimeException($name . ' gave the wrong answer');
+  }
+  $passed++;
+  echo "PASS $name\n";
+};
+foreach ($numeral_rows as [$type, $left, $right, $same]) {
+  $name = sprintf('%s %s vs %s is %s', $type, json_encode($left), json_encode($right), $same ? 'the same' : 'different');
+  // The comparison reads the same whichever side holds which spelling.
+  $numeric_test($name, $type, $left, $right, $same);
+  $numeric_test($name . ' (swapped)', $type, $right, $left, $same);
+}
+// Both sides take the same form even when one is a PHP number.
+$numeric_test('a PHP float 1.5 is the stored "1.50"', 'decimal', 1.5, '1.50', TRUE);
+$numeric_test('a PHP int 3 is the stored "3.00"', 'decimal', 3, '3.00', TRUE);
+$numeric_test('a PHP float 1.5 is not the stored "1.05"', 'decimal', 1.5, '1.05', FALSE);
+// A value that is not a plain numeral never equals a numeral.
+$mixed = $reviewed;
+$mixed['field_price'] = [['value' => ['1.50']]];
+$reviewed_test('an array is not a decimal numeral', $mixed, $stored, FALSE);
 $cleared = $reviewed;
 $cleared['title'] = [];
 $cleared_stored = $stored;
