@@ -51,6 +51,16 @@ final class DevSiteEnsureTest extends KernelTestBase {
   private const WRITE = 'cinatra_write_protected_draft';
 
   /**
+   * The unpublished write tool id.
+   */
+  private const WRITE_UNPUBLISHED = 'cinatra_write_unpublished';
+
+  /**
+   * The unpublished publish tool id.
+   */
+  private const PUBLISH_UNPUBLISHED = 'cinatra_publish_unpublished';
+
+  /**
    * The State key of the verify test alter's mode.
    */
   private const VERIFY_MODE = 'cinatra_dev_site_verify_test.mode';
@@ -121,6 +131,8 @@ final class DevSiteEnsureTest extends KernelTestBase {
     VerifyToolManager::$definitions = [
       self::READ => new ToolDefinition(['id' => self::READ, 'provider' => 'cinatra']),
       self::WRITE => new ToolDefinition(['id' => self::WRITE, 'provider' => 'cinatra']),
+      self::WRITE_UNPUBLISHED => new ToolDefinition(['id' => self::WRITE_UNPUBLISHED, 'provider' => 'cinatra']),
+      self::PUBLISH_UNPUBLISHED => new ToolDefinition(['id' => self::PUBLISH_UNPUBLISHED, 'provider' => 'cinatra']),
     ];
     $this->container->get('config.storage')->write('mcp_tools_remote.settings', ['enabled' => TRUE, 'server_id' => '']);
     $this->container->get('config.storage')->write('mcp_tools.servers', [
@@ -329,7 +341,7 @@ final class DevSiteEnsureTest extends KernelTestBase {
       'legacy empty record' => $this->legacyOnly([]),
       'legacy servers null' => $this->legacyOnly(['servers' => NULL]),
       'servers missing' => $storage->write('mcp_tools.servers', ['default_server' => 'default']),
-      'tool missing' => VerifyToolManager::$definitions = [self::READ => VerifyToolManager::$definitions[self::READ]],
+      'tool missing' => VerifyToolManager::$definitions = array_diff_key(VerifyToolManager::$definitions, [self::WRITE => TRUE]),
       'tool provider' => VerifyToolManager::$definitions[self::READ] = new ToolDefinition([
         'id' => self::READ,
         'provider' => 'other',

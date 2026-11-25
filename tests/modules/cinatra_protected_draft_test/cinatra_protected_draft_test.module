@@ -9,10 +9,42 @@ declare(strict_types=1);
 
 use Drupal\cinatra_protected_draft_test\ProtectedDraftProbe;
 use Drupal\Core\Access\AccessResult;
+use Drupal\Core\Entity\EntityTypeInterface;
+use Drupal\Core\Field\BaseFieldDefinition;
 use Drupal\Core\Field\FieldDefinitionInterface;
 use Drupal\Core\Field\FieldItemListInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\node\NodeInterface;
+
+/**
+ * Implements hook_entity_base_field_info().
+ *
+ * A stored node field that is not revisionable, for the checks of fields that
+ * a write promises not to touch.
+ */
+function cinatra_protected_draft_test_entity_base_field_info(EntityTypeInterface $entity_type): array {
+  if ($entity_type->id() !== 'node') {
+    return [];
+  }
+  return [
+    'cinatra_test_marker' => BaseFieldDefinition::create('string')
+      ->setLabel('Marker')
+      ->setRevisionable(FALSE)
+      ->setTranslatable(FALSE),
+  ];
+}
+
+/**
+ * Implements hook_entity_bundle_info_alter().
+ *
+ * Lets a test make untranslatable page fields affect only the default
+ * translation, as the content translation settings do.
+ */
+function cinatra_protected_draft_test_entity_bundle_info_alter(array &$bundles): void {
+  if (ProtectedDraftProbe::$defaultTranslationAffectedOnly && isset($bundles['node']['page'])) {
+    $bundles['node']['page']['untranslatable_fields.default_translation_affected'] = TRUE;
+  }
+}
 
 /**
  * Implements hook_node_presave().

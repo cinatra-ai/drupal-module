@@ -15,7 +15,13 @@ declare(strict_types=1);
  */
 
 $source = dirname(__DIR__) . '/src/ProtectedDraft/';
-foreach (['ProtectedDraftRefusal', 'ProtectedDraftStorageInterface', 'ProtectedDraftService'] as $class) {
+$classes = [
+  'ProtectedDraftRefusal',
+  'ProtectedDraftFieldScope',
+  'ProtectedDraftStorageInterface',
+  'ProtectedDraftService',
+];
+foreach ($classes as $class) {
   $file = $source . $class . '.php';
   if (!is_file($file)) {
     fwrite(STDERR, "RED: protected draft operation is absent: $class\n");
@@ -31,7 +37,7 @@ use Drupal\cinatra\ProtectedDraft\ProtectedDraftStorageInterface;
 /**
  * Provides the native cinatra memory protected draft storage dependency double.
  */
-final class CinatraMemoryProtectedDraftStorage implements ProtectedDraftStorageInterface {
+class CinatraMemoryProtectedDraftStorageBase implements ProtectedDraftStorageInterface {
 
   /**
    * Native fixture snapshot.
@@ -146,14 +152,14 @@ final class CinatraMemoryProtectedDraftStorage implements ProtectedDraftStorageI
       'fields' => [
         'title' => [
           [
-            'value' => 'Stored draft',
+            'value' => 'Requested',
           ],
         ],
         'body' => [
           [
-            'value' => '<p>Stored</p>',
+            'summary' => 'Requested summary',
             'format' => 'basic_html',
-            'summary' => 'Stored summary',
+            'value' => '<p>Requested</p>',
           ],
         ],
       ],
@@ -213,6 +219,18 @@ final class CinatraMemoryProtectedDraftStorage implements ProtectedDraftStorageI
   }
 
   /**
+   * Exercises save unpublished.
+   */
+  public function saveUnpublished(int $nid, string $language, array $updates, bool $publish, ?string $state): int {
+    if (!$this->locked) {
+      throw new \LogicException('Unpublished save outside transaction');
+    }
+    $this->saves++;
+    $this->saveArguments = [$nid, $language, $updates, $publish, $state];
+    return 41;
+  }
+
+  /**
    * Exercises read revision.
    */
   public function readRevision(int $nid, int $revision, string $language, array $fields): array {
@@ -222,6 +240,12 @@ final class CinatraMemoryProtectedDraftStorage implements ProtectedDraftStorageI
     return $this->stored;
   }
 
+}
+
+/**
+ * Provides the default memory storage double.
+ */
+final class CinatraMemoryProtectedDraftStorage extends CinatraMemoryProtectedDraftStorageBase {
 }
 
 /**
@@ -320,11 +344,11 @@ foreach ([
     }
   };
 }
-$cases['returns exact stored structured field values, not requested values'] = static function (): void {
+$cases['returns the exact stored structured field values'] = static function (): void {
   $store = new CinatraMemoryProtectedDraftStorage();
   $result = (new ProtectedDraftService($store))->write(request());
   require_true($result['fields'] === $store->stored['fields'], 'Returned request or flattened values');
-  require_true($result['fields']['body'][0]['summary'] === 'Stored summary', 'Lost summary');
+  require_true($result['fields']['body'][0]['summary'] === 'Requested summary', 'Lost summary');
   require_true($store->saveArguments === [19, 'de', 'draft', request()['updates']], 'Changed save identity');
   require_true($store->saves === 1 && $store->committed, 'Draft did not commit once');
 };
@@ -420,6 +444,304 @@ $cases['preimage with an omitted language keeps the exact identity check'] = sta
   catch (ProtectedDraftRefusal $e) {
     require_true($store->readLanguages === ['de'], 'Did not bind the resolved language');
   }
+};
+
+/**
+ * Turns the fixture into an unpublished, unmoderated page and its result.
+ */
+function unpublished_store(bool $publish = FALSE): CinatraMemoryProtectedDraftStorage {
+  $store = new CinatraMemoryProtectedDraftStorage();
+  $store->snapshot = array_merge($store->snapshot, [
+    'is_published' => FALSE,
+    'published_languages' => [],
+    'moderated' => FALSE,
+    'moderation_state' => NULL,
+    'changed' => 1000,
+    'can_publish' => TRUE,
+    'can_edit_moderation_state' => TRUE,
+  ]);
+  $store->after = array_merge($store->snapshot, [
+    'default_revision_id' => 41,
+    'latest_revision_id' => 41,
+    'is_published' => $publish,
+    'changed' => 2000,
+    'fields' => [
+      'title' => [['value' => 'Requested']],
+      'body' => [['summary' => 'Requested summary', 'format' => 'basic_html', 'value' => '<p>Requested</p>']],
+    ],
+  ]);
+  return $store;
+}
+
+/**
+ * Builds a complete unpublished write request from the read binding.
+ */
+function unpublished_request(): array {
+  $request = request();
+  unset($request['draft_state']);
+  $request['expected_changed'] = 1000;
+  return $request;
+}
+
+/**
+ * Builds a complete publish request from the read binding.
+ */
+function publish_request(): array {
+  $request = unpublished_request();
+  unset($request['updates']);
+  return $request;
+}
+
+/**
+ * Requires a refusal that wrote nothing and committed nothing.
+ */
+function require_refused_unsaved(CinatraMemoryProtectedDraftStorage $store, callable $operation, string $reason): void {
+  try {
+    $operation();
+  }
+  catch (ProtectedDraftRefusal $e) {
+    require_true(str_contains($e->getMessage(), $reason), 'Another refusal than "' . $reason . '": ' . $e->getMessage());
+    require_true($store->saves === 0, 'Refusal happened after a save');
+    require_true(!$store->committed, 'Refusal committed');
+    require_true(!str_contains($e->getMessage(), 'Requested') && !str_contains($e->getMessage(), 'Live'), 'Refusal echoed content');
+    return;
+  }
+  throw new \RuntimeException('Unsafe unpublished write accepted');
+}
+
+$cases['unpublished write saves once and returns stored values, revision and changed time'] = static function (): void {
+  $store = unpublished_store();
+  $result = (new ProtectedDraftService($store))->writeUnpublished(unpublished_request());
+  require_true($store->saveArguments === [19, 'de', request()['updates'], FALSE, NULL], 'Changed save identity');
+  require_true($store->saves === 1 && $store->committed, 'Write did not commit once');
+  require_true($result['revision_id'] === 41 && $result['changed'] === 2000, 'Missing new revision or changed time');
+  require_true($result['fields'] === $store->after['fields'], 'Returned request instead of stored values');
+  require_true($result['is_published'] === FALSE && $result['is_default_revision'] === TRUE, 'Wrong stored status');
+  require_true(!isset($result['published_values']) && !isset($result['published_languages']), 'Exported internal snapshot');
+};
+$cases['unpublished write with publish publishes in the same save'] = static function (): void {
+  $store = unpublished_store(TRUE);
+  $request = unpublished_request();
+  $request['publish'] = TRUE;
+  $result = (new ProtectedDraftService($store))->writeUnpublished($request);
+  require_true($store->saves === 1 && $store->saveArguments[3] === TRUE, 'Publish was not part of the one save');
+  require_true($result['is_published'] === TRUE, 'Not published');
+};
+$cases['publish step publishes as it is, with no field value'] = static function (): void {
+  $store = unpublished_store(TRUE);
+  $store->after['fields'] = [];
+  $result = (new ProtectedDraftService($store))->publishUnpublished(publish_request());
+  require_true($store->saveArguments === [19, 'de', [], TRUE, NULL], 'Publish changed field values');
+  require_true($result['is_published'] === TRUE && $result['fields'] === [], 'Publish result is wrong');
+};
+$cases['moderated unpublished write keeps its draft state through an allowed transition'] = static function (): void {
+  $store = unpublished_store();
+  $store->snapshot['moderated'] = TRUE;
+  $store->snapshot['moderation_state'] = 'draft';
+  $store->after['moderated'] = TRUE;
+  $store->after['moderation_state'] = 'draft';
+  (new ProtectedDraftService($store))->writeUnpublished(unpublished_request());
+  require_true($store->saveArguments[4] === 'draft', 'Did not keep the draft state');
+};
+$cases['moderated publish uses the one allowed published default state'] = static function (): void {
+  $store = unpublished_store(TRUE);
+  $states = [
+    'draft' => ['published' => FALSE, 'default_revision' => FALSE],
+    'published' => ['published' => TRUE, 'default_revision' => TRUE],
+  ];
+  foreach (['snapshot', 'after'] as $key) {
+    $store->{$key}['moderated'] = TRUE;
+    $store->{$key}['draft_states'] = $states;
+    $store->{$key}['allowed_draft_states'] = ['draft', 'published'];
+  }
+  $store->snapshot['moderation_state'] = 'draft';
+  // The transition permission, not the status field, publishes it.
+  $store->snapshot['can_publish'] = FALSE;
+  $store->after['moderation_state'] = 'published';
+  $store->after['fields'] = [];
+  (new ProtectedDraftService($store))->publishUnpublished(publish_request());
+  require_true($store->saveArguments[4] === 'published', 'Did not publish through the workflow');
+};
+$unpublished_refusals = [
+  'published page' => [['is_published' => TRUE], 'This page is published'],
+  'another published translation' => [['published_languages' => ['fr']], 'This page is published'],
+  'pending revision' => [['latest_revision_id' => 42], 'A newer revision'],
+  'default revision changed' => [['default_revision_id' => 39, 'latest_revision_id' => 39], 'The page revision changed'],
+  'workflow changed' => [['workflow_fingerprint' => str_repeat('b', 64)], 'The workflow configuration changed'],
+  'values changed' => [['preimage_fingerprint' => str_repeat('d', 64)], 'The page values changed'],
+  'changed time moved' => [['changed' => 1001], 'The page was saved after it was read'],
+  'edit denied' => [['can_update' => FALSE], 'Editing this page is not permitted'],
+  'field denied' => [['field_access' => ['title' => TRUE, 'body' => FALSE]], 'A requested field cannot be edited'],
+  'translation not bound' => [['language' => 'en'], 'not readable in this language'],
+  'read denied' => [['can_read' => FALSE], 'not readable in this language'],
+  'moderated without a transition back to its state' => [
+    [
+      'moderated' => TRUE,
+      'moderation_state' => 'draft',
+      'allowed_draft_states' => [],
+    ],
+    'does not allow this change',
+  ],
+  'moderated without edit access to its workflow state' => [
+    [
+      'moderated' => TRUE,
+      'moderation_state' => 'draft',
+      'can_edit_moderation_state' => FALSE,
+    ],
+    'Changing the workflow state of this page is not permitted',
+  ],
+  'moderated with an ambiguous field' => [
+    [
+      'moderated' => TRUE,
+      'canonical_moderation_field' => FALSE,
+    ],
+    'moderation field is ambiguous',
+  ],
+];
+foreach ($unpublished_refusals as $name => [$changes, $reason]) {
+  $cases['unpublished write refuses before save: ' . $name] = static function () use ($changes, $reason): void {
+    $store = unpublished_store();
+    $store->snapshot = array_merge($store->snapshot, $changes);
+    require_refused_unsaved($store, static fn() => (new ProtectedDraftService($store))->writeUnpublished(unpublished_request()), $reason);
+  };
+  if ($name === 'field denied') {
+    // The publish step writes no field.
+    continue;
+  }
+  $cases['publish step refuses before save: ' . $name] = static function () use ($changes, $reason): void {
+    $store = unpublished_store(TRUE);
+    $store->snapshot = array_merge($store->snapshot, $changes);
+    if (($changes['moderated'] ?? FALSE) === TRUE && $reason === 'does not allow this change') {
+      $reason = 'does not allow publishing it';
+    }
+    require_refused_unsaved($store, static fn() => (new ProtectedDraftService($store))->publishUnpublished(publish_request()), $reason);
+  };
+}
+$cases['publish refuses without the publish permission'] = static function (): void {
+  $store = unpublished_store(TRUE);
+  $store->snapshot['can_publish'] = FALSE;
+  require_refused_unsaved($store, static fn() => (new ProtectedDraftService($store))->publishUnpublished(publish_request()), 'Publishing this page is not permitted');
+  $request = unpublished_request();
+  $request['publish'] = TRUE;
+  require_refused_unsaved($store, static fn() => (new ProtectedDraftService($store))->writeUnpublished($request), 'Publishing this page is not permitted');
+};
+// The one stored-as-reviewed comparison is the storage's, of Drupal's own
+// normalised value. A clear asks for empty, Drupal stores empty: the service
+// must not compare the raw request again.
+foreach (['an empty list' => [], 'an item with an empty value' => [['value' => '']]] as $form => $clear) {
+  $cases['unpublished write accepts a clear sent as ' . $form] = static function () use ($clear): void {
+    $store = unpublished_store();
+    $request = unpublished_request();
+    $request['updates'] = ['title' => [['value' => 'Requested']], 'body' => $clear];
+    $store->after['fields'] = ['title' => [['value' => 'Requested']], 'body' => []];
+    $result = (new ProtectedDraftService($store))->writeUnpublished($request);
+    require_true($store->committed && $result['fields']['body'] === [], 'A normalised clear was refused');
+    require_true($store->saveArguments[2] === $request['updates'], 'The clear was not passed to the storage as sent');
+  };
+  $cases['protected draft accepts a clear sent as ' . $form] = static function () use ($clear): void {
+    $store = new CinatraMemoryProtectedDraftStorage();
+    $request = request();
+    $request['updates']['body'] = $clear;
+    $store->stored['fields']['body'] = [];
+    $result = (new ProtectedDraftService($store))->write($request);
+    require_true($store->committed && $result['fields']['body'] === [], 'A normalised clear was refused');
+  };
+}
+$cases['a storage refusal of a replaced value rolls back with nothing committed'] = static function (): void {
+  $store = new class() extends CinatraMemoryProtectedDraftStorageBase {
+
+    /**
+     * Refuses like the storage comparison after a save hook replaced a value.
+     */
+    public function saveUnpublished(int $nid, string $language, array $updates, bool $publish, ?string $state): int {
+      parent::saveUnpublished($nid, $language, $updates, $publish, $state);
+      throw new ProtectedDraftRefusal('The stored value differs from the reviewed value; nothing was written.');
+    }
+
+  };
+  $fixture = unpublished_store(TRUE);
+  $store->snapshot = $fixture->snapshot;
+  $store->after = $fixture->after;
+  $request = unpublished_request();
+  $request['publish'] = TRUE;
+  try {
+    (new ProtectedDraftService($store))->writeUnpublished($request);
+    throw new \RuntimeException('A refused replacement was committed');
+  }
+  catch (ProtectedDraftRefusal $e) {
+    require_true(str_contains($e->getMessage(), 'stored value differs'), 'Another refusal: ' . $e->getMessage());
+    require_true($store->rolledBack && !$store->committed, 'A replaced value committed');
+  }
+};
+$cases['write without publish needs no publish permission'] = static function (): void {
+  $store = unpublished_store();
+  $store->snapshot['can_publish'] = FALSE;
+  (new ProtectedDraftService($store))->writeUnpublished(unpublished_request());
+  require_true($store->saves === 1, 'Write was refused for a missing publish permission');
+};
+foreach ([
+  'no changed time' => static fn(array $r): array => array_diff_key($r, ['expected_changed' => TRUE]),
+  'string changed time' => static fn(array $r): array => ['expected_changed' => '1000'] + $r,
+  'draft state key' => static fn(array $r): array => $r + ['draft_state' => 'draft'],
+  'list of updates' => static fn(array $r): array => ['updates' => [[['value' => 'x']]]] + $r,
+  'empty updates' => static fn(array $r): array => ['updates' => []] + $r,
+  'string publish' => static fn(array $r): array => $r + ['publish' => 'yes'],
+  'unknown field name' => static fn(array $r): array => ['updates' => ['Not A Field' => [['value' => 'x']]]] + $r,
+  'zero revision' => static fn(array $r): array => ['expected_default_revision_id' => 0] + $r,
+] as $name => $change) {
+  $cases['malformed unpublished write: ' . $name] = static function () use ($change): void {
+    $store = unpublished_store();
+    try {
+      (new ProtectedDraftService($store))->writeUnpublished($change(unpublished_request()));
+      throw new \RuntimeException('Malformed request accepted');
+    }
+    catch (ProtectedDraftRefusal $e) {
+      require_true($store->saves === 0 && !$store->locked, 'Malformed request saved');
+    }
+  };
+}
+$cases['malformed publish: updates or publish keys are refused'] = static function (): void {
+  foreach (['updates' => request()['updates'], 'publish' => TRUE] as $key => $value) {
+    $store = unpublished_store(TRUE);
+    try {
+      (new ProtectedDraftService($store))->publishUnpublished(publish_request() + [$key => $value]);
+      throw new \RuntimeException('Publish accepted ' . $key);
+    }
+    catch (ProtectedDraftRefusal $e) {
+      require_true($store->saves === 0, 'Malformed publish saved');
+    }
+  }
+};
+$unpublished_corruptions = [
+  'default did not move' => ['default_revision_id', 40],
+  'publish status differs' => ['is_published', TRUE],
+  'workflow changed in the save' => ['workflow_fingerprint', str_repeat('e', 64)],
+  'missing stored field' => ['fields', ['title' => [['value' => 'Only title']]]],
+  'no changed time' => ['changed', NULL],
+  'foreign UUID' => ['uuid', 'foreign'],
+];
+foreach ($unpublished_corruptions as $name => [$key, $value]) {
+  $cases['unpublished write rolls back stored mismatch: ' . $name] = static function () use ($key, $value): void {
+    $store = unpublished_store(TRUE);
+    $store->after[$key] = $value;
+    $store->after['is_published'] = $key === 'is_published' ? FALSE : TRUE;
+    $request = unpublished_request();
+    // With publish, a refused stored value must never be committed as live.
+    $request['publish'] = TRUE;
+    try {
+      (new ProtectedDraftService($store))->writeUnpublished($request);
+      throw new \RuntimeException('Corrupt stored revision accepted');
+    }
+    catch (ProtectedDraftRefusal $e) {
+      require_true($store->saves === 1 && $store->rolledBack && !$store->committed, 'Stored mismatch did not roll back');
+    }
+  };
+}
+$cases['preimage reports the changed time'] = static function (): void {
+  $store = unpublished_store();
+  $result = (new ProtectedDraftService($store))->prepare(19, 'de', ['title']);
+  require_true(($result['changed'] ?? NULL) === 1000, 'Did not report the changed time');
+  require_true(!isset($result['published_languages']) && !isset($result['can_publish']) && !isset($result['moderation_state']), 'Exported internal read keys');
 };
 
 $failed = 0;

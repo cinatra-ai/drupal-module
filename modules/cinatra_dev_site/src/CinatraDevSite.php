@@ -33,11 +33,16 @@ final class CinatraDevSite {
   public const DENY_TEXT = 'cinatra_dev_site: the remote request was refused.';
 
   /**
-   * The two tools the cinatra profile lists and calls.
+   * The tools the cinatra profile lists and calls.
+   *
+   * The read, the protected draft of a published page, and the two write
+   * steps of an unpublished page.
    */
   public const EXPOSED_TOOLS = [
     'cinatra_read_protected_revision',
     'cinatra_write_protected_draft',
+    'cinatra_write_unpublished',
+    'cinatra_publish_unpublished',
   ];
 
   /**

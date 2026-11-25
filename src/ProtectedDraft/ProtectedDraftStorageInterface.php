@@ -41,6 +41,16 @@ interface ProtectedDraftStorageInterface {
   public function saveDraft(int $nid, string $language, string $state, array $updates): int;
 
   /**
+   * Saves one validated default revision of an unpublished node.
+   *
+   * It writes the given field values of the same translation, and publishes
+   * that translation in the same save when $publish is TRUE. With no updates it
+   * only publishes. $state is the workflow state of a moderated node, and NULL
+   * for an unmoderated one. It returns the new revision identifier.
+   */
+  public function saveUnpublished(int $nid, string $language, array $updates, bool $publish, ?string $state): int;
+
+  /**
    * Reads stored field values from this exact authorized revision/translation.
    */
   public function readRevision(int $nid, int $revision, string $language, array $fields): array;

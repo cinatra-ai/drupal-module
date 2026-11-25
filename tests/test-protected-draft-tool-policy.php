@@ -290,7 +290,63 @@ namespace Drupal\cinatra\ProtectedDraft {
   /**
    * Provides the protected draft service dependency double.
    */
-  final class ProtectedDraftService {}
+  final class ProtectedDraftService {
+
+    /**
+     * Recorded calls, each a method name and its request.
+     *
+     * @var array
+     */
+    public array $calls = [];
+
+    /**
+     * Records an unpublished write.
+     */
+    public function writeUnpublished(array $request): array {
+      $this->calls[] = ['writeUnpublished', $request];
+      return ['revision_id' => 42];
+    }
+
+    /**
+     * Records a publish step.
+     */
+    public function publishUnpublished(array $request): array {
+      $this->calls[] = ['publishUnpublished', $request];
+      return ['revision_id' => 42];
+    }
+
+  }
+
+}
+
+namespace Drupal\tool\TypedData {
+
+  /**
+   * Provides the tool input definition dependency double.
+   */
+  final class InputDefinition {
+
+    public function __construct(
+      public string $data_type = '',
+      public mixed $label = NULL,
+      public mixed $description = NULL,
+      public bool $required = FALSE,
+    ) {}
+
+  }
+
+}
+
+namespace Drupal\Core\Plugin\Context {
+
+  /**
+   * Provides the context definition dependency double.
+   */
+  final class ContextDefinition {
+
+    public function __construct(public string $data_type = '', public mixed $label = NULL) {}
+
+  }
 
 }
 
@@ -712,6 +768,136 @@ namespace {
       throw new RuntimeException('The PSR logger of the logger factory was not set.');
     }
   };
+  // The plugin attributes are read with getArguments(), which builds the
+  // argument objects from the doubles above and never the Tool attribute.
+  $plugin_source = dirname(__DIR__) . '/src/Plugin/tool/Tool/';
+  foreach (['WriteProtectedDraft', 'ReadProtectedRevision', 'WriteUnpublished', 'PublishUnpublished'] as $plugin) {
+    require_once $plugin_source . $plugin . '.php';
+  }
+  $tool_arguments = static function (string $class): array {
+    $attributes = (new ReflectionClass($class))->getAttributes('Drupal\tool\Attribute\Tool');
+    if (count($attributes) !== 1) {
+      throw new RuntimeException("$class does not declare exactly one Tool attribute.");
+    }
+    return $attributes[0]->getArguments();
+  };
+  $binding_inputs = [
+    'nid' => 'integer',
+    'language' => 'string',
+    'expected_default_revision_id' => 'integer',
+    'expected_latest_revision_id' => 'integer',
+    'expected_changed' => 'integer',
+    'workflow_fingerprint' => 'string',
+    'preimage_fingerprint' => 'string',
+  ];
+  $unpublished_tools = [
+    'Drupal\cinatra\Plugin\tool\Tool\WriteUnpublished' => [
+      'cinatra_write_unpublished',
+      'writeUnpublished',
+      $binding_inputs + ['updates' => 'map', 'publish' => 'boolean'],
+      ['publish'],
+    ],
+    'Drupal\cinatra\Plugin\tool\Tool\PublishUnpublished' => [
+      'cinatra_publish_unpublished',
+      'publishUnpublished',
+      $binding_inputs,
+      [],
+    ],
+  ];
+  foreach ($unpublished_tools as $class => [$id, $method, $inputs, $optional]) {
+    $cases["$id is declared as a write like the protected draft"] = static function () use ($tool_arguments, $class, $id, $inputs, $optional): void {
+      $arguments = $tool_arguments($class);
+      $draft = $tool_arguments('Drupal\cinatra\Plugin\tool\Tool\WriteProtectedDraft');
+      $reflection = new ReflectionClass($class);
+      if (($arguments['id'] ?? NULL) !== $id
+        || ($arguments['operation'] ?? NULL) !== ToolOperation::Write
+        || ($arguments['operation'] ?? NULL) !== ($draft['operation'] ?? NULL)
+        || !$reflection->isFinal()
+        || !$reflection->isSubclassOf(ProtectedDraftToolBase::class)) {
+        throw new RuntimeException("$id is not a final protected write tool.");
+      }
+      // Same policy declaration keys as the protected draft tool: nothing
+      // that would let the boundary treat this write differently.
+      $keys = array_keys($arguments);
+      $draft_keys = array_keys($draft);
+      sort($keys);
+      sort($draft_keys);
+      if ($keys !== $draft_keys) {
+        throw new RuntimeException("$id declares other attribute keys than the protected draft tool.");
+      }
+      $declared = [];
+      foreach ($arguments['input_definitions'] as $name => $definition) {
+        $declared[$name] = $definition->data_type;
+        if ($definition->required === in_array($name, $optional, TRUE)) {
+          throw new RuntimeException("$id input $name has the wrong required flag.");
+        }
+      }
+      if ($declared !== $inputs) {
+        throw new RuntimeException("$id declares other inputs than the binding.");
+      }
+      if (array_keys($arguments['output_definitions']) !== ['contract', 'result']) {
+        throw new RuntimeException("$id declares other outputs than the protected contract.");
+      }
+    };
+    $run = static function (AccessManager $manager, array $values) use ($class): array {
+      $service = new ProtectedDraftService();
+      $context = new McpToolCallContext();
+      $tool = $class::create(new CinatraPolicyContainer([
+        'cinatra.protected_draft' => $service,
+        'mcp_tools.access_manager' => $manager,
+        'mcp_tools.tool_call_context' => $context,
+      ]), [], 'cinatra_policy', new ToolDefinition(ToolOperation::Write));
+      (new ReflectionProperty($tool, 'currentUser'))->setValue($tool, new CinatraPolicyAccount(TRUE));
+      $result = (new ReflectionMethod($tool, 'doExecute'))->invoke($tool, $values);
+      return [$result, $service, $context];
+    };
+    $cases["$id calls only $method, inside the MCP context"] = static function () use ($run, $method, $id): void {
+      $values = ['nid' => 19, 'language' => 'de'];
+      [$result, $service, $context] = $run(new AccessManager(), $values);
+      if (!$result->ok || $result->data['contract'] !== ProtectedDraftToolBase::CONTRACT
+        || $service->calls !== [[$method, $values]]
+        || $context->enters !== 1 || $context->leaves !== 1) {
+        throw new RuntimeException("$id did not run its one service method.");
+      }
+    };
+    $cases["$id is refused without write access"] = static function () use ($run, $id): void {
+      foreach ([
+        new AccessManager(['read']),
+        new AccessManager(['read', 'write'], TRUE),
+        new AccessManager(['read', 'write'], FALSE, FALSE),
+      ] as $manager) {
+        [$result, $service, $context] = $run($manager, ['nid' => 19]);
+        if ($result->ok || $service->calls !== [] || $context->enters !== 0) {
+          throw new RuntimeException("$id ran without write access.");
+        }
+      }
+    };
+  }
+  $cases['cinatra_write_unpublished treats an omitted publish as no publish'] = static function (): void {
+    $class = 'Drupal\cinatra\Plugin\tool\Tool\WriteUnpublished';
+    $service = new ProtectedDraftService();
+    $tool = $class::create(new CinatraPolicyContainer([
+      'cinatra.protected_draft' => $service,
+      'mcp_tools.access_manager' => new AccessManager(),
+      'mcp_tools.tool_call_context' => new McpToolCallContext(),
+    ]), [], 'cinatra_policy', new ToolDefinition(ToolOperation::Write));
+    (new ReflectionProperty($tool, 'currentUser'))->setValue($tool, new CinatraPolicyAccount(TRUE));
+    (new ReflectionMethod($tool, 'doExecute'))->invoke($tool, ['nid' => 19, 'publish' => NULL]);
+    (new ReflectionMethod($tool, 'doExecute'))->invoke($tool, ['nid' => 19, 'publish' => TRUE]);
+    $expected = [
+      ['writeUnpublished', ['nid' => 19]],
+      ['writeUnpublished', ['nid' => 19, 'publish' => TRUE]],
+    ];
+    if ($service->calls !== $expected) {
+      throw new RuntimeException('The publish input was not passed as given.');
+    }
+  };
+  $cases['the read tool stays a read'] = static function () use ($tool_arguments): void {
+    if (($tool_arguments('Drupal\cinatra\Plugin\tool\Tool\ReadProtectedRevision')['operation'] ?? NULL) !== ToolOperation::Read) {
+      throw new RuntimeException('The read tool is no longer a read.');
+    }
+  };
+
   $failures = 0;
   foreach ($cases as $name => $case) {
     try {
