@@ -444,13 +444,6 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     if (!hash_equals($fingerprint, $this->workflowFingerprint($node->getFieldDefinitions()))) {
       throw new ProtectedDraftRefusal('The workflow or field configuration changed before saving.');
     }
-    // Only now, with every check that can refuse passed: the field's own save
-    // logic on a detached copy (see reviewedItems()). It runs here, inside the
-    // locked transaction right before the save, never before a refusal.
-    $reviewed = [];
-    foreach ($requested_items as $field => $requested) {
-      $reviewed[$field] = $this->reviewedItems($node, $field, $requested);
-    }
     $storage = $this->nodeStorage();
     $this->assertActiveTransaction();
     $storage->save($node);
@@ -470,7 +463,8 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // The one stored-as-reviewed comparison (see saveUnpublished()): the
     // scope check skips the requested fields, so a save hook must not have
     // replaced a reviewed value with another valid one.
-    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)), $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
+    $stored_values = $this->values($stored->getTranslation($language), array_keys($updates));
+    ProtectedDraftFieldScope::assertStoredAsReviewed($this->reviewedItems($requested_items, $stored_values), $stored_values, $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
   }
 
@@ -544,13 +538,6 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     if (!hash_equals($fingerprint, $this->workflowFingerprint($node->getFieldDefinitions()))) {
       throw new ProtectedDraftRefusal('The workflow or field configuration changed before saving.');
     }
-    // Only now, with every check that can refuse passed: the field's own save
-    // logic on a detached copy (see reviewedItems()). It runs here, inside the
-    // locked transaction right before the save, never before a refusal.
-    $reviewed = [];
-    foreach ($requested_items as $field => $requested) {
-      $reviewed[$field] = $this->reviewedItems($node, $field, $requested);
-    }
     $storage = $this->nodeStorage();
     $this->assertActiveTransaction();
     $storage->save($node);
@@ -574,10 +561,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     // The one stored-as-reviewed comparison, the same as in saveDraft(). The
     // scope check above covers every field NOT requested, revisionable or not;
     // this one covers the requested fields: what is stored, and with publish
-    // what goes live, must be what the field itself stores for the request
-    // (see reviewedItems()). The stored value is read from the saved row, so a
-    // save hook that replaced or refilled a value differs.
-    ProtectedDraftFieldScope::assertStoredAsReviewed($reviewed, $this->values($stored->getTranslation($language), array_keys($updates)), $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
+    // what goes live, must hold every supplied property as sent (see
+    // reviewedItems()). The stored value is read from the saved row, so a
+    // save hook that replaced or refilled a supplied value differs.
+    $stored_values = $this->values($stored->getTranslation($language), array_keys($updates));
+    ProtectedDraftFieldScope::assertStoredAsReviewed($this->reviewedItems($requested_items, $stored_values), $stored_values, $this->propertyTypes($stored->getTranslation($language), array_keys($updates)));
     return (int) $node->getRevisionId();
   }
 
@@ -705,35 +693,32 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
   }
 
   /**
-   * Reads the value a requested field must hold after the save.
+   * Builds the value each requested field must hold after the save.
    *
    * The reviewed value is the request as sent: every property the caller
-   * supplied keeps exactly the value the caller sent, so a field that rounds,
-   * coerces or truncates a supplied value on the way to storage leaves a
+   * supplied must be stored exactly as sent, so a field or save hook that
+   * rounds, coerces, replaces or truncates a supplied value leaves a
    * difference and the write rolls back (a number the field cannot hold
-   * exactly is refused even before the save, see assertNumbersExact()). Only a
-   * property the caller did NOT supply is taken from the field's own save
-   * normalisation on a detached copy, FieldItemList::preSave(), the call the
-   * real save makes: an image's width and height are derived there. A save
-   * hook that sets or changes any other property, or any supplied one, leaves
-   * a difference. The copy never reaches storage, and items built from plain
-   * values hold no new entity to save.
+   * exactly is refused even before the save, see assertNumbersExact()). The
+   * item count must match too. A property the caller did NOT supply (an
+   * image's width and height, which the field derives on save) is taken from
+   * the stored item itself: no field save logic runs outside the real save,
+   * so it runs exactly once per write.
    *
-   * @param \Drupal\node\NodeInterface $node
-   *   The candidate, its field set to the non-empty requested items.
-   * @param string $field
-   *   The field name.
    * @param array $requested
-   *   The request's own non-empty items, from requestedItems().
+   *   Per field, the request's own non-empty items, from requestedItems().
+   * @param array $stored
+   *   Per field, the stored items of the saved translation.
    */
-  private function reviewedItems(NodeInterface $node, string $field, array $requested): array {
-    $list = clone $node->get($field);
-    $list->preSave();
-    $normalised = $list->getValue();
+  private function reviewedItems(array $requested, array $stored): array {
     $reviewed = [];
-    foreach ($requested as $delta => $item) {
-      // Supplied properties as sent; the rest as the field derives them.
-      $reviewed[] = $item + ($normalised[$delta] ?? []);
+    foreach ($requested as $field => $items) {
+      $reviewed[$field] = [];
+      foreach ($items as $delta => $item) {
+        // Supplied properties as sent; the rest as the stored item holds them.
+        $stored_item = $stored[$field][$delta] ?? [];
+        $reviewed[$field][] = $item + (is_array($stored_item) ? $stored_item : []);
+      }
     }
     return $reviewed;
   }

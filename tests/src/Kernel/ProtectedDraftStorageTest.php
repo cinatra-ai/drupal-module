@@ -323,6 +323,38 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
   }
 
   /**
+   * A draft's field save logic runs once per write, and not when refused.
+   */
+  public function testDraftFieldSaveLogicRunsOncePerWrite(): void {
+    $this->createCountingField('page');
+    $nid = (int) $this->page->id();
+    // A draft that validation refuses runs it not at all.
+    $updates = [
+      'field_counted' => [['value' => 'Never saved']],
+      'title' => [['value' => str_repeat('x', 300)]],
+    ];
+    $preimage = $this->protectedDraft->prepare($nid, 'en', array_keys($updates));
+    ProtectedDraftProbe::$fieldPreSaves = 0;
+    try {
+      $this->protectedDraft->write($this->request($preimage, $updates));
+      $this->fail('An invalid title must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The draft field values are invalid', $expected->getMessage());
+    }
+    $this->assertSame(0, ProtectedDraftProbe::$fieldPreSaves, 'A refused draft runs no field save logic.');
+    $this->assertRootFinished();
+    // One stored draft runs it once.
+    $updates = ['field_counted' => [['value' => 'Counted once']]];
+    $preimage = $this->protectedDraft->prepare($nid, 'en', array_keys($updates));
+    ProtectedDraftProbe::$fieldPreSaves = 0;
+    $stored = $this->protectedDraft->write($this->request($preimage, $updates));
+    $this->assertSame(1, ProtectedDraftProbe::$fieldPreSaves, 'One write runs the field save logic once.');
+    $this->assertSame('Counted once', $this->nodeStorage()->loadRevision($stored['revision_id'])->get('field_counted')->value);
+    $this->assertRootFinished();
+  }
+
+  /**
    * A text field given with a format, without a summary, is stored as sent.
    */
   public function testTextWithFormatIsStoredAsSent(): void {
@@ -531,6 +563,26 @@ final class ProtectedDraftStorageTest extends KernelTestBase {
     $this->assertSame($old, (int) $draft->getTranslation('fr')->getChangedTime());
     $this->assertFalse((bool) $draft->getTranslation('fr')->isRevisionTranslationAffected());
     $this->assertRootFinished();
+  }
+
+  /**
+   * Adds the counting test field to a bundle; its save logic is counted.
+   */
+  private function createCountingField(string $bundle): void {
+    FieldStorageConfig::create([
+      'entity_type' => 'node',
+      'field_name' => 'field_counted',
+      'type' => 'cinatra_test_counting_string',
+      'revisionable' => TRUE,
+      'translatable' => TRUE,
+    ])->save();
+    FieldConfig::create([
+      'entity_type' => 'node',
+      'bundle' => $bundle,
+      'field_name' => 'field_counted',
+      'label' => 'Counted',
+      'translatable' => TRUE,
+    ])->save();
   }
 
   /**

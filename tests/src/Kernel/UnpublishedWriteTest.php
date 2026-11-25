@@ -921,6 +921,39 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
+   * A field's save logic runs once per write, and not at all when refused.
+   */
+  public function testFieldSaveLogicRunsOncePerWrite(): void {
+    $this->createCountingField('plain');
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_counted']);
+    ProtectedDraftProbe::$fieldPreSaves = 0;
+    $result = $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+      'updates' => ['field_counted' => [['value' => 'Counted once']]],
+    ]);
+    $this->assertSame(1, ProtectedDraftProbe::$fieldPreSaves, 'One write runs the field save logic once.');
+    $this->assertSame('Counted once', $this->nodeStorage()->loadRevision($result['revision_id'])->get('field_counted')->value);
+    // A write that validation refuses runs it not at all.
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_counted', 'title']);
+    ProtectedDraftProbe::$fieldPreSaves = 0;
+    try {
+      $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => [
+          'field_counted' => [['value' => 'Never saved']],
+          'title' => [['value' => str_repeat('x', 300)]],
+        ],
+      ]);
+      $this->fail('An invalid title must refuse.');
+    }
+    catch (ProtectedDraftRefusal $expected) {
+      $this->assertStringContainsString('The field values are invalid', $expected->getMessage());
+    }
+    $this->assertSame(0, ProtectedDraftProbe::$fieldPreSaves, 'A refused write runs no field save logic.');
+    ProtectedDraftProbe::reset();
+    $this->assertRootFinished();
+  }
+
+  /**
    * A temporary file in a write refused for another field stays temporary.
    */
   public function testRefusedWriteLeavesTheTemporaryFileTemporary(): void {
@@ -937,6 +970,26 @@ final class UnpublishedWriteTest extends KernelTestBase {
       ],
     ]), 'The field values are invalid');
     $this->assertTrue($this->container->get('entity_type.manager')->getStorage('file')->loadUnchanged($file->id())->isTemporary());
+  }
+
+  /**
+   * Adds the counting test field to a bundle; its save logic is counted.
+   */
+  private function createCountingField(string $bundle): void {
+    FieldStorageConfig::create([
+      'entity_type' => 'node',
+      'field_name' => 'field_counted',
+      'type' => 'cinatra_test_counting_string',
+      'revisionable' => TRUE,
+      'translatable' => TRUE,
+    ])->save();
+    FieldConfig::create([
+      'entity_type' => 'node',
+      'bundle' => $bundle,
+      'field_name' => 'field_counted',
+      'label' => 'Counted',
+      'translatable' => TRUE,
+    ])->save();
   }
 
   /**

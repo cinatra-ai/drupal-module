@@ -55,6 +55,12 @@ final class ProtectedDraftProbe {
    * @var bool
    */
   public static bool $defaultTranslationAffectedOnly = FALSE;
+  /**
+   * Calls of the counting test field type's save logic.
+   *
+   * @var int
+   */
+  public static int $fieldPreSaves = 0;
 
   /**
    * Exercises reset.
@@ -67,13 +73,18 @@ final class ProtectedDraftProbe {
     self::$deniedField = NULL;
     self::$swapFile = NULL;
     self::$defaultTranslationAffectedOnly = FALSE;
+    self::$fieldPreSaves = 0;
   }
 
   /**
    * Exercises arm.
    */
   public static function arm(int $nid, string $mode): void {
-    self::reset();
+    // A new run's observations start empty; what the test configured for
+    // the run (a denied field, a file to swap in, the bundle setting) stays.
+    self::$presaves = 0;
+    self::$storedRevision = NULL;
+    self::$fieldPreSaves = 0;
     self::$nid = $nid;
     self::$mode = $mode;
   }
@@ -152,6 +163,9 @@ final class ProtectedDraftProbe {
 
       case 'swap_image':
         // A valid image file other than the reviewed one, with its alt text.
+        if (self::$swapFile === NULL) {
+          throw new \LogicException('The swap_image mode needs the file to swap in.');
+        }
         $node->get('field_image')->target_id = self::$swapFile;
         break;
 
