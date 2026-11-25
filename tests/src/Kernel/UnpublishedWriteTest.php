@@ -666,6 +666,48 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
+   * A file the caller may not reference is refused before it is inspected.
+   *
+   * Another user's temporary file is no valid reference; the refusal is the
+   * reference validation's, so it tells nothing about the file's dimensions.
+   */
+  public function testUnreferenceableImageIsRefusedBeforeItsDimensionsAreRead(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $file = $this->createImageFile('private.png', 3, 2);
+    $file->setTemporary();
+    $file->setOwnerId((int) $this->editor->id());
+    $file->save();
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_image']);
+    foreach ([[640, 480], [3, 2]] as [$width, $height]) {
+      $item = ['target_id' => $file->id(), 'alt' => 'Private', 'width' => $width, 'height' => $height];
+      $this->assertRefusedBeforeSave($nid, fn() => $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+        'updates' => ['field_image' => [$item]],
+      ]), 'The field values are invalid');
+    }
+  }
+
+  /**
+   * Only the supplied dimension is compared; the omitted one is derived.
+   */
+  public function testOneSuppliedImageDimensionIsComparedAlone(): void {
+    $this->container->get('current_user')->setAccount($this->publisher);
+    $file = $this->createImageFile('half.png', 3, 2);
+    $nid = (int) $this->plainPage()->id();
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_image']);
+    $this->assertRefusedBeforeSave($nid, fn() => $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+      'updates' => ['field_image' => [['target_id' => $file->id(), 'alt' => 'Half', 'width' => 4]]],
+    ]), "image's width and height must be the file's own dimensions");
+    $result = $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
+      'updates' => ['field_image' => [['target_id' => $file->id(), 'alt' => 'Half', 'width' => 3]]],
+    ]);
+    $stored = $this->nodeStorage()->loadRevision($result['revision_id'])->get('field_image');
+    $this->assertEquals(3, $stored->width);
+    $this->assertEquals(2, $stored->height);
+    $this->assertRootFinished();
+  }
+
+  /**
    * A save hook swapping the image file for another valid one rolls back.
    */
   public function testSaveHookSwappingImageTargetRollsBack(): void {

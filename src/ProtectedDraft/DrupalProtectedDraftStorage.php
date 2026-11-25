@@ -419,7 +419,6 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $this->assertItemShapes($node, $field, $items);
-      $this->assertImageDimensions($node, $field, $items);
       $node->get($field)->setValue($items);
       // What was reviewed is the request itself, as sent: its items that the
       // field does not treat as empty, with their supplied property values
@@ -448,6 +447,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $node->setRevisionCreationTime(time());
     $node->setRevisionLogMessage('Protected draft awaiting review.');
     $this->assertDraftAccess($node, array_keys($updates));
+    // Only after the reference validation and access checks above, so no
+    // file the caller may not reference is opened.
+    foreach ($updates as $field => $items) {
+      $this->assertImageDimensions($node, $field, $items);
+    }
     // Core moderation's workflow must still be exactly the raw locked one.
     $fingerprint = $this->workflowFingerprint($node->getFieldDefinitions());
     $this->workflowFor($node);
@@ -520,7 +524,6 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
         $shared_fields[] = $field;
       }
       $this->assertItemShapes($node, $field, $items);
-      $this->assertImageDimensions($node, $field, $items);
       $node->get($field)->setValue($items);
       // What was reviewed is the request itself, as sent: its items that the
       // field does not treat as empty, with their supplied property values
@@ -555,6 +558,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     $node->setRevisionCreationTime(time());
     $node->setRevisionLogMessage($publish ? 'Reviewed change published.' : 'Reviewed change saved.');
     $this->assertUnpublishedWriteAccess($node, array_keys($updates), $publish, $state !== NULL);
+    // Only after the reference validation and access checks above, so no
+    // file the caller may not reference is opened.
+    foreach ($updates as $field => $items) {
+      $this->assertImageDimensions($node, $field, $items);
+    }
     $fingerprint = $this->workflowFingerprint($node->getFieldDefinitions());
     $this->workflowFor($node);
     $this->assertFreshFieldConfiguration($node);
@@ -791,9 +799,11 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
   /**
    * Refuses supplied image dimensions that are not the file's own.
    *
-   * Runs before the save. An image item's width and height, when supplied,
-   * must equal the referenced file's real dimensions, so a new file with
-   * stale or made-up dimensions is not stored.
+   * Runs before the save, after the reference validation and the access
+   * checks, so only a file the caller may reference is opened. Each
+   * dimension the caller supplied must equal the referenced file's real one,
+   * so a new file with stale or made-up dimensions is not stored; an omitted
+   * dimension is derived by the field as before.
    */
   private function assertImageDimensions(NodeInterface $node, string $field, array $items): void {
     if ($node->getFieldDefinition($field)->getType() !== 'image') {
@@ -805,7 +815,7 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
       }
       $real = $this->imageDimensions($item['target_id'] ?? NULL);
       foreach (['width', 'height'] as $name) {
-        if ((string) ($item[$name] ?? '') !== (string) ($real[$name] ?? '')) {
+        if (isset($item[$name]) && (string) $item[$name] !== (string) ($real[$name] ?? '')) {
           throw new ProtectedDraftRefusal("An image's width and height must be the file's own dimensions; nothing was written.");
         }
       }
