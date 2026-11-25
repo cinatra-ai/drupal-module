@@ -714,7 +714,8 @@ final class DrupalProtectedDraftStorage implements ProtectedDraftStorageInterfac
     foreach ($storage->getPropertyDefinitions() as $name => $property) {
       $types[$name] = $property->getDataType();
     }
-    ProtectedDraftFieldScope::assertNumbersExact($requested, $types, $settings);
+    $columns = $storage->getSchema()['columns'] ?? [];
+    ProtectedDraftFieldScope::assertNumbersExact($requested, $types, $settings, is_array($columns) ? $columns : []);
   }
 
   /**

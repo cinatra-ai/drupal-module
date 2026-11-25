@@ -189,17 +189,28 @@ final class ProtectedDraftFieldScope {
    * Refuses a requested number that its field cannot store exactly.
    *
    * Runs on the request's own values, before the save, so a value that the
-   * field would round, coerce or truncate is an invalid input with a clear
-   * reason instead of a rollback after the fact. Only a numeric property
-   * given as a STRING is examined; a PHP int or float is already the value
-   * the field would hold. Per type, a string must be a plain decimal numeral
-   * (no exponent, space, hex or empty) and then:
-   * - integer: no fraction, and within the PHP integer range;
-   * - decimal: no more fraction digits than the field's scale and no more
-   *   integer digits than precision minus scale;
-   * - float (a double when stored): it must survive a round trip through a
-   *   double, so a value beyond double precision, or one a double prints in
-   *   exponent form (from 1e15), is refused.
+   * field, the PHP binding or the database column would round, coerce,
+   * truncate or print differently is an invalid input with a clear reason
+   * instead of a rollback after the fact. Every value of a numeric column is
+   * examined, whatever PHP type it arrives as. A string must be a plain
+   * decimal numeral (a sign, digits and a point; no exponent, space, hex or
+   * empty string); a PHP float is read as its shortest round-trip numeral
+   * (1.24 is "1.24", never 1.2399999999999999911); a boolean, or any other
+   * type, is refused. Then, per column:
+   * - integer: a PHP int or an integer numeral (a float is refused: it cannot
+   *   tell 3.0 from a larger integer that lost digits), within the range of
+   *   the column type (size and unsigned from the field schema; the PHP
+   *   integer range when no column is known);
+   * - decimal: no more fraction digits than the scale, no more integer digits
+   *   than precision minus scale, and the value survives the field's own
+   *   round() to a PHP float and the float's conversion to text for the
+   *   database unchanged;
+   * - float: the column is single precision on MySQL and PostgreSQL (FLOAT,
+   *   real), so the value must have at most 6 significant digits, the digit
+   *   count a single-precision value always reads back as, and lie between
+   *   0.0001 and 999999 in size (or be zero), where every database prints it
+   *   without an exponent.
+   * A true/false property takes only TRUE, FALSE, 1, 0, "1" or "0".
    *
    * @param array $items
    *   The requested items, a list of property maps.
@@ -207,19 +218,38 @@ final class ProtectedDraftFieldScope {
    *   Property name to typed-data type.
    * @param array $settings
    *   The field storage settings: 'precision' and 'scale' for a decimal.
+   * @param array $columns
+   *   The field schema columns, keyed by property name: their 'type', 'size'
+   *   and 'unsigned' give the integer range.
    */
-  public static function assertNumbersExact(array $items, array $types, array $settings = []): void {
+  public static function assertNumbersExact(array $items, array $types, array $settings = [], array $columns = []): void {
     foreach ($items as $item) {
       if (!is_array($item)) {
         continue;
       }
       foreach ($item as $property => $value) {
         $type = $types[$property] ?? NULL;
-        if (!is_string($value) || !in_array($type, ['integer', 'decimal', 'float'], TRUE)) {
+        if ($value === NULL) {
           continue;
         }
-        $canonical = self::canonicalNumeral($value, $type !== 'integer');
-        if ($canonical === NULL || !self::numeralFits($canonical, $type, $settings)) {
+        if ($type === 'boolean') {
+          if (!in_array($value, [TRUE, FALSE, 1, 0, '1', '0'], TRUE)) {
+            throw new ProtectedDraftRefusal('A requested true/false value must be true, false, 1 or 0; nothing was written.');
+          }
+          continue;
+        }
+        $column = is_array($columns[$property] ?? NULL) ? $columns[$property] : [];
+        $kind = match ($column['type'] ?? NULL) {
+          'int' => 'integer',
+          'numeric' => 'decimal',
+          'float' => 'float',
+          default => in_array($type, ['integer', 'decimal', 'float'], TRUE) ? $type : NULL,
+        };
+        if ($kind === NULL) {
+          continue;
+        }
+        $canonical = self::requestedNumeral($value, $kind);
+        if ($canonical === NULL || !self::numeralFits($canonical, $kind, $settings + $column, is_float($value))) {
           throw new ProtectedDraftRefusal('A requested number cannot be stored exactly by its field; nothing was written.');
         }
       }
@@ -227,15 +257,39 @@ final class ProtectedDraftFieldScope {
   }
 
   /**
-   * Tells whether a canonical numeral is held exactly by its field type.
+   * Reads a requested numeric value as a canonical numeral, or NULL.
    */
-  private static function numeralFits(string $canonical, string $type, array $settings): bool {
-    if ($type === 'integer') {
-      return $canonical === (string) (int) $canonical;
+  private static function requestedNumeral(mixed $value, string $kind): ?string {
+    if (is_int($value)) {
+      return (string) $value;
     }
-    if ($type === 'float') {
-      $double = json_encode((float) $canonical);
-      return is_string($double) && self::canonicalNumeral($double, TRUE) === $canonical;
+    if (is_float($value)) {
+      return $kind === 'integer' ? NULL : self::floatNumeral($value);
+    }
+    return is_string($value) ? self::canonicalNumeral($value, $kind !== 'integer') : NULL;
+  }
+
+  /**
+   * Tells whether a canonical numeral is held exactly by its column.
+   */
+  private static function numeralFits(string $canonical, string $kind, array $settings, bool $native_float): bool {
+    if ($kind === 'integer') {
+      if ($canonical !== (string) (int) $canonical) {
+        return FALSE;
+      }
+      [$minimum, $maximum] = self::integerRange($settings);
+      return (int) $canonical >= $minimum && (int) $canonical <= $maximum;
+    }
+    if ($kind === 'float') {
+      $parts = explode('.', ltrim($canonical, '-'), 2);
+      $digits = ltrim($parts[0] . ($parts[1] ?? ''), '0');
+      if ($digits === '') {
+        return TRUE;
+      }
+      $leading_zeroes = $parts[0] === '0' ? strlen($parts[1] ?? '') - strlen(ltrim($parts[1] ?? '', '0')) : 0;
+      $fits = strlen(rtrim($digits, '0')) <= 6 && strlen($parts[0]) <= 6 && $leading_zeroes <= 3;
+      // A PHP float goes to the database as its PHP text form.
+      return $fits && (!$native_float || self::textNumeral((string) (float) $canonical) === $canonical);
     }
     $precision = $settings['precision'] ?? NULL;
     $scale = $settings['scale'] ?? NULL;
@@ -244,7 +298,75 @@ final class ProtectedDraftFieldScope {
     }
     $parts = explode('.', ltrim($canonical, '-'), 2);
     $integer_digits = $parts[0] === '0' ? 0 : strlen($parts[0]);
-    return strlen($parts[1] ?? '') <= (int) $scale && $integer_digits <= (int) $precision - (int) $scale;
+    // DecimalItem::preSave() rounds to a PHP float, which goes to the
+    // database as its PHP text form; that text must be the same number.
+    return strlen($parts[1] ?? '') <= (int) $scale && $integer_digits <= (int) $precision - (int) $scale
+      && self::textNumeral((string) round((float) $canonical, (int) $scale)) === $canonical;
+  }
+
+  /**
+   * Returns the value range of an integer column, by its schema.
+   *
+   * @return int[]
+   *   The lowest and the highest value.
+   */
+  private static function integerRange(array $column): array {
+    $bits = match ($column['size'] ?? NULL) {
+      'tiny' => 8,
+      'small' => 16,
+      'medium' => 24,
+      'big' => 64,
+      'normal' => 32,
+      default => isset($column['type']) ? 32 : 64,
+    };
+    if ($bits === 64) {
+      return !empty($column['unsigned']) ? [0, PHP_INT_MAX] : [PHP_INT_MIN, PHP_INT_MAX];
+    }
+    return !empty($column['unsigned']) ? [0, 2 ** $bits - 1] : [-(2 ** ($bits - 1)), 2 ** ($bits - 1) - 1];
+  }
+
+  /**
+   * Returns the shortest numeral that reads back as the same float, or NULL.
+   *
+   * Independent of the serialize_precision setting: it tries 1 to 17
+   * significant digits and keeps the first that reads back exactly.
+   */
+  private static function floatNumeral(float $value): ?string {
+    if (!is_finite($value)) {
+      return NULL;
+    }
+    for ($digits = 1; $digits <= 17; $digits++) {
+      $text = sprintf('%.' . ($digits - 1) . 'e', $value);
+      if ((float) $text === $value) {
+        break;
+      }
+    }
+    return self::textNumeral($text);
+  }
+
+  /**
+   * Reads a numeral that may use an exponent as a canonical numeral, or NULL.
+   */
+  private static function textNumeral(string $text): ?string {
+    if (!preg_match('/\A([+-]?)(\d+)(?:\.(\d*))?[eE]([+-]?\d+)\z/', $text, $parts)) {
+      return self::canonicalNumeral($text, TRUE);
+    }
+    $exponent = (int) $parts[4];
+    if (abs($exponent) > 400) {
+      return NULL;
+    }
+    $digits = $parts[2] . ($parts[3] ?? '');
+    $point = strlen($parts[2]) + $exponent;
+    if ($point <= 0) {
+      $plain = '0.' . str_repeat('0', -$point) . $digits;
+    }
+    elseif ($point >= strlen($digits)) {
+      $plain = $digits . str_repeat('0', $point - strlen($digits));
+    }
+    else {
+      $plain = substr($digits, 0, $point) . '.' . substr($digits, $point);
+    }
+    return self::canonicalNumeral($parts[1] . $plain, TRUE);
   }
 
   /**
@@ -293,7 +415,8 @@ final class ProtectedDraftFieldScope {
       elseif (is_float($value)) {
         // The shortest text that reads back as the same double, not the
         // 14-digit text of a string cast, so no two doubles read as equal.
-        $value = is_finite($value) ? json_encode($value) : [$value];
+        $numeral = $type === 'integer' ? NULL : self::floatNumeral($value);
+        return $numeral ?? [$value];
       }
       $canonical = is_string($value) ? self::canonicalNumeral($value, $type !== 'integer') : NULL;
       return $canonical ?? [$value];

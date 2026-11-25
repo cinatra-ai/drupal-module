@@ -425,13 +425,27 @@ $exact_rows = [
   ['float', '1.10', [], TRUE],
   ['float', '0.1', [], TRUE],
   ['float', '-0.0', [], TRUE],
-  ['float', '123456789012345', [], TRUE],
+  ['float', '123456789012345', [], FALSE],
+  ['float', '1234567', [], FALSE],
+  ['float', '1000000', [], FALSE],
+  ['float', '0.00001', [], FALSE],
+  ['float', '999999', [], TRUE],
+  ['float', '0.0001', [], TRUE],
+  ['float', '123.456', [], TRUE],
+  ['float', 2.5, [], TRUE],
+  ['float', 0.30000000000000004, [], FALSE],
+  ['float', 7, [], TRUE],
+  ['float', TRUE, [], FALSE],
   ['integer', '3.0', [], FALSE],
   ['integer', '1e3', [], FALSE],
   ['integer', '9223372036854775808', [], FALSE],
   ['integer', '03', [], TRUE],
   ['integer', '+3', [], TRUE],
   ['integer', '-9223372036854775808', [], TRUE],
+  ['integer', 3, [], TRUE],
+  ['integer', 3.0, [], FALSE],
+  ['integer', TRUE, [], FALSE],
+  ['integer', ' 3', [], FALSE],
   ['decimal', '1.239', ['precision' => 10, 'scale' => 2], FALSE],
   ['decimal', '1.230', ['precision' => 10, 'scale' => 2], TRUE],
   ['decimal', '01.50', ['precision' => 10, 'scale' => 2], TRUE],
@@ -441,6 +455,14 @@ $exact_rows = [
   ['decimal', '123456789.12', ['precision' => 10, 'scale' => 2], FALSE],
   ['decimal', '1e3', ['precision' => 10, 'scale' => 2], FALSE],
   ['decimal', 'abc', ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', 1.24, ['precision' => 10, 'scale' => 2], TRUE],
+  ['decimal', 1.239, ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', 3, ['precision' => 10, 'scale' => 2], TRUE],
+  ['decimal', 1.0E+20, ['precision' => 10, 'scale' => 2], FALSE],
+  ['decimal', '12345678901234.56', ['precision' => 20, 'scale' => 2], FALSE],
+  ['decimal', '123456789012.34', ['precision' => 20, 'scale' => 2], TRUE],
+  ['decimal', '0.00001', ['precision' => 10, 'scale' => 5], TRUE],
+  ['decimal', FALSE, ['precision' => 10, 'scale' => 2], FALSE],
 ];
 foreach ($exact_rows as [$type, $value, $settings, $exact]) {
   $name = sprintf('a %s %s is %s', $type, json_encode($value), $exact ? 'exact' : 'refused before the save');
@@ -460,7 +482,7 @@ foreach ($exact_rows as [$type, $value, $settings, $exact]) {
   $passed++;
   echo "PASS $name\n";
 }
-// PHP numbers and other types are not examined.
+// Strings of other types are not examined; a PHP number that fits passes.
 ProtectedDraftFieldScope::assertNumbersExact(
   [['value' => 1.5, 'format' => '3.0x']],
   ['value' => 'float', 'format' => 'string'],
@@ -468,7 +490,53 @@ ProtectedDraftFieldScope::assertNumbersExact(
 );
 ProtectedDraftFieldScope::assertNumbersExact([['value' => '1e3']], ['value' => 'string'], []);
 $passed++;
-echo "PASS PHP numbers and strings of other types are not examined\n";
+echo "PASS strings of other types are not examined\n";
+// The integer range is the column's, from the field schema.
+$range_rows = [
+  [2147483647, ['type' => 'int'], TRUE],
+  [2147483648, ['type' => 'int'], FALSE],
+  [-2147483648, ['type' => 'int', 'size' => 'normal'], TRUE],
+  [-2147483649, ['type' => 'int', 'size' => 'normal'], FALSE],
+  ['4294967295', ['type' => 'int', 'unsigned' => TRUE], TRUE],
+  [-1, ['type' => 'int', 'unsigned' => TRUE], FALSE],
+  [127, ['type' => 'int', 'size' => 'tiny'], TRUE],
+  [128, ['type' => 'int', 'size' => 'tiny'], FALSE],
+  [PHP_INT_MAX, ['type' => 'int', 'size' => 'big'], TRUE],
+];
+foreach ($range_rows as [$value, $column, $exact]) {
+  $name = sprintf('the integer %s in %s is %s', json_encode($value), json_encode($column), $exact ? 'kept' : 'refused');
+  try {
+    ProtectedDraftFieldScope::assertNumbersExact([['value' => $value]], ['value' => 'integer'], [], ['value' => $column]);
+    $accepted = TRUE;
+  }
+  catch (ProtectedDraftRefusal) {
+    $accepted = FALSE;
+  }
+  if ($accepted !== $exact) {
+    throw new RuntimeException($name . ' gave the wrong answer');
+  }
+  $passed++;
+  echo "PASS $name\n";
+}
+// A true/false property takes only its six spellings.
+foreach ([[TRUE, TRUE], [0, TRUE], ['1', TRUE], ['true', FALSE], [2, FALSE], [1.0, FALSE]] as [$value, $exact]) {
+  $name = sprintf('the boolean %s is %s', json_encode($value), $exact ? 'kept' : 'refused');
+  try {
+    ProtectedDraftFieldScope::assertNumbersExact([['value' => $value]], ['value' => 'boolean'], [], ['value' => ['type' => 'int', 'size' => 'tiny']]);
+    $accepted = TRUE;
+  }
+  catch (ProtectedDraftRefusal $error) {
+    if (!str_contains($error->getMessage(), 'true/false')) {
+      throw new RuntimeException($name . ' refused with another reason');
+    }
+    $accepted = FALSE;
+  }
+  if ($accepted !== $exact) {
+    throw new RuntimeException($name . ' gave the wrong answer');
+  }
+  $passed++;
+  echo "PASS $name\n";
+}
 $cleared = $reviewed;
 $cleared['title'] = [];
 $cleared_stored = $stored;

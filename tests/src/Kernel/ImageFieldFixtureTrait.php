@@ -76,6 +76,18 @@ trait ImageFieldFixtureTrait {
       'decimal with more digits than its scale' => ['field_price', '1.239'],
       'decimal with more integer digits than its precision' => ['field_price', '12345678901234567890.1'],
       'integer given with a fraction' => ['field_int', '3.0'],
+      'native float beyond the decimal scale' => ['field_price', 1.239],
+      'native float for an integer' => ['field_int', 3.0],
+      'integer above the column range' => ['field_int', 2147483648],
+      'integer text above the column range' => ['field_int', '2147483648'],
+      'integer below the column range' => ['field_int', -2147483649],
+      'true for an integer' => ['field_int', TRUE],
+      'integer with a space' => ['field_int', ' 3'],
+      'decimal in exponent form' => ['field_price', '1.2e1'],
+      'integer in exponent form' => ['field_int', '1e3'],
+      'float with more digits than its column keeps' => ['field_float', '123456789012345'],
+      'native float with more digits than its column keeps' => ['field_float', 0.30000000000000004],
+      'float the column prints in exponent form' => ['field_float', '1000000'],
     ];
   }
 
@@ -93,6 +105,11 @@ trait ImageFieldFixtureTrait {
       'integer with a plus sign' => ['field_int', '+3', 3],
       'decimal with a leading zero' => ['field_price', '01.50', 1.5],
       'decimal given as a bare fraction' => ['field_price', '.5', 0.5],
+      'native float within the decimal scale' => ['field_price', 1.24, 1.24],
+      'native integer for a decimal' => ['field_price', 3, 3],
+      'native integer' => ['field_int', 3, 3],
+      'lowest integer of the column' => ['field_int', -2147483648, -2147483648],
+      'native float' => ['field_float', 2.5, 2.5],
     ];
   }
 

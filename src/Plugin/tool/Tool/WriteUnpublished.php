@@ -65,7 +65,7 @@ use Drupal\tool\TypedData\InputDefinition;
     'updates' => new InputDefinition(
       data_type: 'map',
       label: new TranslatableMarkup('Canonical fields with structured item values'),
-      description: new TranslatableMarkup('Canonical field names mapped to the structured field item values that the person reviewed: a list of items, each a map of stored property names of the field to single values. Each item replaces the stored item; a property left out is stored empty, except the width and height of an image, which are taken from the file. To clear a field, send an empty list or an item with an empty value; both store the field empty.'),
+      description: new TranslatableMarkup('Canonical field names mapped to the structured field item values that the person reviewed: a list of items, each a map of stored property names of the field to single values. Each item replaces the stored item; a property left out is stored empty, except the width and height of an image, which are taken from the file. A number may be a JSON number or text; one its field cannot store exactly is refused before the save. To clear a field, send an empty list or an item with an empty value; both store the field empty.'),
       required: TRUE,
     ),
     'publish' => new InputDefinition(

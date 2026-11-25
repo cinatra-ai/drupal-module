@@ -717,27 +717,31 @@ final class UnpublishedWriteTest extends KernelTestBase {
   }
 
   /**
-   * A float the database does not hold as sent rolls back after the save.
+   * A native float beyond the decimal scale runs no field save logic.
    *
-   * 123456789012345 is a double, so the request passes the check before the
-   * save; the float column returns it to 14 digits. What is stored is not what
-   * was reviewed, so the existing refusal undoes the save.
+   * The decimal field would round 1.239 to 1.24 in its own save logic; the
+   * counting field in the same write shows that no field save logic runs.
    */
-  public function testFloatTheDatabaseDoesNotHoldAsSentRollsBack(): void {
+  public function testNativeFloatBeyondTheScaleRunsNoFieldSaveLogic(): void {
     $this->container->get('current_user')->setAccount($this->publisher);
+    $this->createCountingField('plain');
     $nid = (int) $this->plainPage()->id();
-    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_float']);
+    $preimage = $this->protectedDraft->prepare($nid, 'en', ['field_counted', 'field_price']);
     $before = $this->snapshot($nid);
     ProtectedDraftProbe::arm($nid, 'observe');
     try {
       $this->protectedDraft->writeUnpublished($this->binding($preimage) + [
-        'updates' => ['field_float' => [['value' => '123456789012345']]],
+        'updates' => [
+          'field_counted' => [['value' => 'Counted']],
+          'field_price' => [['value' => 1.239]],
+        ],
       ]);
-      $this->fail('A float stored with fewer digits than reviewed must refuse.');
+      $this->fail('A native float beyond the decimal scale must refuse.');
     }
     catch (ProtectedDraftRefusal $expected) {
-      $this->assertStringContainsString('The stored value differs from the reviewed value', $expected->getMessage());
-      $this->assertNotNull(ProtectedDraftProbe::$storedRevision, 'The real SQL save must precede the rollback.');
+      $this->assertStringContainsString('cannot be stored exactly by its field', $expected->getMessage());
+      $this->assertSame(0, ProtectedDraftProbe::$fieldPreSaves, 'No field save logic may run for a refused number.');
+      $this->assertSame(0, ProtectedDraftProbe::$presaves, 'No save hook may run for a refused number.');
     }
     ProtectedDraftProbe::reset();
     $this->assertSame($before, $this->snapshot($nid));
